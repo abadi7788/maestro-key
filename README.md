@@ -2,6 +2,13 @@
 
 متجر اشتراكات بواجهات مدير وموظف، مبني بـ Next.js App Router وPostgreSQL وDrizzle.
 
+## الصور وأيقونات Vercel / PWA
+
+- [الأسماء والمسارات والمقاسات وخطوات الفحص](./ASSETS_VERCEL.md).
+- فحص مستقل: `npx --no-install tsx scripts/verify-public-assets.ts`.
+- يعمل فحص الأصول تلقائياً مع `npm run build` لمنع نشر ملفات صور ناقصة.
+- حزمة الصور: `public/downloads/maestro-key-vercel-assets.zip` (تُفك وتُرفع ملفاتها إلى جذر التطبيق).
+
 ## إنشاء الجداول على Neon
 
 - [الخطوات بالعربية](./NEON_SETUP.md).

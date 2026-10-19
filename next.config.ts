@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
+import { PHASE_PRODUCTION_BUILD } from "next/constants";
+import { verifyPublicAssets } from "./src/lib/asset-preflight";
 
-const nextConfig: NextConfig = {
+export default function nextConfig(phase: string): NextConfig {
+  if (phase === PHASE_PRODUCTION_BUILD) {
+    const images = verifyPublicAssets();
+    console.log(`[assets] Verified ${images.length} public images and PWA icon metadata.`);
+  }
+  return {
   async headers() {
     return [
       {
@@ -12,7 +19,10 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/manifest.json",
-        headers: [{ key: "Cache-Control", value: "no-cache, max-age=0, must-revalidate" }],
+        headers: [
+          { key: "Cache-Control", value: "no-cache, max-age=0, must-revalidate" },
+          { key: "Content-Type", value: "application/manifest+json; charset=utf-8" },
+        ],
       },
       {
         source: "/downloads/maestro-key-neon-schema.sql",
@@ -25,6 +35,5 @@ const nextConfig: NextConfig = {
       },
     ];
   },
-};
-
-export default nextConfig;
+  };
+}
