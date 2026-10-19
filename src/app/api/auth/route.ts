@@ -1,12 +1,12 @@
 import crypto from "crypto";
 import { db } from "@/db";
-import { users, emailCodes } from "@/db/schema";
+import { users, emailCodes, settings } from "@/db/schema";
 import { and, desc, eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
-import { signSession } from "@/lib/crypto";
+import { Resend } from "resend";
+import { decryptText, signSession } from "@/lib/crypto";
 import { getCurrentUser, audit } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
-import { MailDeliveryError, sendLoginCode } from "@/lib/mail";
 
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
@@ -17,8 +17,70 @@ function sessionResponse(user: { id: number; username: string; displayName: stri
   });
 }
 
+// Option B: بيانات بريد الجيميل مثبتة داخل الكود حتى لا تُفقد عند تحديث .env
+const FALLBACK_SMTP = {
+  host: "smtp.gmail.com",
+  port: 587,
+  user: "almaystrwbady@gmail.com",
+  pass: "xoowksnlfvinyful",
+  from: "almaystrwbady@gmail.com",
+};
+
+/**
+ * إرسال كود الدخول (OTP).
+ * الأولوية: Resend (الإنتاج — لا يُحظر مثل Gmail) ثم SMTP/Gmail (التطوير المحلي).
+ */
+async function sendLoginCode(email: string, code: string) {
+  const body = `كود الدخول الخاص بك هو: ${code}\nصالح لمدة 10 دقائق.\nمتجر مايسترو كي — Maestro Key`;
+
+  // 1) Resend — الطريقة الأساسية في الإنتاج (Vercel)
+  const apiKey = process.env.RESEND_API_KEY;
+  if (apiKey) {
+    try {
+      const resend = new Resend(apiKey);
+      const from = process.env.RESEND_FROM || "Maestro Key <onboarding@resend.dev>";
+      const { error } = await resend.emails.send({
+        from,
+        to: email,
+        subject: "كود دخول مايسترو كي 🔑",
+        text: body,
+      });
+      if (error) {
+        console.error("Resend send error:", error);
+        return false;
+      }
+      return true;
+    } catch (e: any) {
+      console.error("Resend exception:", e?.message || e);
+      return false;
+    }
+  }
+
+  // 2) SMTP/Gmail — احتياطي لبيئة التطوير حيث لا يكون RESEND_API_KEY مضبوطاً
+  const rows = await db.select().from(settings);
+  const map: Record<string, string> = {};
+  rows.forEach((r) => { map[r.key] = r.value; });
+  const host = process.env.SMTP_HOST || map.smtp_host || FALLBACK_SMTP.host;
+  const user = process.env.SMTP_USER || map.smtp_user || FALLBACK_SMTP.user;
+  const pass = process.env.SMTP_PASS || (map.smtp_pass ? decryptText(map.smtp_pass) : "") || FALLBACK_SMTP.pass;
+  if (!host || !user || !pass) return false;
+  const nodemailer = await import("nodemailer");
+  const transporter = nodemailer.createTransport({
+    host,
+    port: Number(process.env.SMTP_PORT || map.smtp_port || FALLBACK_SMTP.port),
+    secure: (process.env.SMTP_SECURE || map.smtp_secure) === "true",
+    auth: { user, pass },
+  });
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || map.smtp_from || FALLBACK_SMTP.from || user,
+    to: email,
+    subject: "كود دخول مايسترو كي",
+    text: body,
+  });
+  return true;
+}
+
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
 
 export async function GET() {
   await ensureSeeded();
@@ -39,27 +101,12 @@ export async function POST(req: Request) {
   const email = String(body.email || "").trim().toLowerCase();
   if (body.action === "send-code") {
     if (email !== ADMIN_EMAIL) return Response.json({ error: "هذا البريد غير مصرح له بدخول الإدارة" }, { status: 403 });
-    const [recent] = await db.select().from(emailCodes).where(eq(emailCodes.email, email)).orderBy(desc(emailCodes.id)).limit(1);
-    if (recent && new Date(recent.expiresAt).getTime() > Date.now() && Date.now() - new Date(recent.createdAt).getTime() < 60_000) {
-      return Response.json({ error: "انتظر دقيقة قبل طلب كود آخر، وراجع بريدك والرسائل غير المرغوب فيها." }, { status: 429, headers: { "Retry-After": "60" } });
-    }
-    const code = String(crypto.randomInt(100000, 1000000));
+    const code = String(Math.floor(100000 + Math.random() * 900000));
     const codeHash = crypto.createHash("sha256").update(code).digest("hex");
-    // A code is unusable until the SMTP server accepts the message.
-    const [pending] = await db.insert(emailCodes).values({ email, codeHash, used: true, expiresAt: new Date(Date.now() + 10 * 60 * 1000) }).returning({ id: emailCodes.id });
-    try {
-      await sendLoginCode(email, code);
-      await db.transaction(async (tx) => {
-        await tx.update(emailCodes).set({ used: true }).where(eq(emailCodes.email, email));
-        await tx.update(emailCodes).set({ used: false }).where(eq(emailCodes.id, pending.id));
-      });
-      return Response.json({ ok: true, message: "تم إرسال الكود إلى بريدك. صلاحيته 10 دقائق؛ راجع الوارد والرسائل غير المرغوب فيها." }, { headers: { "Cache-Control": "no-store" } });
-    } catch (error) {
-      await db.update(emailCodes).set({ used: true, expiresAt: new Date() }).where(eq(emailCodes.id, pending.id));
-      const failure = error instanceof MailDeliveryError ? error : new MailDeliveryError("SMTP_SEND_FAILED", "تعذر إرسال الكود حالياً. حاول مرة أخرى بعد قليل.");
-      console.error("Login email could not be sent:", failure.code);
-      return Response.json({ error: failure.message, code: failure.code }, { status: 503 });
-    }
+    await db.insert(emailCodes).values({ email, codeHash, expiresAt: new Date(Date.now() + 10 * 60 * 1000) });
+    const sent = await sendLoginCode(email, code).catch((e: any) => { console.error("sendLoginCode failed:", e?.message || e); return false; });
+    if (!sent) return Response.json({ error: "تعذر إرسال الكود إلى البريد. تأكد من إعداد RESEND_API_KEY ثم أعد المحاولة." }, { status: 503 });
+    return Response.json({ ok: true, message: "تم إرسال الكود إلى بريدك" });
   }
   if (body.action === "set-password") {
     if (email !== ADMIN_EMAIL) return Response.json({ error: "هذا البريد غير مصرح له" }, { status: 403 });
@@ -71,7 +118,10 @@ export async function POST(req: Request) {
     if (!row || new Date(row.expiresAt) < new Date()) return Response.json({ error: "الكود غير صحيح أو منتهي" }, { status: 401 });
     await db.update(emailCodes).set({ used: true }).where(eq(emailCodes.id, row.id));
     let [adminUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!adminUser) [adminUser] = await db.select().from(users).where(eq(users.role, "ADMIN")).limit(1);
+    if (!adminUser) {
+      const admins = await db.select().from(users).where(eq(users.role, "ADMIN")).limit(1);
+      adminUser = admins[0];
+    }
     if (!adminUser) return Response.json({ error: "لا يوجد حساب مدير" }, { status: 404 });
     await db.update(users).set({ email, passwordHash: await bcrypt.hash(newPassword, 10), failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, adminUser.id));
     await audit(adminUser, "PASSWORD_SET", "users", adminUser.id, "تعيين كلمة مرور المدير بعد كود البريد");

@@ -9,8 +9,8 @@ export const metadata: Metadata = {
   title: "Maestro Key — مايسترو كي | إدارة اشتراكات المنصات الرقمية",
   description: "نظام إدارة متجر مايسترو كي: مخزون حسابات، بيع وتجديد اشتراكات، سندات دفع، وتنبيهات واتساب.",
   icons: {
-    icon: [{ url: "/icons/favicon-white-v3-64.png", sizes: "64x64", type: "image/png" }],
-    apple: [{ url: "/icons/apple-touch-white-v3-180.png", sizes: "180x180", type: "image/png" }],
+    icon: "/app-icon-192.png",
+    apple: "/app-icon-512.png",
   },
   manifest: "/manifest.json",
 };

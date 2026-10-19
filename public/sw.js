@@ -1,7 +1,4 @@
-// maestro-sw-v6-white-rounded-icons
-// Versioned rounded white tiles update the icon without changing notification behavior.
-const NOTIFICATION_ICON = "/icons/notification-white-v3-192.png";
-const NOTIFICATION_BADGE = "/icons/notification-badge-v3-96.png";
+// maestro-sw-v4
 let after = 0;
 let timer = null;
 
@@ -16,8 +13,8 @@ async function poll() {
       if (a.id > after) after = a.id;
       await self.registration.showNotification("مايسترو كي", {
         body: a.title + " — " + a.body,
-        icon: NOTIFICATION_ICON,
-        badge: NOTIFICATION_BADGE,
+        icon: "/notify-192.png",
+        badge: "/notify-badge.png",
         tag: "maestro-key",
         silent: false,
         data: { href: a.href || "/inbox" },
@@ -41,8 +38,8 @@ self.addEventListener("push", (event) => {
   try { data = { ...data, ...(event.data ? event.data.json() : {}) }; } catch {}
   event.waitUntil(self.registration.showNotification("مايسترو كي", {
     body: (data.title ? data.title + " — " : "") + (data.body || "إشعار جديد"),
-    icon: NOTIFICATION_ICON,
-    badge: NOTIFICATION_BADGE,
+    icon: "/notify-192.png",
+    badge: "/notify-badge.png",
     tag: "maestro-key",
     silent: false,
     data: { href: data.href || "/inbox" },

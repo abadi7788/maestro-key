@@ -102,8 +102,8 @@ export default function AlertWatcher() {
             if (reg) {
               await reg.showNotification("مايسترو كي", {
                 body: a.title + " — " + a.body,
-                icon: "/icons/notification-white-v3-192.png",
-                badge: "/icons/notification-badge-v3-96.png",
+                icon: "/notify-192.png",
+                badge: "/notify-badge.png",
                 tag: "maestro-key",
                 silent: false,
                 data: { href: a.href || "/inbox" },
