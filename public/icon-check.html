@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#050914">
+  <title>Maestro Key — فحص الأيقونات</title>
+  <link rel="icon" href="/favicon.ico?v=mk8" type="image/x-icon">
+  <link rel="icon" href="/icons/favicon-32x32.png?v=mk8" sizes="32x32" type="image/png">
+  <link rel="manifest" href="/manifest.json">
+  <style>
+    *{box-sizing:border-box}body{margin:0;padding:28px 18px;background:#050914;color:#eef5ff;font:15px/1.8 Tahoma,Arial,sans-serif}main{max-width:700px;margin:auto}h1{font-size:23px}p{color:#b1bfd5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.tile,.panel{padding:20px;border:1px solid #293950;border-radius:18px;background:#0c1628}.tile{display:flex;flex-direction:column;align-items:center;gap:12px;justify-content:center;min-height:150px}img{object-fit:contain}small{color:#a8b9d4;word-break:break-all;text-align:center}.panel{margin-top:22px}button{border:0;border-radius:12px;padding:14px 20px;background:linear-gradient(90deg,#ed3a5a,#2867f6);color:white;font:700 14px Tahoma,Arial;cursor:pointer}button:disabled{opacity:.55;cursor:wait}#result{min-height:28px;white-space:pre-wrap}a{color:#89baff}
+  </style>
+</head>
+<body>
+<main>
+  <h1>فحص أيقونات مايسترو كي</h1>
+  <p>افتح هذه الصفحة على نطاق Vercel النهائي. يجب أن تظهر الصور أدناه، وأيقونة المتصفح في التبويب. لا تحتاج تسجيل الدخول لتجربة شكل الإشعار.</p>
+  <section class="grid" aria-label="معاينة الأيقونات">
+    <div class="tile"><img src="/icons/favicon-16x16.png?v=mk8" alt="أيقونة 16 بكسل" width="16" height="16"><small>favicon — 16×16</small></div>
+    <div class="tile"><img src="/icons/favicon-32x32.png?v=mk8" alt="أيقونة 32 بكسل" width="32" height="32"><small>favicon — 32×32</small></div>
+    <div class="tile"><img src="/icons/icon-192x192.png?v=mk8" alt="شعار الإشعار" width="88" height="88"><small>أيقونة التطبيق والإشعار</small></div>
+    <div class="tile"><img src="/icons/badge-72x72.png?v=mk8" alt="مفتاح شريط الإشعارات" width="72" height="72"><small>badge — أبيض شفاف</small></div>
+  </section>
+  <section class="panel">
+    <h2>تجربة إشعار الجهاز</h2>
+    <p>اضغط الزر واسمح بالإشعارات. هذه تجربة محلية على جهازك فقط، وليست اختبار إرسال Push من الخادم. شكل شريط النظام والصوت تحدده إعدادات هاتفك ومتصفحك.</p>
+    <button id="test" type="button">تجربة شكل الإشعار</button>
+    <p id="result" role="status" aria-live="polite"></p>
+  </section>
+  <p>إذا كانت الصور لا تظهر، افتح <a href="/icons/icon-192x192.png?v=mk8">صورة الإشعار مباشرة</a> و<a href="/favicon.ico?v=mk8">ملف favicon.ico</a>. يجب أن يكونا متاحين بدون صفحة حماية أو تحويل إلى تسجيل الدخول.</p>
+</main>
+<script>
+const button = document.getElementById('test');
+const result = document.getElementById('result');
+button.addEventListener('click', async () => {
+  button.disabled = true;
+  try {
+    if (!window.isSecureContext || !('serviceWorker' in navigator) || !('Notification' in window)) {
+      result.textContent = 'يلزم HTTPS ومتصفح يدعم إشعارات النظام. على الآيفون افتح التطبيق المثبّت من الشاشة الرئيسية.';
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      result.textContent = 'لم يُسمح بالإشعارات. يمكنك تعديل الإذن من إعدادات الموقع في المتصفح.';
+      return;
+    }
+    await navigator.serviceWorker.register('/sw.js', {scope:'/',updateViaCache:'none'});
+    const registration = await navigator.serviceWorker.ready;
+    await registration.showNotification('مايسترو كي — تجربة الأيقونة', {
+      body:'هذه معاينة محلية: يجب أن يظهر الشعار الملون، والمفتاح في شريط الإشعارات على الأنظمة التي تدعمه.',
+      icon:new URL('/icons/icon-192x192.png?v=mk8',window.location.origin).href,
+      badge:new URL('/icons/badge-72x72.png?v=mk8',window.location.origin).href,
+      tag:'maestro-key-icon-test',dir:'rtl',lang:'ar',silent:false,
+      data:{href:'/icon-check.html'}
+    });
+    result.textContent = 'تم عرض الإشعار التجريبي. افتح شريط الإشعارات لرؤية شكله. إذا ظهر رمز Chrome بجانبه فهذا جزء من واجهة النظام وليس ملف الأيقونة.';
+  } catch {
+    result.textContent = 'تعذر عرض الإشعار. تأكد من إذن المتصفح وإمكانية تحميل /sw.js والأيقونات من هذا النطاق.';
+  } finally { button.disabled = false; }
+});
+</script>
+</body>
+</html>

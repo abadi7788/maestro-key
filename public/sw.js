@@ -1,13 +1,15 @@
-// maestro-sw-v7-standard-pwa-icons
-const CACHE_NAME = "maestro-key-static-v7";
-const NOTIFICATION_ICON = "/icons/icon-192x192.png";
-const NOTIFICATION_BADGE = "/icons/badge-72x72.png";
+// maestro-sw-v8-favicon-notification-icons
+const CACHE_NAME = "maestro-key-static-v8";
+const NOTIFICATION_ICON = "/icons/icon-192x192.png?v=mk8";
+const NOTIFICATION_BADGE = "/icons/badge-72x72.png?v=mk8";
 const STATIC_FILES = [
   "/offline.html",
   "/icons/icon-192x192.png",
   "/icons/icon-512x512.png",
   "/icons/icon-maskable-512x512.png",
   "/icons/badge-72x72.png",
+  NOTIFICATION_ICON,
+  NOTIFICATION_BADGE,
 ];
 
 self.addEventListener("install", (event) => {
@@ -63,8 +65,8 @@ self.addEventListener("push", (event) => {
   try { data = { ...data, ...(event.data ? event.data.json() : {}) }; } catch { /* use a safe fallback */ }
   event.waitUntil(self.registration.showNotification("مايسترو كي", {
     body: (data.title ? String(data.title) + " — " : "") + String(data.body || "إشعار جديد"),
-    icon: NOTIFICATION_ICON,
-    badge: NOTIFICATION_BADGE,
+    icon: new URL(NOTIFICATION_ICON, self.location.origin).href,
+    badge: new URL(NOTIFICATION_BADGE, self.location.origin).href,
     tag: "maestro-key",
     silent: false,
     dir: "rtl",
