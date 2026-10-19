@@ -1,0 +1,63 @@
+# Permanent deployment configuration. Creating these resources incurs Render charges.
+# Use ONE Blueprint/service for the store. Future pushes update that same service/URL.
+services:
+  - type: web
+    name: maestro-key
+    runtime: node
+    region: frankfurt
+    plan: 0.5c-512mb
+    numInstances: 1
+    autoDeployTrigger: commit
+    buildCommand: npm ci --include=dev && npm run build
+    preDeployCommand: node scripts/check-production-env.mjs && npx --no-install drizzle-kit migrate --config=drizzle.production.config.ts && npx --no-install tsx scripts/initialize-store.ts
+    startCommand: npm run start -- --hostname 0.0.0.0
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: maestro-key-db
+          property: connectionString
+      # Copy EXISTING keys when moving store data. Never rotate these on a redeploy.
+      - key: SESSION_SECRET
+        sync: false
+      - key: ACCOUNT_ENCRYPTION_KEY
+        sync: false
+      # Only used on a brand-new database; never resets an existing admin password.
+      - key: ADMIN_INITIAL_PASSWORD
+        sync: false
+      # Set to restore BEFORE first deploy if importing the current store database.
+      - key: STORE_INITIALIZATION
+        value: create
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        value: almaystrwbady@gmail.com
+      - key: SMTP_FROM
+        value: almaystrwbady@gmail.com
+      - key: SMTP_PASS
+        sync: false
+      # Keep the SAME pair across releases so installed phones remain subscribed.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:almaystrwbady@gmail.com
+      - key: CRON_SECRET
+        generateValue: true
+
+databases:
+  - name: maestro-key-db
+    region: frankfurt
+    plan: 0.1c-256mb
+    databaseName: maestro_key
+    user: maestro_key
+    ipAllowList: []

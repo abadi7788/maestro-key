@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
+  <title>Maestro Key notification badge</title>
+  <circle cx="28" cy="45" r="17" stroke="#fff" stroke-width="6"/>
+  <path d="M33 39a8 8 0 1 0 0 12" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+  <path d="M46 41h35a4 4 0 0 1 4 4v4a3 3 0 0 1-3 3h-3v10h-7V52h-8v7h-7V52H46V41Z" fill="#fff"/>
+</svg>
