@@ -55,6 +55,7 @@ export default function SettingsPage() {
             { k: "whatsapp_expiry_template", t: "🔔 قالب تنبيه الانتهاء (قبل يومين — تلقائي بدون مراجعة)" },
             { k: "whatsapp_sale_template", t: "🎉 قالب تسليم بيانات اشتراك جديد" },
             { k: "whatsapp_renewal_template", t: "✅ قالب تأكيد التجديد" },
+            { k: "whatsapp_activation_template", t: "⚡ قالب «تم التفعيل» — يصل للعميل بعد ضغطك الزر (المتغيرات: {{name}} {{platform}} {{email}} {{password}} {{link}} {{note}} {{credentials}} {{end_date}})" },
           ].map((f) => (
             <div key={f.k} className="card p-4">
               <label className="label">{f.t}</label>
@@ -115,8 +116,15 @@ export default function SettingsPage() {
               <div key={p.id} className="card flex flex-col items-center gap-3 p-4 text-center">
                 <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={72} />
                 <div className="font-extrabold">{p.name}</div>
+                <div className="flex flex-wrap justify-center gap-1.5">
+                  {p.deliveryMode === "ON_DEMAND"
+                    ? <Badge tone="amber">عند الطلب — يفعّله المدير</Badge>
+                    : <Badge tone="green">من المخزون — تسليم فوري</Badge>}
+                  {p.requiresCustomerEmail && <Badge tone="blue">يطلب إيميل العميل</Badge>}
+                  {p.extraFieldLabel && <Badge tone="gold">حقل: {p.extraFieldLabel}</Badge>}
+                </div>
                 <div className="flex flex-wrap justify-center gap-2">
-                  <button onClick={() => setEditPlat({ ...p, imageUrl: p.imageUrl || "" })} className="btn-ghost px-3 py-2 text-xs"><Pencil size={14} /> تعديل الاسم والصورة</button>
+                  <button onClick={() => setEditPlat({ ...p, imageUrl: p.imageUrl || "", extraFieldLabel: p.extraFieldLabel || "" })} className="btn-ghost px-3 py-2 text-xs"><Pencil size={14} /> تعديل</button>
                   <button onClick={() => manage({ action: "upsertPlatform", id: p.id, name: p.name, color: p.color, shortName: p.shortName, imageUrl: p.imageUrl, isActive: !p.isActive }, p.isActive ? "تم تعطيل المنصة" : "تم تفعيل المنصة")} className="btn-ghost px-3 py-2 text-xs">{p.isActive ? "تعطيل" : "تفعيل"}</button>
                   <button onClick={() => { if (confirm(`حذف منصة ${p.name}؟`)) manage({ action: "deletePlatform", id: p.id }, "تم حذف المنصة"); }} className="btn-danger px-3 py-2 text-xs"><Trash2 size={14} /> حذف</button>
                   {!p.isActive && <Badge tone="red">معطلة</Badge>}
@@ -140,8 +148,29 @@ export default function SettingsPage() {
                     setEditPlat({ ...editPlat, imageUrl: await fileToDataUrl(file) });
                   }} />
                 </label>
+
+                <div className="mt-4 space-y-3 rounded-2xl border border-white/10 bg-white/[.03] p-4">
+                  <div className="text-sm font-black text-white">⚙️ طريقة التسليم والطلب من العميل</div>
+                  <div>
+                    <label className="label">كيف يُسلَّم الاشتراك؟</label>
+                    <select className="field" value={editPlat.deliveryMode || "INVENTORY"} onChange={(e) => setEditPlat({ ...editPlat, deliveryMode: e.target.value })}>
+                      <option value="INVENTORY">من المخزون — يُسحب حساب جاهز فوراً</option>
+                      <option value="ON_DEMAND">عند الطلب — لا يُخزَّن، يفعّله المدير ثم «تم التفعيل»</option>
+                    </select>
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm font-bold text-slate-200">
+                    <input type="checkbox" className="h-4 w-4 accent-[#c99327]" checked={!!editPlat.requiresCustomerEmail} onChange={(e) => setEditPlat({ ...editPlat, requiresCustomerEmail: e.target.checked })} />
+                    اطلب إيميل العميل عند البيع (للتفعيل عليه)
+                  </label>
+                  <div>
+                    <label className="label">حقل إضافي تطلبه من العميل (اختياري)</label>
+                    <input className="field" placeholder="مثال: إيميل حساب الجيم / اسم المستخدم" value={editPlat.extraFieldLabel || ""} onChange={(e) => setEditPlat({ ...editPlat, extraFieldLabel: e.target.value })} />
+                    <p className="mt-1 text-[11px] font-semibold text-slate-400">إذا كتبته، تظهر خانة بهذا العنوان في نموذج البيع، وتصل قيمتها لك في لوحة الإدارة.</p>
+                  </div>
+                </div>
+
                 <div className="mt-4 flex gap-2">
-                  <button disabled={busy || !editPlat.name.trim()} onClick={async () => { await manage({ action: "upsertPlatform", id: editPlat.id, name: editPlat.name, color: editPlat.color, shortName: editPlat.shortName, imageUrl: editPlat.imageUrl, isActive: editPlat.isActive }, "تم تحديث المنصة"); setEditPlat(null); }} className="btn-gold flex-1">حفظ</button>
+                  <button disabled={busy || !editPlat.name.trim()} onClick={async () => { await manage({ action: "upsertPlatform", id: editPlat.id, name: editPlat.name, color: editPlat.color, shortName: editPlat.shortName, imageUrl: editPlat.imageUrl, isActive: editPlat.isActive, deliveryMode: editPlat.deliveryMode || "INVENTORY", requiresCustomerEmail: !!editPlat.requiresCustomerEmail, extraFieldLabel: editPlat.extraFieldLabel || "" }, "تم تحديث المنصة"); setEditPlat(null); }} className="btn-gold flex-1">حفظ</button>
                   <button onClick={() => setEditPlat(null)} className="btn-ghost">إلغاء</button>
                 </div>
               </div>

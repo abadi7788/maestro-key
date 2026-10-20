@@ -67,11 +67,16 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
                     <span className="font-black">{r.customerName}</span>
                     <span className="text-xs font-bold text-slate-500" dir="ltr">{r.customerPhone}</span>
                     <Badge tone={r.rentalType === "RENEWAL" ? "blue" : "gold"}>{r.rentalType === "RENEWAL" ? "تجديد" : "بيع جديد"}</Badge>
+                    {!r.accountType && <Badge tone="amber">عند الطلب</Badge>}
+                    {r.activationStatus === "PENDING" && <Badge tone="amber">⏳ بانتظار التفعيل</Badge>}
+                    {r.activationStatus === "ACTIVATED" && <Badge tone="green">⚡ مُفعّل {fmtDateTime(r.activatedAt)}</Badge>}
                   </div>
                   <div className="mt-1 text-[13px] font-semibold leading-relaxed text-slate-500">
                     {r.platformName}{r.profileNo ? ` — بروفايل ${r.profileNo}` : r.accountType === "FULL" ? " — حساب كامل" : ""} • من {fmtDate(r.startDate)} إلى {fmtDate(r.endDate)}
                     {r.status === "ACTIVE" && <span className="font-bold text-emerald-300"> (بقي {daysLeft(r.endDate)} يوم)</span>}
                     <br />البائع: {r.sellerName} • {fmtDateTime(r.createdAt)}{isAdmin && r.accountEmail && <span dir="ltr" className="font-mono"> • {r.accountEmail}</span>}
+                    {isAdmin && r.customerEmail && <> • <span dir="ltr" className="font-mono">📧 {r.customerEmail}</span></>}
+                    {isAdmin && r.customerExtra && <> • 📝 {r.customerExtra}</>}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1.5">{rentalBadge(r.status)}{r.whatsappAlertSent && <Badge tone="blue">🔔 نُبّه العميل واتساب</Badge>}</div>
@@ -100,13 +105,13 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {r.payments.some((p: any) => p.status === "CONFIRMED") && (
+                {(r.payments.some((p: any) => p.status === "CONFIRMED") || r.activationStatus === "ACTIVATED") && (
                   <button onClick={() => openCreds(r)} className="inline-flex items-center gap-1.5 rounded-xl bg-[#0e1526] px-3.5 py-2 text-xs font-extrabold text-white transition hover:bg-[#182238] active:scale-[.98]">
-                    <KeyRound size={15} className="text-[#174ea6]" /> عرض بيانات الحساب (مؤكد ✓)
+                    <KeyRound size={15} className="text-[#174ea6]" /> {r.accountType ? "عرض بيانات الحساب (مؤكد ✓)" : "عرض بيانات التفعيل ✓"}
                   </button>
                 )}
-                {r.payments.some((p: any) => p.status === "PENDING") && (
-                  <span className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700"><Lock size={13} /> البيانات مقفلة — بانتظار تأكيد المدير</span>
+                {r.payments.some((p: any) => p.status === "PENDING") && r.activationStatus !== "ACTIVATED" && (
+                  <span className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700"><Lock size={13} /> {r.accountType ? "البيانات مقفلة — بانتظار تأكيد المدير" : "بانتظار تفعيل المدير"}</span>
                 )}
                 <a className="btn-ghost py-2 text-xs" target="_blank" rel="noreferrer" href={waLink(r.customerPhone, `مرحباً ${r.customerName}، معك متجر مايسترو كي بخصوص اشتراك ${r.platformName}.`)}><MessageCircle size={15} className="text-[#1fa855]" /> مراسلة العميل</a>
                 {(r.status === "ACTIVE" || r.status === "ENDED") && (
@@ -135,12 +140,14 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
           <p className="py-6 text-center font-bold text-amber-700">{credErr}</p>
         ) : credData ? (
           <div className="space-y-3">
-            <p className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">✓ السند مؤكد — يمكنك الآن إرسال البيانات للعميل.</p>
+            <p className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">✓ يمكنك الآن إرسال البيانات للعميل.</p>
             {[
               { l: "📧 الإيميل", v: credData.email },
               { l: "🔑 كلمة المرور", v: credData.password },
               { l: "👤 البروفايل / PIN", v: credData.profileLabel },
-            ].map((row) => (
+              { l: "🔗 رابط التفعيل", v: credData.link },
+              { l: "📝 ملاحظة", v: credData.note },
+            ].filter((row) => row.v).map((row) => (
               <div key={row.l} className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
                 <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">{row.l}</div><div dir="ltr" className="truncate text-left font-mono text-[15px] font-bold text-white">{row.v}</div></div>
                 <CopyBtn text={row.v} />

@@ -68,6 +68,13 @@ export async function POST(req: Request) {
     const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
     if (!platform) return jsonError("منصة غير موجودة");
 
+    // ---------- بيانات إضافية من العميل حسب إعدادات المنصة ----------
+    const customerEmail = String(b.customerEmail || "").trim();
+    const customerExtra = String(b.customerExtra || "").trim();
+    if (platform.requiresCustomerEmail && !customerEmail) {
+      return jsonError("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله أولاً");
+    }
+
     // Customer upsert by phone
     let [customer] = await db.select().from(customers).where(eq(customers.phone, customerPhone)).limit(1);
     if (!customer) {
@@ -76,6 +83,36 @@ export async function POST(req: Request) {
     }
 
     const now = new Date();
+
+    // ---------- مسار "عند الطلب": بدون حساب مخزون — المدير يفعّل يدوياً ----------
+    if (platform.deliveryMode === "ON_DEMAND") {
+      const neededEnd = addDays(now, durationDays);
+      const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
+      const [rental] = await db.insert(rentals).values({
+        accountId: null, profileId: null, customerId: customer.id, platformId,
+        createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
+        durationDays, status: "ACTIVE", activationStatus: "PENDING",
+        customerEmail: customerEmail || null, customerExtra: customerExtra || null,
+      }).returning();
+      await db.insert(payments).values({
+        rentalId: rental.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
+        status: "PENDING", durationDays, createdBy: user.id,
+      });
+      await notifyAdmin({
+        title: "طلب جديد — بانتظار التفعيل",
+        body: `فعّل اشتراك ${customer.name} (${platform.name}) ثم اضغط «تم التفعيل» لإشعار العميل`,
+        kind: "ACTIVATION",
+        href: "/inbox",
+      });
+      await audit(user, "ON_DEMAND_SALE", "rentals", rental.id, `طلب عند الطلب ${platform.name} — ${customer.name} (${customerPhone}) — بانتظار تفعيل المدير`);
+      return Response.json({
+        ok: true, rentalId: rental.id, onDemand: true, pendingActivation: true,
+        message: "تم استلام الطلب والسند وإرساله للمدير. سيُفعَّل اشتراك العميل يدوياً، ويصله إشعار فور التفعيل.",
+        customer: { name: customer.name, phone: customer.phone },
+        platformName: platform.name, durationDays,
+        endDate: neededEnd.toISOString(), paymentStatus: "PENDING",
+      });
+    }
 
     async function respondWithAccount(rentalId: number, acc: typeof accounts.$inferSelect, prof: typeof profiles.$inferSelect | null, endDate: Date, isRenewal: boolean) {
       // 🔒 الأمان: لا تُعرض بيانات الحساب (إيميل/كلمة مرور) للموظف إلا بعد تأكيد المدير للسند.
@@ -104,7 +141,7 @@ export async function POST(req: Request) {
         .where(and(eq(rentals.customerId, customer.id), eq(rentals.platformId, platformId)))
         .orderBy(desc(rentals.createdAt));
       const renewable = candidates.find((r) => r.status === "ACTIVE") || candidates.find((r) => r.status === "ENDED");
-      if (renewable) {
+      if (renewable && renewable.accountId) {
         const [acc] = await db.select().from(accounts).where(eq(accounts.id, renewable.accountId)).limit(1);
         let prof: typeof profiles.$inferSelect | null = null;
         let stillHeld = false;
@@ -188,6 +225,8 @@ export async function POST(req: Request) {
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
         durationDays, status: "ACTIVE", passwordUsedEncrypted: claimedAcc.passwordEncrypted,
+        customerEmail: customerEmail || null, customerExtra: customerExtra || null,
+        activationStatus: (platform.requiresCustomerEmail || platform.extraFieldLabel) ? "PENDING" : "NOT_REQUIRED",
       }).returning();
       void isRenewalType;
       if (claimedProfile) await db.update(profiles).set({ currentRentalId: rental.id }).where(eq(profiles.id, claimedProfile.id));

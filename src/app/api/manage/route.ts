@@ -26,6 +26,9 @@ export async function POST(req: Request) {
         color: String(b.color || "#0f172a"),
         shortName: String(b.shortName || name.slice(0, 1) || "▶").slice(0, 4),
         isActive: b.isActive !== false,
+        deliveryMode: b.deliveryMode === "ON_DEMAND" ? "ON_DEMAND" : "INVENTORY",
+        requiresCustomerEmail: b.requiresCustomerEmail === true,
+        extraFieldLabel: typeof b.extraFieldLabel === "string" ? b.extraFieldLabel.trim() || null : undefined,
       };
       if (imageUrl !== undefined) patch.imageUrl = imageUrl || null;
       if (b.id) await db.update(platforms).set(patch).where(eq(platforms.id, Number(b.id)));

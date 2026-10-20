@@ -27,6 +27,8 @@ export async function GET(req: Request) {
       platformId: rentals.platformId, createdBy: rentals.createdBy, rentalType: rentals.rentalType,
       startDate: rentals.startDate, endDate: rentals.endDate, durationDays: rentals.durationDays,
       status: rentals.status, whatsappAlertSent: rentals.whatsappAlertSent, whatsappAlertSentAt: rentals.whatsappAlertSentAt,
+      customerEmail: rentals.customerEmail, customerExtra: rentals.customerExtra,
+      activationStatus: rentals.activationStatus, activatedAt: rentals.activatedAt,
       createdAt: rentals.createdAt,
       customerName: customers.name, customerPhone: customers.phone,
       platformName: platforms.name, platformColor: platforms.color, platformImage: platforms.imageUrl,
@@ -35,7 +37,7 @@ export async function GET(req: Request) {
       .innerJoin(customers, eq(rentals.customerId, customers.id))
       .innerJoin(platforms, eq(rentals.platformId, platforms.id))
       .innerJoin(users, eq(rentals.createdBy, users.id))
-      .innerJoin(accounts, eq(rentals.accountId, accounts.id))
+      .leftJoin(accounts, eq(rentals.accountId, accounts.id))
       .where(conds.length ? and(...conds) : undefined)
       .orderBy(desc(rentals.createdAt)).limit(300);
 

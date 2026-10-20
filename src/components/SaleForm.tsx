@@ -20,6 +20,7 @@ export default function SaleForm() {
   const [accountType, setAccountType] = useState<"FULL" | "PROFILE">("PROFILE");
   const [bankId, setBankId] = useState<number>(0); const [ref, setRef] = useState("");
   const [receipt, setReceipt] = useState(""); const [forceNew, setForceNew] = useState(false);
+  const [customerEmail, setCustomerEmail] = useState(""); const [customerExtra, setCustomerExtra] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const [result, setResult] = useState<any>(null);
   const [scan, setScan] = useState<"idle" | "reading" | "ok" | "fail">("idle");
@@ -81,6 +82,9 @@ export default function SaleForm() {
     if (cur === 0 && other > 0) setAccountType(otherType);
   }, [meta, platformId, accountType]);
 
+  const plat = meta?.platforms?.find((p: any) => p.id === platformId) || null;
+  const isOnDemand = plat?.deliveryMode === "ON_DEMAND";
+
   if (!meta) return <Spinner text="جارٍ تجهيز نقطة البيع…" />;
 
   async function onFile(file: File | undefined) {
@@ -113,7 +117,8 @@ export default function SaleForm() {
     if (!lookup?.customer && !name.trim()) return setErr("أدخل اسم العميل الجديد");
     if (!bankId || !ref.trim()) return setErr("اختر البنك وأدخل رقم العملية");
     if (!receipt) return setErr("📸 إرفاق صورة السند إلزامي قبل سحب الاشتراك");
-    if (effectiveForceNew || !renewable) {
+    if (plat?.requiresCustomerEmail && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
+    if (!isOnDemand && (effectiveForceNew || !renewable)) {
       const availableForType = meta?.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
       if (availableForType <= 0) return setErr(accountType === "PROFILE" ? "لا يوجد ملف / بروفايل متاح لهذه المنصة حالياً" : "لا يوجد حساب كامل متاح لهذه المنصة حالياً");
     }
@@ -125,13 +130,14 @@ export default function SaleForm() {
           platformId, durationDays: duration, customerName: name, customerPhone: phone,
           paymentMethodId: bankId, transactionRef: ref.trim(), amount: Number(amount || 0),
           receiptImageData: receipt, mode: effectiveForceNew ? "NEW" : "AUTO", accountType,
+          customerEmail: customerEmail.trim(), customerExtra: customerExtra.trim(),
         }),
       });
       setResult(d); window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   }
 
-  function reset() { setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); setForceNew(false); setErr(""); setScan("idle"); setScanNote(""); }
+  function reset() { setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setErr(""); setScan("idle"); setScanNote(""); }
 
   // ---------------- SUBMITTED: locked until admin confirms ----------------
   if (result) {
@@ -157,20 +163,36 @@ export default function SaleForm() {
               <div className="my-2 h-px bg-white/10" />
               <div className="flex items-center justify-between gap-3 py-1.5">
                 <span className="text-xs font-bold text-slate-400">الطلب</span>
-                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.durationDays} يوم</span>
+                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.onDemand ? "عند الطلب" : result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.durationDays} يوم</span>
               </div>
             </div>
 
             <div className="relative rounded-2xl border border-white/15 bg-gradient-to-br from-white/[.06] to-white/[.02] p-6 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
-                <Lock size={28} className="text-[#5ba2ff]" />
-              </div>
-              <p className="mt-3 text-base font-black text-white">بيانات الحساب مقفلة الآن</p>
-              <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                لن يظهر الإيميل ولا كلمة المرور ولا البروفايل قبل <b className="text-white">تأكيد المدير للسند</b>.
-                بعد التأكيد افتح <b className="text-white">«مبيعاتي»</b> واضغط «عرض بيانات الحساب» لإرسالها للعميل.
-                تبدأ مدة الاشتراك من <b className="text-white">لحظة تأكيد المدير</b>.
-              </p>
+              {result.pendingActivation ? (
+                <>
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
+                    <ScanLine size={28} className="text-[#fbbf24]" />
+                  </div>
+                  <p className="mt-3 text-base font-black text-white">الطلب بانتظار تفعيل المدير</p>
+                  <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
+                    هذا الاشتراك يُفعَّل <b className="text-white">يدوياً عند الطلب</b> (لا يُسحب من المخزون).
+                    المدير سيصله إشعار فوراً، وبعد أن يفعّل حساب العميل ويضغط «تم التفعيل»
+                    يصل العميل إشعار واتساب بالبيانات، وتظهر لك البيانات في <b className="text-white">«مبيعاتي»</b>.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
+                    <Lock size={28} className="text-[#5ba2ff]" />
+                  </div>
+                  <p className="mt-3 text-base font-black text-white">بيانات الحساب مقفلة الآن</p>
+                  <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
+                    لن يظهر الإيميل ولا كلمة المرور ولا البروفايل قبل <b className="text-white">تأكيد المدير للسند</b>.
+                    بعد التأكيد افتح <b className="text-white">«مبيعاتي»</b> واضغط «عرض بيانات الحساب» لإرسالها للعميل.
+                    تبدأ مدة الاشتراك من <b className="text-white">لحظة تأكيد المدير</b>.
+                  </p>
+                </>
+              )}
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row">
@@ -207,26 +229,30 @@ export default function SaleForm() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {meta.platforms.map((p: any) => {
               const s = slots(p.id); const active = platformId === p.id;
+              const od = p.deliveryMode === "ON_DEMAND";
               return (
                 <button key={p.id} type="button" onClick={() => setPlatformId(p.id)}
-                  className={`choice ${active ? "choice-selected-blue" : ""} ${s === 0 ? "opacity-50" : ""}`}>
+                  className={`choice ${active ? "choice-selected-blue" : ""} ${!od && s === 0 ? "opacity-50" : ""}`}>
                   <div className="flex items-start justify-between gap-2">
                     <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={64} />
                     {active && <CheckCircle2 size={18} className="text-white" />}
                   </div>
                   <div className="mt-3 text-[13px] font-extrabold leading-tight">{p.name}</div>
                   <div className="mt-2">
-                    {s > 0
-                      ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {s} مكان</span>
-                      : <span className={`pill ${active ? "bg-white/15 text-white/70" : "pill-red"}`}>غير متاح حالياً</span>}
+                    {od
+                      ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-amber"}`}>عند الطلب — يفعّله المدير</span>
+                      : s > 0
+                        ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {s} مكان</span>
+                        : <span className={`pill ${active ? "bg-white/15 text-white/70" : "pill-red"}`}>غير متاح حالياً</span>}
                   </div>
                 </button>
               );
             })}
           </div>
 
-          <div className="divider" />
+          {!isOnDemand && <div className="divider" />}
 
+          {!isOnDemand && (
           <div>
             <h4 className="flex items-center gap-2 text-sm font-black text-white">
               <Sparkles size={16} className="text-[#1e5eff]" />
@@ -265,6 +291,7 @@ export default function SaleForm() {
               })}
             </div>
           </div>
+          )}
         </div>
       </section>
 
@@ -352,8 +379,46 @@ export default function SaleForm() {
               </div>
             </div>
           ) : null}
+
+          {/* بيانات إضافية يطلبها المنصة حسب إعداداتها */}
+          {(plat?.requiresCustomerEmail || plat?.extraFieldLabel) && (
+            <div className="pop-in space-y-3 rounded-2xl border border-[#5ba2ff]/30 bg-gradient-to-br from-[#2c6dff]/10 to-transparent px-5 py-4">
+              <div className="flex items-center gap-2">
+                <ScanLine size={16} className="text-[#63a8ff]" />
+                <span className="text-[13px] font-black text-white">بيانات يحتاجها المدير لتفعيل هذا الاشتراك</span>
+              </div>
+              {plat?.requiresCustomerEmail && (
+                <div>
+                  <label className="label">📧 إيميل العميل (للتفعيل عليه) <span className="text-[#ff5769]">إلزامي</span></label>
+                  <input className="field" dir="ltr" style={{ textAlign: "left" }} type="email" placeholder="customer@gmail.com" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
+                </div>
+              )}
+              {plat?.extraFieldLabel && (
+                <div>
+                  <label className="label">{plat.extraFieldLabel}</label>
+                  <input className="field" placeholder={plat.extraFieldLabel} value={customerExtra} onChange={(e) => setCustomerExtra(e.target.value)} />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
+
+      {/* تنبيه: اشتراك عند الطلب */}
+      {isOnDemand && (
+        <div className="pop-in flex items-start gap-3 rounded-2xl border border-[#fbbf24]/30 bg-gradient-to-br from-[#f59e0b]/10 to-transparent px-5 py-4">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15">
+            <ScanLine size={20} className="text-[#fbbf24]" />
+          </div>
+          <div>
+            <p className="text-[14px] font-black text-white">هذا الاشتراك «عند الطلب» — لا يُسحب من المخزون</p>
+            <p className="mt-1 text-[12.5px] font-semibold leading-relaxed text-slate-300">
+              بعد تأكيد السند، يفعّله المدير يدوياً على حساب العميل، ثم يضغط «تم التفعيل»
+              فيصل العميل إشعار واتساب بالبيانات وتظهر لك في «مبيعاتي».
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Step 3: duration */}
       <section className="card card-hover overflow-hidden">

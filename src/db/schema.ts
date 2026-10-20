@@ -22,6 +22,10 @@ export const platforms = pgTable("platforms", {
   color: varchar("color", { length: 20 }).notNull().default("#0f172a"),
   shortName: varchar("short_name", { length: 10 }).notNull().default("▶"),
   imageUrl: text("image_url"),
+  // INVENTORY = من المخزون (تسليم فوري) | ON_DEMAND = عند الطلب (المدير يفعّل)
+  deliveryMode: varchar("delivery_mode", { length: 20 }).notNull().default("INVENTORY"),
+  requiresCustomerEmail: boolean("requires_customer_email").notNull().default(false),
+  extraFieldLabel: varchar("extra_field_label", { length: 200 }),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -102,7 +106,8 @@ export const customers = pgTable("customers", {
 
 export const rentals = pgTable("rentals", {
   id: serial("id").primaryKey(),
-  accountId: integer("account_id").notNull().references(() => accounts.id),
+  // nullable: طلبات "عند الطلب" لا ترتبط بحساب مخزون حتى يُفعّل
+  accountId: integer("account_id").references(() => accounts.id),
   profileId: integer("profile_id").references(() => profiles.id),
   customerId: integer("customer_id").notNull().references(() => customers.id),
   platformId: integer("platform_id").notNull().references(() => platforms.id),
@@ -116,6 +121,19 @@ export const rentals = pgTable("rentals", {
   passwordUsedEncrypted: text("password_used_encrypted"),
   whatsappAlertSent: boolean("whatsapp_alert_sent").notNull().default(false),
   whatsappAlertSentAt: timestamp("whatsapp_alert_sent_at"),
+  // بيانات إضافية من العميل للتفعيل (إيميل/حقل مخصص)
+  customerEmail: varchar("customer_email", { length: 200 }),
+  customerExtra: text("customer_extra"),
+  // NOT_REQUIRED | PENDING | ACTIVATED
+  activationStatus: varchar("activation_status", { length: 20 }).notNull().default("NOT_REQUIRED"),
+  // بيانات التسليم التي يدخلها المدير عند "تم التفعيل"
+  activatedEmail: varchar("activated_email", { length: 200 }),
+  activatedPassword: text("activated_password"),
+  activatedLink: text("activated_link"),
+  activatedPin: varchar("activated_pin", { length: 40 }),
+  activatedNote: text("activated_note"),
+  activatedAt: timestamp("activated_at"),
+  activatedBy: integer("activated_by").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [index("rentals_customer_idx").on(t.customerId), index("rentals_status_idx").on(t.status), index("rentals_account_idx").on(t.accountId)]);

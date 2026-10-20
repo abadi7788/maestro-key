@@ -80,12 +80,14 @@ export async function POST(req: Request) {
           await db.update(rentals).set({ status: "REJECTED", updatedAt: now }).where(eq(rentals.id, rental.id));
           if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, rental.profileId));
         }
-        await refreshAccountStatus(rental.accountId);
-        if (!pay.isExtension) {
-          const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
-          if (acc?.type === "FULL") {
-            const active = await db.select({ id: rentals.id }).from(rentals).where(and(eq(rentals.accountId, acc.id), eq(rentals.status, "ACTIVE")));
-            if (!active.length) await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, acc.id));
+        if (rental.accountId) {
+          await refreshAccountStatus(rental.accountId);
+          if (!pay.isExtension) {
+            const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+            if (acc?.type === "FULL") {
+              const active = await db.select({ id: rentals.id }).from(rentals).where(and(eq(rentals.accountId, acc.id), eq(rentals.status, "ACTIVE")));
+              if (!active.length) await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, acc.id));
+            }
           }
         }
       }
@@ -108,19 +110,23 @@ export async function POST(req: Request) {
       if (!rental) return jsonError("اشتراك غير موجود", 404);
       await db.update(rentals).set({ status: "CLOSED", updatedAt: now }).where(eq(rentals.id, rental.id));
       if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, rental.profileId));
-      // If no active/ended rentals remain on a PROFILE account -> require password change before resale
-      const remaining = await db.select({ id: rentals.id }).from(rentals)
-        .where(and(eq(rentals.accountId, rental.accountId), eq(rentals.status, "ACTIVE")));
-      const endedLeft = await db.select({ id: rentals.id }).from(rentals)
-        .where(and(eq(rentals.accountId, rental.accountId), eq(rentals.status, "ENDED")));
-      const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
-      if (acc?.type === "PROFILE" && !remaining.length && !endedLeft.length) {
-        await db.update(accounts).set({ status: "NEEDS_PASSWORD_CHANGE", updatedAt: now }).where(eq(accounts.id, acc.id));
-      } else {
-        await refreshAccountStatus(rental.accountId);
+      if (rental.accountId) {
+        // If no active/ended rentals remain on a PROFILE account -> require password change before resale
+        const remaining = await db.select({ id: rentals.id }).from(rentals)
+          .where(and(eq(rentals.accountId, rental.accountId), eq(rentals.status, "ACTIVE")));
+        const endedLeft = await db.select({ id: rentals.id }).from(rentals)
+          .where(and(eq(rentals.accountId, rental.accountId), eq(rentals.status, "ENDED")));
+        const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+        if (acc?.type === "PROFILE" && !remaining.length && !endedLeft.length) {
+          await db.update(accounts).set({ status: "NEEDS_PASSWORD_CHANGE", updatedAt: now }).where(eq(accounts.id, acc.id));
+        } else {
+          await refreshAccountStatus(rental.accountId);
+        }
+        await audit(user, "PROFILE_FREED", "rentals", rental.id, "تأكيد إزالة العميل من البروفايل يدوياً وتحرير البروفايل");
+        return Response.json({ ok: true, needsPasswordChange: !remaining.length && !endedLeft.length });
       }
-      await audit(user, "PROFILE_FREED", "rentals", rental.id, "تأكيد إزالة العميل من البروفايل يدوياً وتحرير البروفايل");
-      return Response.json({ ok: true, needsPasswordChange: !remaining.length && !endedLeft.length });
+      await audit(user, "RENTAL_CLOSED", "rentals", rental.id, "إغلاق طلب (عند الطلب)");
+      return Response.json({ ok: true, needsPasswordChange: false });
     }
 
     // ---------- Confirm password changed ----------
@@ -139,6 +145,70 @@ export async function POST(req: Request) {
       await db.update(accounts).set({ passwordEncrypted: encryptText(newPassword), status: "AVAILABLE", updatedAt: now }).where(eq(accounts.id, accountId));
       await audit(user, "PASSWORD_CHANGED", "accounts", accountId, `تأكيد تغيير كلمة مرور ${acc.email} وإعادته للمخزون`);
       return Response.json({ ok: true });
+    }
+
+    // ---------- Activate an order (on-demand subscriptions) ----------
+    if (action === "activateRental") {
+      const rentalId = Number(b.rentalId);
+      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
+      if (!rental) return jsonError("طلب غير موجود", 404);
+      if (rental.activationStatus === "ACTIVATED") return jsonError("هذا الطلب مُفعّل مسبقاً", 409);
+
+      const aEmail = String(b.email || "").trim();
+      const aPass = String(b.password || "").trim();
+      const aLink = String(b.link || "").trim();
+      const aPin = String(b.pin || "").trim();
+      const aNote = String(b.note || "").trim();
+
+      await db.update(rentals).set({
+        activationStatus: "ACTIVATED",
+        activatedEmail: aEmail || null,
+        activatedPassword: aPass ? encryptText(aPass) : null,
+        activatedLink: aLink || null,
+        activatedPin: aPin || null,
+        activatedNote: aNote || null,
+        activatedAt: now,
+        activatedBy: user.id,
+        updatedAt: now,
+      }).where(eq(rentals.id, rental.id));
+
+      const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
+      const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
+
+      // رسالة الواتساب للعميل
+      const lines = [
+        aEmail && `📧 الإيميل: ${aEmail}`,
+        aPass && `🔑 كلمة المرور: ${aPass}`,
+        aPin && `🔒 PIN: ${aPin}`,
+        aLink && `🔗 رابط التفعيل: ${aLink}`,
+        aNote && `📝 ${aNote}`,
+      ].filter(Boolean).join("\n");
+      const tpl = await getSetting("whatsapp_activation_template",
+        "مبروك {{name}} 🎉\nاشتراك {{platform}} تم تفعيله بنجاح من متجر مايسترو كي 🔑\n{{credentials}}\n⏳ صالح حتى: {{end_date}}");
+      const message = renderTemplate(tpl, {
+        name: cust?.name || "", platform: plat?.name || "",
+        email: aEmail, password: aPass, link: aLink, note: aNote,
+        credentials: lines || "تم تفعيل حسابك بنجاح ✓",
+        end_date: formatDate(new Date(rental.endDate)),
+      });
+
+      const hasMeta = !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID);
+      await db.insert(whatsappLogs).values({
+        rentalId: rental.id, customerId: cust?.id ?? null, phone: cust?.phone ?? "",
+        message, kind: "ACTIVATION", status: hasMeta ? "QUEUED" : "SIMULATED",
+      });
+
+      // إشعار الموظف الذي سجّل الطلب
+      await notifyAdmin({
+        title: "تم تفعيل الطلب",
+        body: `فعّل المدير اشتراك ${cust?.name || ""} (${plat?.name || ""}). يمكنك الآن عرض البيانات وإرسالها للعميل.`,
+        kind: "ACTIVATED",
+        href: "/my-sales",
+        forUserId: rental.createdBy,
+      });
+
+      await audit(user, "RENTAL_ACTIVATED", "rentals", rental.id, `تفعيل طلب ${plat?.name || ""} للعميل ${cust?.name || ""}`);
+      return Response.json({ ok: true, customerPhone: cust?.phone || "", whatsappMessage: message });
     }
 
     // ---------- Trash ----------

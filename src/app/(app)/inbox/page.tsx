@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { AlarmClock, BellRing, Check, KeyRound, MessageCircle, Play, ReceiptText, UserMinus, X } from "lucide-react";
+import { AlarmClock, BellRing, Check, ChevronDown, KeyRound, MessageCircle, Play, ReceiptText, ScanLine, UserMinus, X } from "lucide-react";
 import { api, fmtDate, waLink, daysLeft } from "@/lib/client";
 import { Badge, Empty, Modal, ReceiptButton, Spinner } from "@/components/ui";
 
@@ -11,6 +11,9 @@ export default function InboxPage() {
   const [pwFor, setPwFor] = useState<any>(null); const [newPw, setNewPw] = useState("");
   const [rejectFor, setRejectFor] = useState<any>(null); const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState("");
+  const [activating, setActivating] = useState<number | null>(null);
+  const [actForm, setActForm] = useState({ email: "", password: "", link: "", pin: "", note: "" });
+  const [lastActivation, setLastActivation] = useState<any>(null);
 
   const load = useCallback(async () => {
     const [r, a] = await Promise.all([api("/api/rentals?view=all").catch(() => ({ rentals: [] })), api("/api/accounts").catch(() => ({ accounts: [] }))]);
@@ -29,13 +32,32 @@ export default function InboxPage() {
     if (d) setMsg(`✓ المهمة اليومية: انتهى ${d.endedCount} اشتراك، وجهّز ${d.alertsSent} تنبيه انتهاء قبل يومين (يُرسل تلقائياً عبر Meta إن كان مضبوطاً، وإلا سُجّل ويظهر زر واتساب بجانب العميل).`);
   }
 
+  async function doActivate(r: any) {
+    setActivating(r.id);
+    try {
+      const d = await api("/api/actions", {
+        method: "POST",
+        body: JSON.stringify({ action: "activateRental", rentalId: r.id, ...actForm }),
+      });
+      setMsg(`✓ تم تفعيل اشتراك ${r.customerName} — وصل إشعار واتساب بالبيانات، وأُشعر الموظف.`);
+      setLastActivation({ customerPhone: d.customerPhone, whatsappMessage: d.whatsappMessage });
+      setActivating(null);
+      setActForm({ email: "", password: "", link: "", pin: "", note: "" });
+      await load();
+    } catch (e: any) {
+      setMsg("⚠️ " + e.message);
+      setActivating(null);
+    }
+  }
+
   if (!rentals) return <Spinner />;
+  const pendingActivation = rentals.filter((r) => r.activationStatus === "PENDING" && r.status !== "REJECTED" && r.status !== "CLOSED");
   const endedProfile = rentals.filter((r) => r.status === "ENDED" && r.accountType === "PROFILE");
   const endedFull = rentals.filter((r) => r.status === "ENDED" && r.accountType === "FULL");
   const needsPw = accounts.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE");
   const pendingPays = rentals.flatMap((r) => r.payments.filter((p: any) => p.status === "PENDING").map((p: any) => ({ ...p, rental: r })));
   const endingSoon = rentals.filter((r) => r.status === "ACTIVE" && daysLeft(r.endDate) <= 2 && daysLeft(r.endDate) >= 0);
-  const total = endedProfile.length + endedFull.length + pendingPays.length + needsPw.filter((a) => !endedFull.some((r) => r.accountId === a.id)).length;
+  const total = pendingActivation.length + endedProfile.length + endedFull.length + pendingPays.length + needsPw.filter((a) => !endedFull.some((r) => r.accountId === a.id)).length;
 
   return (
     <div className="space-y-7">
@@ -47,6 +69,89 @@ export default function InboxPage() {
         <button onClick={runJob} disabled={busy} className="btn-primary"><Play size={17} /> تشغيل المهمة اليومية</button>
       </div>
       {msg && <div className="rounded-2xl bg-emerald-500/10 px-4 py-3 font-bold text-emerald-300">{msg}</div>}
+
+      {lastActivation && (
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-[#1fa855]/40 bg-[#1fa855]/10 px-5 py-4">
+          <div className="flex-1 text-[13px] font-bold text-emerald-200">
+            ✓ رسالة التفعيل جاهزة. أرسلها للعميل الآن عبر واتساب (أو عبر «مبيعاتي» → عرض بيانات الحساب).
+          </div>
+          <a href={waLink(lastActivation.customerPhone, lastActivation.whatsappMessage)} target="_blank" rel="noreferrer" className="btn-ghost text-xs border-[#1fa855]/40 bg-[#1fa855]/20 text-emerald-100">
+            <MessageCircle size={15} /> إرسال عبر واتساب
+          </a>
+          <button onClick={() => setLastActivation(null)} className="text-slate-400 hover:text-white"><X size={16} /></button>
+        </div>
+      )}
+
+      {/* Pending activation (on-demand orders) */}
+      <section>
+        <h2 className="mb-3 flex items-center gap-2 font-black"><ScanLine className="text-[#fbbf24]" size={20} /> طلبات بانتظار التفعيل ({pendingActivation.length})</h2>
+        {pendingActivation.length === 0 ? <p className="card p-4 font-bold text-slate-500">لا يوجد.</p> : (
+          <div className="space-y-3">
+            {pendingActivation.map((r: any) => (
+              <div key={r.id} className="card overflow-hidden border-[#fbbf24]/30">
+                <div className="flex flex-wrap items-center gap-3 p-4">
+                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#f59e0b]/15">
+                    <ScanLine size={20} className="text-[#fbbf24]" />
+                  </div>
+                  <div className="min-w-[180px] flex-1">
+                    <div className="font-extrabold text-white">فعّل اشتراك «{r.customerName}» على {r.platformName}</div>
+                    <div className="mt-1 text-[13px] font-semibold text-slate-400" dir="rtl">
+                      <span dir="ltr">{r.customerPhone}</span> • {r.durationDays} يوم • باع: {r.sellerName}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {r.customerEmail && <span className="pill pill-blue">📧 <span dir="ltr">{r.customerEmail}</span></span>}
+                      {r.customerExtra && <span className="pill pill-gold">📝 {r.customerExtra}</span>}
+                      {r.payments?.map((p: any) => (
+                        <span key={p.id} className="pill pill-neutral">🏦 {p.bankName} <span dir="ltr">{p.transactionRef}</span> — {p.amount.toLocaleString("ar-YE")} ر.ي</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-2">
+                    {r.payments?.[0]?.hasReceipt && <ReceiptButton paymentId={r.payments[0].id} />}
+                    <button onClick={() => setActivating(activating === r.id ? null : r.id)} className={`btn-ghost text-xs ${activating === r.id ? "border-[#fbbf24]/50" : ""}`}>
+                      <ChevronDown size={14} className={activating === r.id ? "rotate-180 transition" : "transition"} /> {activating === r.id ? "إغلاق" : "بيانات التفعيل"}
+                    </button>
+                  </div>
+                </div>
+
+                {activating === r.id && (
+                  <div className="space-y-3 border-t border-white/10 bg-white/[.02] p-4">
+                    <p className="text-[12.5px] font-bold text-slate-400">
+                      فعّل اشتراك العميل في المنصة (على إيميله/حسابه)، ثم اكتب بيانات الدخول هنا — ستُرسل له فور ضغط «تم التفعيل».
+                      {r.accountEmail && <> الحساب المرجعي: <span dir="ltr" className="font-mono text-[#63a8ff]">{r.accountEmail}</span></>}
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="label">📧 الإيميل المسلَّم (إن وجد)</label>
+                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.email} onChange={(e) => setActForm({ ...actForm, email: e.target.value })} />
+                      </div>
+                      <div>
+                        <label className="label">🔑 كلمة المرور</label>
+                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.password} onChange={(e) => setActForm({ ...actForm, password: e.target.value })} />
+                      </div>
+                      <div>
+                        <label className="label">🔗 رابط التفعيل (اختياري)</label>
+                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.link} onChange={(e) => setActForm({ ...actForm, link: e.target.value })} />
+                      </div>
+                      <div>
+                        <label className="label">🔒 PIN (اختياري)</label>
+                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.pin} onChange={(e) => setActForm({ ...actForm, pin: e.target.value })} />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label">📝 ملاحظة إضافية تصل للعميل (اختياري)</label>
+                      <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} placeholder="مثال: هذا الحساب يعمل على جهازيك فقط" />
+                    </div>
+                    <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
+                      <Check size={17} /> تم التفعيل — إشعار العميل
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Ended - profile removals */}
       <section>

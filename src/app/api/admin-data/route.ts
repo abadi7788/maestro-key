@@ -46,8 +46,9 @@ export async function GET(req: Request) {
         id: rentals.id, customerId: rentals.customerId, status: rentals.status, rentalType: rentals.rentalType,
         startDate: rentals.startDate, endDate: rentals.endDate, durationDays: rentals.durationDays,
         platformName: platforms.name, accountEmail: accounts.email, whatsappAlertSent: rentals.whatsappAlertSent,
+        activationStatus: rentals.activationStatus,
       }).from(rentals).innerJoin(platforms, eq(rentals.platformId, platforms.id))
-        .innerJoin(accounts, eq(rentals.accountId, accounts.id)).orderBy(desc(rentals.createdAt));
+        .leftJoin(accounts, eq(rentals.accountId, accounts.id)).orderBy(desc(rentals.createdAt));
       const pays = await db.select({ rentalId: payments.rentalId, amount: payments.amount, status: payments.status }).from(payments);
       const logs = await db.select().from(whatsappLogs).orderBy(desc(whatsappLogs.createdAt)).limit(300);
       return Response.json({

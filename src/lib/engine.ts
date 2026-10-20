@@ -42,7 +42,7 @@ export async function runDailyJob(opts: { sendAlerts?: boolean } = {}) {
     .where(and(eq(rentals.status, "ACTIVE"), lt(rentals.endDate, now)));
   for (const r of ended) {
     await db.update(rentals).set({ status: "ENDED", updatedAt: now }).where(eq(rentals.id, r.id));
-    await refreshAccountStatus(r.accountId);
+    if (r.accountId) await refreshAccountStatus(r.accountId);
   }
 
   // B) Expiry warnings: within next 2 days, not sent

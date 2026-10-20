@@ -2,7 +2,6 @@
 import { useEffect, useRef, useState } from "react";
 import { BellRing, Volume2 } from "lucide-react";
 import { api } from "@/lib/client";
-import { registerPwaWorker } from "@/lib/pwa-client";
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -40,9 +39,8 @@ export default function AlertWatcher() {
 
   async function enable() {
     try {
-      if (!("Notification" in window) || await Notification.requestPermission() !== "granted") return;
-      const reg = await registerPwaWorker();
-      if (!reg) return;
+      if ("Notification" in window) await Notification.requestPermission();
+      const reg = await navigator.serviceWorker?.register("/sw.js");
       const keyRes = await fetch("/api/push");
       const { publicKey } = await keyRes.json();
       if (reg && publicKey && "PushManager" in window) {
@@ -69,8 +67,8 @@ export default function AlertWatcher() {
   useEffect(() => {
     const saved = Number(localStorage.getItem("mk_alerts_after") || 0);
     if (saved) { after.current = saved; primed.current = true; }
-    if (localStorage.getItem("mk_alerts_on") === "1" && "Notification" in window && Notification.permission === "granted") setReady(true);
-    void registerPwaWorker();
+    if (localStorage.getItem("mk_alerts_on") === "1" && Notification.permission === "granted") setReady(true);
+    navigator.serviceWorker?.register("/sw.js").catch(() => {});
     const clearBadge = async () => {
       try {
         const reg = await navigator.serviceWorker?.ready;

@@ -42,6 +42,7 @@ async function doSeed() {
     { key: "whatsapp_expiry_template", value: "مرحباً {{name}} 👋\nتنبيه من متجر مايسترو كي 🔑\nاشتراكك في {{platform}} سينتهي بتاريخ {{end_date}} (بعد {{days}} يوم).\nللتجديد بدون انقطاع، حوّل مبلغ التجديد وأرسل السند هنا وسنمدّد اشتراكك فوراً.\nشكراً لثقتك بنا." },
     { key: "whatsapp_sale_template", value: "مرحباً {{name}} 🎉\nتم تفعيل اشتراك {{platform}} بنجاح من متجر مايسترو كي 🔑\n📧 الإيميل: {{email}}\n🔑 كلمة المرور: {{password}}\n👤 البروفايل/PIN: {{profile}}\n⏳ صالح حتى: {{end_date}}\nمشاهدة سعيدة! لا تشارك البيانات مع أحد." },
     { key: "whatsapp_renewal_template", value: "مرحباً {{name}} ✅\nتم تجديد اشتراك {{platform}} بنجاح حتى {{end_date}}.\nنفس بيانات الدخول السابقة تعمل بدون تغيير.\nمتجر مايسترو كي 🔑" },
+    { key: "whatsapp_activation_template", value: "مبروك {{name}} 🎉\nاشتراك {{platform}} تم تفعيله بنجاح من متجر مايسترو كي 🔑\n{{credentials}}\n⏳ صالح حتى: {{end_date}}\nتمتعة سعيدة! إذا احتجت أي مساعدة تواصل معنا." },
     { key: "store_name", value: "متجر مايسترو كي" },
     { key: "alert_days_before", value: "2" },
     { key: "whatsapp_provider", value: "WHATSAPP_LINK" },
