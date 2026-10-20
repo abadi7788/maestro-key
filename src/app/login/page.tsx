@@ -70,8 +70,8 @@ export default function LoginPage() {
 
           {mode === "choose" && (
             <div className="mt-6 grid gap-3">
-              <button onClick={() => { setErr(""); setMode("admin-email"); }} className="rounded-2xl bg-gradient-to-l from-[#1463ff] to-[#ff2438] py-4 text-[16px] font-black text-white">دخول الأدمن</button>
-              <button onClick={() => { setErr(""); setMode("staff"); }} className="rounded-2xl border border-white/15 bg-white/[.04] py-4 text-[16px] font-black text-white">دخول الموظف</button>
+              <button onClick={() => { setErr(""); setPassword(""); setShow(false); setMode("admin-email"); }} className="rounded-2xl bg-gradient-to-l from-[#1463ff] to-[#ff2438] py-4 text-[16px] font-black text-white">دخول الأدمن</button>
+              <button onClick={() => { setErr(""); setPassword(""); setShow(false); setMode("staff"); }} className="rounded-2xl border border-white/15 bg-white/[.04] py-4 text-[16px] font-black text-white">دخول الموظف</button>
             </div>
           )}
 
@@ -83,7 +83,7 @@ export default function LoginPage() {
               </div>
               <div className="relative">
                 <LockKeyhole size={18} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#ff4055]" />
-                <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-12 text-white outline-none" dir="ltr" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="كلمة المرور" required />
+                <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-12 text-white outline-none" dir="ltr" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} onBlur={() => setShow(false)} autoComplete="new-password" data-form-type="other" data-lp-ignore="true" placeholder="كلمة المرور" required />
                 <button type="button" onClick={() => setShow(!show)} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50">{show ? <EyeOff size={18} /> : <Eye size={18} />}</button>
               </div>
               <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-l from-[#1463ff] via-[#7b61ff] to-[#ff2438] py-4 font-black text-white disabled:opacity-60">
@@ -108,7 +108,7 @@ export default function LoginPage() {
               <p className="text-center text-sm font-semibold text-slate-300">سجّل كلمة مرور الإدارة. بعدها تنشئ حسابات الموظفين من الداخل.</p>
               <div className="relative">
                 <LockKeyhole size={18} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#ff4055]" />
-                <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-12 text-white outline-none" dir="ltr" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="كلمة المرور الجديدة" required />
+                <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-12 text-white outline-none" dir="ltr" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} onBlur={() => setShow(false)} autoComplete="new-password" data-form-type="other" data-lp-ignore="true" placeholder="كلمة المرور الجديدة" required />
                 <button type="button" onClick={() => setShow(!show)} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50">{show ? <EyeOff size={18} /> : <Eye size={18} />}</button>
               </div>
               <button disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-l from-[#1463ff] to-[#ff2438] py-4 font-black text-white disabled:opacity-60">
@@ -125,7 +125,7 @@ export default function LoginPage() {
               </div>
               <div className="relative">
                 <LockKeyhole size={18} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#ff4055]" />
-                <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-12 text-white outline-none" dir="ltr" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="كلمة المرور" required />
+                <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-12 text-white outline-none" dir="ltr" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} onBlur={() => setShow(false)} autoComplete="new-password" data-form-type="other" data-lp-ignore="true" placeholder="كلمة المرور" required />
                 <button type="button" onClick={() => setShow(!show)} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/50">{show ? <EyeOff size={18} /> : <Eye size={18} />}</button>
               </div>
               <button disabled={busy} className="w-full rounded-2xl bg-white py-4 font-black text-[#050914] disabled:opacity-60">{busy ? "جارٍ الدخول…" : "دخول"}</button>
