@@ -71,5 +71,9 @@ export async function GET(req: Request) {
       return Response.json({ rentals: due });
     }
     return Response.json({ rentals: enriched });
-  } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
+  } catch (e) {
+    if (e instanceof Response) return e;
+    console.error("[api/rentals] failed:", e instanceof Error ? e.message : e);
+    return jsonError("خطأ في الخادم", 500);
+  }
 }

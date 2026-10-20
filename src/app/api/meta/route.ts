@@ -53,6 +53,7 @@ export async function GET() {
     return Response.json({ platforms: plats, paymentMethods: banks, durations: ALLOWED_DURATIONS, availability, availabilityByType, priceByType });
   } catch (e) {
     if (e instanceof Response) return e;
+    console.error("[api/meta] failed:", e instanceof Error ? e.message : e);
     return Response.json({ error: "خطأ في الخادم" }, { status: 500 });
   }
 }
