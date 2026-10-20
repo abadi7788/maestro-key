@@ -1,8 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users } from "lucide-react";
-import { api, fileToDataUrl, fmtDateTime } from "@/lib/client";
+import { api, fetchMe, fileToDataUrl, fmtDateTime } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner } from "@/components/ui";
+import { isAdminRole } from "@/lib/roles";
 
 const TABS = [
   { id: "whatsapp", label: "قوالب واتساب", icon: <MessageCircle size={18} /> },
@@ -19,17 +20,19 @@ export default function SettingsPage() {
   const [editPlat, setEditPlat] = useState<any>(null);
   const [newBank, setNewBank] = useState("");
   const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "EMPLOYEE" });
+  const [meId, setMeId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const d = await api("/api/admin-data?view=settings").catch(() => null);
     setData(d); if (d) setTpl(d.settings || {});
+    fetchMe().then((u) => setMeId(u?.id ?? null)).catch(() => {});
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  async function manage(body: any, ok: string) {
+  async function manage(body: any, ok: string): Promise<boolean> {
     setBusy(true); setMsg("");
-    try { await api("/api/manage", { method: "POST", body: JSON.stringify(body) }); setMsg("✓ " + ok); await load(); }
-    catch (e: any) { setMsg("⚠️ " + e.message); } finally { setBusy(false); }
+    try { await api("/api/manage", { method: "POST", body: JSON.stringify(body) }); setMsg("✓ " + ok); await load(); return true; }
+    catch (e: any) { setMsg("⚠️ " + e.message); return false; } finally { setBusy(false); }
   }
 
   if (!data) return <Spinner />;
@@ -38,7 +41,7 @@ export default function SettingsPage() {
     <div>
       <h1 className="mb-1 text-2xl font-black">⚙️ الإعدادات</h1>
       <p className="mb-5 text-sm font-semibold text-slate-500">للمدير فقط — قوالب الرسائل، المنصات، البنوك، وحسابات الموظفين وصلاحياتهم.</p>
-      {msg && <div className="mb-4 rounded-2xl bg-emerald-500/10 px-4 py-3 font-bold text-emerald-300">{msg}</div>}
+      {msg && <div className={`mb-4 rounded-2xl px-4 py-3 font-bold ${msg.startsWith("⚠️") ? "bg-red-500/10 text-red-300" : "bg-emerald-500/10 text-emerald-300"}`}>{msg}</div>}
       <div className="no-scrollbar mb-5 flex gap-2 overflow-x-auto">
         {TABS.map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)} className={`flex shrink-0 items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-extrabold transition ${tab === t.id ? "bg-[#0e1526] text-white shadow" : "bg-[#101828] text-slate-600 border border-white/10"}`}>{t.icon}{t.label}</button>
@@ -152,16 +155,29 @@ export default function SettingsPage() {
                 <div className="mt-4 space-y-3 rounded-2xl border border-white/10 bg-white/[.03] p-4">
                   <div className="text-sm font-black text-white">⚙️ طريقة التسليم والطلب من العميل</div>
                   <div>
-                    <label className="label">كيف يُسلَّم الاشتراك؟</label>
-                    <select className="field" value={editPlat.deliveryMode || "INVENTORY"} onChange={(e) => setEditPlat({ ...editPlat, deliveryMode: e.target.value })}>
-                      <option value="INVENTORY">من المخزون — يُسحب حساب جاهز فوراً</option>
-                      <option value="ON_DEMAND">عند الطلب — لا يُخزَّن، يفعّله المدير ثم «تم التفعيل»</option>
+                    <label className="label">نمط التسليم</label>
+                    <select className="field" value={editPlat.deliveryMode === "INVENTORY" ? "INSTANT_INVENTORY" : editPlat.deliveryMode === "ON_DEMAND" ? "ON_DEMAND_EMAIL" : (editPlat.deliveryMode || "INSTANT_INVENTORY")} onChange={(e) => setEditPlat({ ...editPlat, deliveryMode: e.target.value })}>
+                      <option value="INSTANT_INVENTORY">⚡ تسليم فوري — يُسحب حساب جاهز من المخزون تلقائياً</option>
+                      <option value="ON_DEMAND_EMAIL">📧 تفعيل على إيميل العميل — يُطلب الإيميل، والمدير يفعّل ثم يؤكد</option>
+                      <option value="LINK_ONLY">🔗 تسليم برابط فقط — المدير يضع رابط الدعوة ثم يؤكد الإرسال</option>
                     </select>
                   </div>
                   <label className="flex cursor-pointer items-center gap-2 text-sm font-bold text-slate-200">
-                    <input type="checkbox" className="h-4 w-4 accent-[#c99327]" checked={!!editPlat.requiresCustomerEmail} onChange={(e) => setEditPlat({ ...editPlat, requiresCustomerEmail: e.target.checked })} />
-                    اطلب إيميل العميل عند البيع (للتفعيل عليه)
+                    <input type="checkbox" className="h-4 w-4 accent-[#c99327]" checked={!!editPlat.isLifetime} onChange={(e) => setEditPlat({ ...editPlat, isLifetime: e.target.checked })} />
+                    ♾️ اشتراك دائم / بدون مدة انتهاء (تُلغى المدة والتواريخ والتجديد)
                   </label>
+                  {(editPlat.deliveryMode === "INSTANT_INVENTORY" || editPlat.deliveryMode === "INVENTORY" || !editPlat.deliveryMode) && (
+                    <label className="flex cursor-pointer items-center gap-2 text-sm font-bold text-slate-200">
+                      <input type="checkbox" className="h-4 w-4 accent-[#c99327]" checked={!!editPlat.requiresCustomerEmail} onChange={(e) => setEditPlat({ ...editPlat, requiresCustomerEmail: e.target.checked })} />
+                      اطلب إيميل العميل عند البيع (يُعرض للمدير في التنبيهات)
+                    </label>
+                  )}
+                  {editPlat.deliveryMode === "ON_DEMAND_EMAIL" && (
+                    <p className="rounded-xl bg-sky-500/10 px-3 py-2 text-[12px] font-bold text-sky-300">✓ إيميل العميل إلزامي تلقائياً في هذا النمط — يُفعَّل الاشتراك عليه خارجياً.</p>
+                  )}
+                  {editPlat.deliveryMode === "LINK_ONLY" && (
+                    <p className="rounded-xl bg-sky-500/10 px-3 py-2 text-[12px] font-bold text-sky-300">✓ هذا النمط لا يطلب إيميلاً من العميل — فقط تضع الرابط عند التأكيد.</p>
+                  )}
                   <div>
                     <label className="label">حقل إضافي تطلبه من العميل (اختياري)</label>
                     <input className="field" placeholder="مثال: إيميل حساب الجيم / اسم المستخدم" value={editPlat.extraFieldLabel || ""} onChange={(e) => setEditPlat({ ...editPlat, extraFieldLabel: e.target.value })} />
@@ -170,7 +186,7 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="mt-4 flex gap-2">
-                  <button disabled={busy || !editPlat.name.trim()} onClick={async () => { await manage({ action: "upsertPlatform", id: editPlat.id, name: editPlat.name, color: editPlat.color, shortName: editPlat.shortName, imageUrl: editPlat.imageUrl, isActive: editPlat.isActive, deliveryMode: editPlat.deliveryMode || "INVENTORY", requiresCustomerEmail: !!editPlat.requiresCustomerEmail, extraFieldLabel: editPlat.extraFieldLabel || "" }, "تم تحديث المنصة"); setEditPlat(null); }} className="btn-gold flex-1">حفظ</button>
+                  <button disabled={busy || !editPlat.name.trim()} onClick={async () => { await manage({ action: "upsertPlatform", id: editPlat.id, name: editPlat.name, color: editPlat.color, shortName: editPlat.shortName, imageUrl: editPlat.imageUrl, isActive: editPlat.isActive, deliveryMode: editPlat.deliveryMode || "INSTANT_INVENTORY", requiresCustomerEmail: !!editPlat.requiresCustomerEmail, extraFieldLabel: editPlat.extraFieldLabel || "", isLifetime: !!editPlat.isLifetime }, "تم تحديث المنصة"); setEditPlat(null); }} className="btn-gold flex-1">حفظ</button>
                   <button onClick={() => setEditPlat(null)} className="btn-ghost">إلغاء</button>
                 </div>
               </div>
@@ -204,23 +220,26 @@ export default function SettingsPage() {
             <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
             <input className="field" placeholder="الاسم المعروض" value={newUser.displayName} onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })} />
             <select className="field" value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}><option value="EMPLOYEE">موظف مبيعات</option><option value="ADMIN">مدير</option></select>
-            <button disabled={busy} onClick={() => manage({ action: "createUser", ...newUser }, "تم إنشاء المستخدم")} className="btn-gold"><Plus size={17} /> إنشاء مستخدم</button>
+            <button disabled={busy} onClick={async () => { const ok = await manage({ action: "createUser", ...newUser }, "تم إنشاء المستخدم"); if (ok) setNewUser({ username: "", password: "", displayName: "", role: "EMPLOYEE" }); }} className="btn-gold"><Plus size={17} /> إنشاء مستخدم</button>
           </div>
           <div className="card divide-y divide-slate-100 overflow-hidden">
             {data.users.map((u: any) => (
               <div key={u.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5">
                 <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0e1526] font-black text-[#174ea6]">{u.displayName.slice(0, 1)}</span>
                 <div className="min-w-[160px] flex-1">
-                  <div className="font-extrabold">{u.displayName} {u.role === "ADMIN" ? <Badge tone="gold">مدير — كل الصلاحيات</Badge> : <Badge>موظف</Badge>} {!u.isActive && <Badge tone="red">معطّل</Badge>}</div>
+                  <div className="font-extrabold">{u.displayName} {isAdminRole(u.role) ? <Badge tone="gold">مدير — كل الصلاحيات</Badge> : <Badge>موظف</Badge>} {!u.isActive && <Badge tone="red">معطّل</Badge>}</div>
                   <div className="text-xs font-bold text-slate-400"><span dir="ltr">@{u.username}</span> • آخر دخول: {fmtDateTime(u.lastLoginAt)}</div>
                 </div>
-                {u.role !== "ADMIN" && (
+                {!isAdminRole(u.role) && (
                   <>
                     <button onClick={() => { const pw = prompt(`كلمة مرور جديدة لـ ${u.username}:`); if (pw) manage({ action: "updateUser", id: u.id, password: pw }, "تم تغيير كلمة المرور"); }} className="btn-ghost px-3 py-2 text-xs">كلمة مرور جديدة</button>
                     <button onClick={() => manage({ action: "updateUser", id: u.id, unlock: true }, "تم فك القفل")} className="btn-ghost px-3 py-2 text-xs">فك القفل</button>
                     <button onClick={() => manage({ action: "updateUser", id: u.id, isActive: !u.isActive }, u.isActive ? "تم التعطيل" : "تم التفعيل")} className="btn-ghost px-3 py-2 text-xs">{u.isActive ? "تعطيل" : "تفعيل"}</button>
-                    <button onClick={() => { if (confirm(`حذف الموظف ${u.displayName} نهائياً؟`)) manage({ action: "deleteUser", id: u.id }, "تم حذف الموظف"); }} className="btn-danger px-3 py-2 text-xs"><Trash2 size={14} /> حذف</button>
+                    <button onClick={() => { if (confirm(`حذف الموظف ${u.displayName} نهائياً؟ سيتم نقل سجلاته لحسابك للحفاظ على البيانات.`)) manage({ action: "deleteUser", id: u.id }, `تم حذف الموظف ${u.displayName} نهائياً`); }} className="btn-danger px-3 py-2 text-xs"><Trash2 size={14} /> حذف</button>
                   </>
+                )}
+                {u.id !== meId && (
+                  <button onClick={() => { const toAdmin = !isAdminRole(u.role); if (confirm(isAdminRole(u.role) ? `تخفيض ${u.displayName} من مدير إلى موظف؟ سيفقد كل صلاحيات الإدارة فوراً.` : `ترقية ${u.displayName} إلى مدير بكامل الصلاحيات؟`)) manage({ action: "updateUser", id: u.id, role: toAdmin ? "ADMIN" : "EMPLOYEE" }, toAdmin ? `تمت ترقية ${u.displayName} إلى مدير` : `تم تخفيض ${u.displayName} إلى موظف`); }} className="btn-ghost px-3 py-2 text-xs">{isAdminRole(u.role) ? "⬇ تخفيض لموظف" : "⬆ ترقية لمدير"}</button>
                 )}
               </div>
             ))}

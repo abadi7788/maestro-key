@@ -89,7 +89,7 @@ export async function PUT(req: Request) {
     if (b.email) patch.email = String(b.email).trim();
     if (b.password) patch.passwordEncrypted = encryptText(String(b.password));
     if (b.pin !== undefined) patch.pin = String(b.pin || "") || null;
-    if (b.expiryDate) patch.expiryDate = new Date(String(b.expiryDate));
+    if (b.expiryDate !== undefined) patch.expiryDate = b.expiryDate ? new Date(String(b.expiryDate)) : null;
     if (b.notes !== undefined) patch.notes = String(b.notes || "") || null;
     if (b.salePrice !== undefined) patch.salePrice = b.salePrice ? Number(b.salePrice) : null;
     if (b.platformId) patch.platformId = Number(b.platformId);

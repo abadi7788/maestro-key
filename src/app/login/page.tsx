@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { Eye, EyeOff, KeyRound, Loader2, LockKeyhole, Mail, User } from "lucide-react";
 import { api } from "@/lib/client";
+import { homeForRole, isAdminOnlyPath, isAdminRole, safeNextPath } from "@/lib/roles";
 
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
@@ -16,12 +17,29 @@ export default function LoginPage() {
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // التوجيه بعد الدخول حسب الدور الفعلي: مدير → لوحة التحكم، موظف → نقطة البيع
+  // مع احترام ?next= إن كانت وجهة داخلية مسموحاً لهذا الدور بها
+  function goAfterLogin(role: unknown) {
+    const admin = isAdminRole(role);
+    let next: string | null = null;
+    try {
+      next = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+    } catch { next = null; }
+    if (next && next !== "/login") {
+      if (!isAdminOnlyPath(next) || admin) {
+        window.location.replace(next);
+        return;
+      }
+    }
+    window.location.replace(homeForRole(role));
+  }
+
   async function staffLogin(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await api("/api/auth", { method: "POST", body: JSON.stringify({ username, password }) });
-      window.location.replace("/sale");
+      const d = await api("/api/auth", { method: "POST", body: JSON.stringify({ username, password }) });
+      goAfterLogin(d?.user?.role);
     } catch (e: any) {
       setErr(e.message || "تعذر الدخول");
       setBusy(false);

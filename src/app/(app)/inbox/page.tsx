@@ -32,14 +32,22 @@ export default function InboxPage() {
     if (d) setMsg(`✓ المهمة اليومية: انتهى ${d.endedCount} اشتراك، وجهّز ${d.alertsSent} تنبيه انتهاء قبل يومين (يُرسل تلقائياً عبر Meta إن كان مضبوطاً، وإلا سُجّل ويظهر زر واتساب بجانب العميل).`);
   }
 
+  const modeOf = (r: any) => r.deliveryMode === "LINK_ONLY" ? "LINK_ONLY" : (r.deliveryMode === "ON_DEMAND_EMAIL" || !r.accountType) ? "ON_DEMAND_EMAIL" : "INSTANT_INVENTORY";
+
   async function doActivate(r: any) {
+    if (modeOf(r) === "LINK_ONLY" && !actForm.link.trim()) {
+      setMsg("⚠️ ضع رابط الاشتراك / الدعوة أولاً ثم أكّد الإرسال");
+      return;
+    }
     setActivating(r.id);
     try {
       const d = await api("/api/actions", {
         method: "POST",
         body: JSON.stringify({ action: "activateRental", rentalId: r.id, ...actForm }),
       });
-      setMsg(`✓ تم تفعيل اشتراك ${r.customerName} — وصل إشعار واتساب بالبيانات، وأُشعر الموظف.`);
+      setMsg(modeOf(r) === "LINK_ONLY"
+        ? `✓ تم إرسال رابط اشتراك ${r.customerName} — وصله إشعار واتساب بالرابط، وأُشعر الموظف.`
+        : `✓ تم تفعيل اشتراك ${r.customerName} — وصل إشعار واتساب، وأُشعر الموظف.`);
       setLastActivation({ customerPhone: d.customerPhone, whatsappMessage: d.whatsappMessage });
       setActivating(null);
       setActForm({ email: "", password: "", link: "", pin: "", note: "" });
@@ -56,7 +64,7 @@ export default function InboxPage() {
   const endedFull = rentals.filter((r) => r.status === "ENDED" && r.accountType === "FULL");
   const needsPw = accounts.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE");
   const pendingPays = rentals.flatMap((r) => r.payments.filter((p: any) => p.status === "PENDING").map((p: any) => ({ ...p, rental: r })));
-  const endingSoon = rentals.filter((r) => r.status === "ACTIVE" && daysLeft(r.endDate) <= 2 && daysLeft(r.endDate) >= 0);
+  const endingSoon = rentals.filter((r) => !r.isLifetime && r.status === "ACTIVE" && daysLeft(r.endDate) <= 2 && daysLeft(r.endDate) >= 0);
   const total = pendingActivation.length + endedProfile.length + endedFull.length + pendingPays.length + needsPw.filter((a) => !endedFull.some((r) => r.accountId === a.id)).length;
 
   return (
@@ -116,35 +124,52 @@ export default function InboxPage() {
 
                 {activating === r.id && (
                   <div className="space-y-3 border-t border-white/10 bg-white/[.02] p-4">
-                    <p className="text-[12.5px] font-bold text-slate-400">
-                      فعّل اشتراك العميل في المنصة (على إيميله/حسابه)، ثم اكتب بيانات الدخول هنا — ستُرسل له فور ضغط «تم التفعيل».
-                      {r.accountEmail && <> الحساب المرجعي: <span dir="ltr" className="font-mono text-[#63a8ff]">{r.accountEmail}</span></>}
-                    </p>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="label">📧 الإيميل المسلَّم (إن وجد)</label>
-                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.email} onChange={(e) => setActForm({ ...actForm, email: e.target.value })} />
-                      </div>
-                      <div>
-                        <label className="label">🔑 كلمة المرور</label>
-                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.password} onChange={(e) => setActForm({ ...actForm, password: e.target.value })} />
-                      </div>
-                      <div>
-                        <label className="label">🔗 رابط التفعيل (اختياري)</label>
-                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.link} onChange={(e) => setActForm({ ...actForm, link: e.target.value })} />
-                      </div>
-                      <div>
-                        <label className="label">🔒 PIN (اختياري)</label>
-                        <input className="field" dir="ltr" style={{ textAlign: "left" }} value={actForm.pin} onChange={(e) => setActForm({ ...actForm, pin: e.target.value })} />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="label">📝 ملاحظة إضافية تصل للعميل (اختياري)</label>
-                      <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} placeholder="مثال: هذا الحساب يعمل على جهازيك فقط" />
-                    </div>
-                    <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
-                      <Check size={17} /> تم التفعيل — إشعار العميل
-                    </button>
+                    {modeOf(r) === "LINK_ONLY" ? (
+                      <>
+                        <p className="text-[12.5px] font-bold text-slate-400">
+                          الصق <b className="text-white">رابط الاشتراك / الدعوة</b> هنا ثم اضغط تأكيد — سيصل العميل إشعار واتساب بالرابط فوراً.
+                        </p>
+                        <div>
+                          <label className="label">🔗 رابط الاشتراك / الدعوة <span className="text-[#ff5769]">إلزامي</span></label>
+                          <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="https://…" value={actForm.link} onChange={(e) => setActForm({ ...actForm, link: e.target.value })} />
+                        </div>
+                        <div>
+                          <label className="label">📝 ملاحظة تصل للعميل (اختياري)</label>
+                          <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} />
+                        </div>
+                        <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
+                          <Check size={17} /> تأكيد الإرسال — إشعار العميل
+                        </button>
+                      </>
+                    ) : modeOf(r) === "ON_DEMAND_EMAIL" ? (
+                      <>
+                        <p className="text-[12.5px] font-bold text-slate-400">
+                          فعّل الاشتراك خارجياً على إيميل العميل {r.customerEmail && <b className="text-white" dir="ltr">{r.customerEmail}</b>}،
+                          ثم اضغط تأكيد — سيصل العميل إشعار «تم التفعيل على إيميلك بنجاح» <b className="text-white">بدون أي كلمات مرور</b>.
+                        </p>
+                        <div>
+                          <label className="label">📝 ملاحظة تصل للعميل (اختياري)</label>
+                          <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} placeholder="مثال: تحقق من صندوق الوارد والرسائل المزعجة" />
+                        </div>
+                        <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
+                          <Check size={17} /> تأكيد التفعيل — إشعار العميل
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-[12.5px] font-bold text-slate-400">
+                          راجع بيانات العميل الإضافية أعلاه ثم أكّد — بيانات الحساب نفسها تُسلَّم من المخزون بعد تأكيد السند.
+                          {r.accountEmail && <> الحساب المرجعي: <span dir="ltr" className="font-mono text-[#63a8ff]">{r.accountEmail}</span></>}
+                        </p>
+                        <div>
+                          <label className="label">📝 ملاحظة تصل للعميل (اختياري)</label>
+                          <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} />
+                        </div>
+                        <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
+                          <Check size={17} /> تأكيد — إشعار العميل
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

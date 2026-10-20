@@ -6,6 +6,7 @@ import { ensureSeeded } from "@/lib/seed";
 import { hashText } from "@/lib/crypto";
 import { ALLOWED_DURATIONS, addDays, cleanPhone } from "@/lib/constants";
 import { refreshAccountStatus, runDailyJob } from "@/lib/engine";
+import { normalizeDeliveryMode, lifetimeEndDate, type DeliveryMode } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
@@ -50,7 +51,7 @@ export async function POST(req: Request) {
     const accountTypeLabel = saleType === "FULL" ? "FULL" : "PROFILE";
 
     if (!platformId) return jsonError("اختر المنصة أولاً");
-    if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650) return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
+    // ملاحظة: التحقق من المدة يتم بعد قراءة المنصة (الاشتراك الدائم لا يحتاج مدة)
     if (!Number.isFinite(amount) || amount <= 0) return jsonError("أدخل سعر الاشتراك يدوياً");
     if (customerPhone.length < 7) return jsonError("أدخل رقم واتساب العميل بشكل صحيح");
     if (!paymentMethodId || !transactionRef) return jsonError("يجب اختيار البنك وإدخال رقم العملية لإتمام العملية");
@@ -67,11 +68,18 @@ export async function POST(req: Request) {
 
     const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
     if (!platform) return jsonError("منصة غير موجودة");
+    const mode: DeliveryMode = normalizeDeliveryMode(platform.deliveryMode);
+    const lifetime = !!platform.isLifetime;
+    const days = lifetime ? 0 : durationDays;
+    if (!lifetime && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+      return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
+    }
 
-    // ---------- بيانات إضافية من العميل حسب إعدادات المنصة ----------
+    // ---------- بيانات إضافية من العميل حسب نمط التسليم ----------
     const customerEmail = String(b.customerEmail || "").trim();
     const customerExtra = String(b.customerExtra || "").trim();
-    if (platform.requiresCustomerEmail && !customerEmail) {
+    const emailRequired = mode === "ON_DEMAND_EMAIL" || (mode === "INSTANT_INVENTORY" && platform.requiresCustomerEmail);
+    if (emailRequired && !customerEmail) {
       return jsonError("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله أولاً");
     }
 
@@ -84,32 +92,35 @@ export async function POST(req: Request) {
 
     const now = new Date();
 
-    // ---------- مسار "عند الطلب": بدون حساب مخزون — المدير يفعّل يدوياً ----------
-    if (platform.deliveryMode === "ON_DEMAND") {
-      const neededEnd = addDays(now, durationDays);
+    // ---------- مسار "عند الطلب" (إيميل / رابط): بدون حساب مخزون — المدير يفعّل يدوياً ----------
+    if (mode !== "INSTANT_INVENTORY") {
+      const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
       const [rental] = await db.insert(rentals).values({
         accountId: null, profileId: null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
-        durationDays, status: "ACTIVE", activationStatus: "PENDING",
+        durationDays: days, isLifetime: lifetime, status: "ACTIVE", activationStatus: "PENDING",
         customerEmail: customerEmail || null, customerExtra: customerExtra || null,
       }).returning();
       await db.insert(payments).values({
         rentalId: rental.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-        status: "PENDING", durationDays, createdBy: user.id,
+        status: "PENDING", durationDays: days, createdBy: user.id,
       });
       await notifyAdmin({
-        title: "طلب جديد — بانتظار التفعيل",
-        body: `فعّل اشتراك ${customer.name} (${platform.name}) ثم اضغط «تم التفعيل» لإشعار العميل`,
+        title: mode === "LINK_ONLY" ? "طلب رابط — بانتظار الإرسال" : "طلب جديد — بانتظار التفعيل",
+        body: mode === "LINK_ONLY"
+          ? `ضع رابط اشتراك ${customer.name} (${platform.name}) ثم اضغط «تأكيد الإرسال»`
+          : `فعّل اشتراك ${customer.name} (${platform.name}) على إيميله ثم اضغط «تأكيد التفعيل»`,
         kind: "ACTIVATION",
         href: "/inbox",
       });
-      await audit(user, "ON_DEMAND_SALE", "rentals", rental.id, `طلب عند الطلب ${platform.name} — ${customer.name} (${customerPhone}) — بانتظار تفعيل المدير`);
+      await audit(user, "ON_DEMAND_SALE", "rentals", rental.id, `طلب ${mode} ${platform.name} — ${customer.name} (${customerPhone}) — بانتظار تفعيل المدير`);
       return Response.json({
         ok: true, rentalId: rental.id, onDemand: true, pendingActivation: true,
+        deliveryMode: mode, isLifetime: lifetime,
         message: "تم استلام الطلب والسند وإرساله للمدير. سيُفعَّل اشتراك العميل يدوياً، ويصله إشعار فور التفعيل.",
         customer: { name: customer.name, phone: customer.phone },
-        platformName: platform.name, durationDays,
+        platformName: platform.name, durationDays: days,
         endDate: neededEnd.toISOString(), paymentStatus: "PENDING",
       });
     }
@@ -155,17 +166,18 @@ export async function POST(req: Request) {
           }
         }
         if (acc && stillHeld) {
-          const newEnd = renewable.status === "ACTIVE" ? addDays(new Date(renewable.endDate), durationDays) : addDays(now, durationDays);
-          if (new Date(acc.expiryDate) < newEnd) {
+          const newEnd = lifetime ? lifetimeEndDate() : (renewable.status === "ACTIVE" ? addDays(new Date(renewable.endDate), days) : addDays(now, days));
+          if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < newEnd) {
             return jsonError("الحساب الحالي للعميل ينتهي قبل نهاية مدة التجديد. اختر «بيع جديد» لسحب حساب آخر يغطي المدة.", 409);
           }
           await db.update(rentals).set({
             status: "ACTIVE", startDate: renewable.status === "ACTIVE" ? renewable.startDate : now,
-            endDate: newEnd, whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
+            endDate: newEnd, durationDays: lifetime ? 0 : days, isLifetime: lifetime,
+            whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
           }).where(eq(rentals.id, renewable.id));
           await db.insert(payments).values({
             rentalId: renewable.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-            status: "PENDING", isExtension: true, durationDays, previousEndDate: renewable.endDate,
+            status: "PENDING", isExtension: true, durationDays: days, previousEndDate: renewable.endDate,
             previousRentalStatus: renewable.status, createdBy: user.id,
           });
           await refreshAccountStatus(acc.id);
@@ -194,7 +206,7 @@ export async function POST(req: Request) {
 
     for (const acc of candidates) {
       if (acc.status === "NEEDS_PASSWORD_CHANGE") continue;
-      if (new Date(acc.expiryDate) < neededEnd) continue;
+      if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < neededEnd) continue;
       if (saleType === "FULL" && acc.type !== "FULL") continue;
       if (saleType === "PROFILE" && acc.type !== "PROFILE") continue;
       if (acc.type === "FULL") {
@@ -224,7 +236,7 @@ export async function POST(req: Request) {
       const [rental] = await db.insert(rentals).values({
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
-        durationDays, status: "ACTIVE", passwordUsedEncrypted: claimedAcc.passwordEncrypted,
+        durationDays: days, isLifetime: lifetime, status: "ACTIVE", passwordUsedEncrypted: claimedAcc.passwordEncrypted,
         customerEmail: customerEmail || null, customerExtra: customerExtra || null,
         activationStatus: (platform.requiresCustomerEmail || platform.extraFieldLabel) ? "PENDING" : "NOT_REQUIRED",
       }).returning();
@@ -232,7 +244,7 @@ export async function POST(req: Request) {
       if (claimedProfile) await db.update(profiles).set({ currentRentalId: rental.id }).where(eq(profiles.id, claimedProfile.id));
       await db.insert(payments).values({
         rentalId: rental.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-        status: "PENDING", durationDays, createdBy: user.id,
+        status: "PENDING", durationDays: days, createdBy: user.id,
       });
       await refreshAccountStatus(claimedAcc.id);
       if (claimedAcc.type === "FULL") await db.update(accounts).set({ status: "RENTED" }).where(eq(accounts.id, claimedAcc.id));

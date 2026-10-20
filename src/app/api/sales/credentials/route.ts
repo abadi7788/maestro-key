@@ -2,10 +2,12 @@ import { db } from "@/db";
 import { rentals, accounts, profiles, payments, customers, platforms } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { requireUser, audit, jsonError } from "@/lib/auth";
+import { isAdminRole } from "@/lib/roles";
 import { ensureSeeded } from "@/lib/seed";
 import { decryptText } from "@/lib/crypto";
 import { formatDate, renderTemplate } from "@/lib/constants";
 import { getSetting } from "@/lib/engine";
+import { normalizeDeliveryMode } from "@/lib/delivery";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +26,7 @@ export async function GET(req: Request) {
     if (!rental) return jsonError("اشتراك غير موجود", 404);
 
     const isOwner = rental.createdBy === user.id;
-    const isAdmin = user.role === "ADMIN";
+    const isAdmin = isAdminRole(user.role);
     if (!isOwner && !isAdmin) return jsonError("غير مصرح لك", 403);
 
     const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
@@ -36,6 +38,45 @@ export async function GET(req: Request) {
       if (rental.activationStatus !== "ACTIVATED") {
         return jsonError("⏳ الطلب ما زال بانتظار تفعيل المدير. ستظهر البيانات فور ضغطه «تم التفعيل».", 409);
       }
+      const mode = normalizeDeliveryMode(plat?.deliveryMode);
+      const endLabel = rental.isLifetime ? "دائم ♾️" : formatDate(new Date(rental.endDate));
+      // LINK_ONLY: رابط فقط — EMAIL: رسالة تفعيل على الإيميل بدون كلمات مرور
+      if (mode === "LINK_ONLY") {
+        const tpl = await getSetting("whatsapp_activation_template", "");
+        const message = renderTemplate(tpl, {
+          name: cust?.name || "", platform: plat?.name || "",
+          email: "", password: "", link: rental.activatedLink || "", note: rental.activatedNote || "",
+          credentials: `🔗 رابط التفعيل: ${rental.activatedLink || ""}${rental.activatedNote ? `\n📝 ${rental.activatedNote}` : ""}`,
+          end_date: endLabel,
+        });
+        await audit(user, "ACTIVATION_REVEALED", "rentals", rental.id, `عرض رابط التفعيل — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
+        return Response.json({
+          ok: true, onDemand: true, deliveryMode: mode, isLifetime: !!rental.isLifetime,
+          email: "", password: "", profileLabel: "", pin: "", link: rental.activatedLink || "",
+          note: rental.activatedNote || "", accountType: "LINK_ONLY",
+          customerName: cust?.name || "", customerPhone: cust?.phone || "",
+          platformName: plat?.name || "", whatsappMessage: message,
+        });
+      }
+      if (mode === "ON_DEMAND_EMAIL") {
+        const tpl = await getSetting("whatsapp_activation_template", "");
+        const message = renderTemplate(tpl, {
+          name: cust?.name || "", platform: plat?.name || "",
+          email: rental.customerEmail || "", password: "", link: "", note: rental.activatedNote || "",
+          credentials: `تم التفعيل على إيميلك بنجاح ✓${rental.activatedNote ? `\n📝 ${rental.activatedNote}` : ""}`,
+          end_date: endLabel,
+        });
+        await audit(user, "ACTIVATION_REVEALED", "rentals", rental.id, `عرض تأكيد التفعيل على الإيميل — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
+        return Response.json({
+          ok: true, onDemand: true, deliveryMode: mode, isLifetime: !!rental.isLifetime,
+          email: "", password: "", profileLabel: "", pin: "", link: "",
+          note: rental.activatedNote || "", accountType: "ON_DEMAND_EMAIL",
+          activatedOnEmail: rental.customerEmail || "",
+          customerName: cust?.name || "", customerPhone: cust?.phone || "",
+          platformName: plat?.name || "", whatsappMessage: message,
+        });
+      }
+      // وضع قديم/عام: أعرض أي بيانات تفعيل محفوظة
       const password = decryptText(rental.activatedPassword);
       const lines = [
         rental.activatedEmail && `📧 الإيميل: ${rental.activatedEmail}`,
@@ -50,11 +91,11 @@ export async function GET(req: Request) {
         email: rental.activatedEmail || "", password: password || "",
         link: rental.activatedLink || "", note: rental.activatedNote || "",
         credentials: lines || "تم تفعيل حسابك بنجاح ✓",
-        end_date: formatDate(new Date(rental.endDate)),
+        end_date: endLabel,
       });
       await audit(user, "ACTIVATION_REVEALED", "rentals", rental.id, `عرض بيانات التفعيل — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
       return Response.json({
-        ok: true, onDemand: true,
+        ok: true, onDemand: true, deliveryMode: mode, isLifetime: !!rental.isLifetime,
         email: rental.activatedEmail || "", password: password || "",
         profileLabel: "", pin: rental.activatedPin || "", link: rental.activatedLink || "",
         note: rental.activatedNote || "", accountType: "ON_DEMAND",
@@ -84,7 +125,8 @@ export async function GET(req: Request) {
     await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `عرض بيانات الحساب بعد تأكيد السند — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
 
     return Response.json({
-      ok: true, email: acc.email, password, profileLabel, pin: prof?.pin || acc.pin || "",
+      ok: true, deliveryMode: normalizeDeliveryMode(plat?.deliveryMode), isLifetime: !!rental.isLifetime,
+      email: acc.email, password, profileLabel, pin: prof?.pin || acc.pin || "",
       accountType: acc.type, customerName: cust?.name || "", customerPhone: cust?.phone || "",
       platformName: plat?.name || "", whatsappMessage: message,
     });

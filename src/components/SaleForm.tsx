@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { api, fileToDataUrl, fmtDate, daysLeft } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner, rentalBadge } from "@/components/ui";
+import { normalizeDeliveryMode } from "@/lib/delivery";
 
 type Meta = any;
 
@@ -83,7 +84,12 @@ export default function SaleForm() {
   }, [meta, platformId, accountType]);
 
   const plat = meta?.platforms?.find((p: any) => p.id === platformId) || null;
-  const isOnDemand = plat?.deliveryMode === "ON_DEMAND";
+  const deliveryMode = normalizeDeliveryMode(plat?.deliveryMode);
+  const isInstant = deliveryMode === "INSTANT_INVENTORY";
+  const isEmailMode = deliveryMode === "ON_DEMAND_EMAIL";
+  const isLinkMode = deliveryMode === "LINK_ONLY";
+  const isLifetime = !!plat?.isLifetime;
+  const emailRequired = isEmailMode || (isInstant && !!plat?.requiresCustomerEmail);
 
   if (!meta) return <Spinner text="جارٍ تجهيز نقطة البيع…" />;
 
@@ -117,8 +123,10 @@ export default function SaleForm() {
     if (!lookup?.customer && !name.trim()) return setErr("أدخل اسم العميل الجديد");
     if (!bankId || !ref.trim()) return setErr("اختر البنك وأدخل رقم العملية");
     if (!receipt) return setErr("📸 إرفاق صورة السند إلزامي قبل سحب الاشتراك");
-    if (plat?.requiresCustomerEmail && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
-    if (!isOnDemand && (effectiveForceNew || !renewable)) {
+    if (emailRequired && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
+    if (!isLifetime && (!duration || duration < 1)) return setErr("أدخل مدة الاشتراك بالأيام");
+    if (!isInstant && renewable && !forceNew) { /* طلبات عند الطلب: دائماً طلب جديد مستقل */ }
+    if (isInstant && (effectiveForceNew || !renewable)) {
       const availableForType = meta?.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
       if (availableForType <= 0) return setErr(accountType === "PROFILE" ? "لا يوجد ملف / بروفايل متاح لهذه المنصة حالياً" : "لا يوجد حساب كامل متاح لهذه المنصة حالياً");
     }
@@ -163,7 +171,7 @@ export default function SaleForm() {
               <div className="my-2 h-px bg-white/10" />
               <div className="flex items-center justify-between gap-3 py-1.5">
                 <span className="text-xs font-bold text-slate-400">الطلب</span>
-                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.onDemand ? "عند الطلب" : result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.durationDays} يوم</span>
+                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.deliveryMode === "LINK_ONLY" ? "تسليم برابط" : result.deliveryMode === "ON_DEMAND_EMAIL" || result.onDemand ? "تفعيل على الإيميل" : result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
               </div>
             </div>
 
@@ -175,9 +183,9 @@ export default function SaleForm() {
                   </div>
                   <p className="mt-3 text-base font-black text-white">الطلب بانتظار تفعيل المدير</p>
                   <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    هذا الاشتراك يُفعَّل <b className="text-white">يدوياً عند الطلب</b> (لا يُسحب من المخزون).
-                    المدير سيصله إشعار فوراً، وبعد أن يفعّل حساب العميل ويضغط «تم التفعيل»
-                    يصل العميل إشعار واتساب بالبيانات، وتظهر لك البيانات في <b className="text-white">«مبيعاتي»</b>.
+                    {result.deliveryMode === "LINK_ONLY"
+                      ? <>هذا الاشتراك يُسلَّم <b className="text-white">برابط دعوة</b> (لا يُسحب من المخزون). المدير سيضع الرابط ويضغط «تأكيد الإرسال» فيصل العميل إشعار واتساب بالرابط، ويظهر لك في <b className="text-white">«مبيعاتي»</b>.</>
+                      : <>هذا الاشتراك يُفعَّل <b className="text-white">يدوياً على إيميل العميل</b> (لا يُسحب من المخزون). المدير سيصله إشعار فوراً، وبعد أن يفعّل حساب العميل ويضغط «تأكيد التفعيل» يصل العميل إشعار واتساب، وتظهر لك الحالة في <b className="text-white">«مبيعاتي»</b>.</>}
                   </p>
                 </>
               ) : (
@@ -250,9 +258,9 @@ export default function SaleForm() {
             })}
           </div>
 
-          {!isOnDemand && <div className="divider" />}
+          {isInstant && <div className="divider" />}
 
-          {!isOnDemand && (
+          {isInstant && (
           <div>
             <h4 className="flex items-center gap-2 text-sm font-black text-white">
               <Sparkles size={16} className="text-[#1e5eff]" />
@@ -381,19 +389,19 @@ export default function SaleForm() {
           ) : null}
 
           {/* بيانات إضافية يطلبها المنصة حسب إعداداتها */}
-          {(plat?.requiresCustomerEmail || plat?.extraFieldLabel) && (
+          {(emailRequired || (plat?.extraFieldLabel && !isLinkMode)) && (
             <div className="pop-in space-y-3 rounded-2xl border border-[#5ba2ff]/30 bg-gradient-to-br from-[#2c6dff]/10 to-transparent px-5 py-4">
               <div className="flex items-center gap-2">
                 <ScanLine size={16} className="text-[#63a8ff]" />
                 <span className="text-[13px] font-black text-white">بيانات يحتاجها المدير لتفعيل هذا الاشتراك</span>
               </div>
-              {plat?.requiresCustomerEmail && (
+              {emailRequired && (
                 <div>
                   <label className="label">📧 إيميل العميل (للتفعيل عليه) <span className="text-[#ff5769]">إلزامي</span></label>
                   <input className="field" dir="ltr" style={{ textAlign: "left" }} type="email" placeholder="customer@gmail.com" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
                 </div>
               )}
-              {plat?.extraFieldLabel && (
+              {plat?.extraFieldLabel && !isLinkMode && (
                 <div>
                   <label className="label">{plat.extraFieldLabel}</label>
                   <input className="field" placeholder={plat.extraFieldLabel} value={customerExtra} onChange={(e) => setCustomerExtra(e.target.value)} />
@@ -405,7 +413,7 @@ export default function SaleForm() {
       </section>
 
       {/* تنبيه: اشتراك عند الطلب */}
-      {isOnDemand && (
+      {!isInstant && (
         <div className="pop-in flex items-start gap-3 rounded-2xl border border-[#fbbf24]/30 bg-gradient-to-br from-[#f59e0b]/10 to-transparent px-5 py-4">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15">
             <ScanLine size={20} className="text-[#fbbf24]" />
@@ -434,9 +442,15 @@ export default function SaleForm() {
 
         <div className="grid gap-4 p-6 sm:grid-cols-2">
           <div>
-            <label className="label">⏳ مدة الاشتراك بالأيام</label>
-            <input className="field" inputMode="numeric" min={1} placeholder="مثال: 1 أو 15 أو 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-            <p className="mt-1 text-[11px] font-semibold text-slate-500">من يوم واحد فما فوق. الموظف يختار العدد يدوياً.</p>
+            <label className="label">⏳ مدة الاشتراك</label>
+            {isLifetime ? (
+              <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم — بدون مدة انتهاء</div>
+            ) : (
+              <>
+                <input className="field" inputMode="numeric" min={1} placeholder="مثال: 1 أو 15 أو 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
+                <p className="mt-1 text-[11px] font-semibold text-slate-500">من يوم واحد فما فوق. الموظف يختار العدد يدوياً.</p>
+              </>
+            )}
           </div>
           <div>
             <label className="label">💵 السعر (ر.ي)</label>

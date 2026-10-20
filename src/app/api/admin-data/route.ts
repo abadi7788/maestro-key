@@ -30,7 +30,7 @@ export async function GET(req: Request) {
           accountsAvailable: accs.filter((a) => a.status === "AVAILABLE").length,
           accountsRented: accs.filter((a) => a.status === "RENTED").length,
           needsPasswordChange: accs.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE").length,
-          accountsExpiringSoon: accs.filter((a) => new Date(a.expiryDate).getTime() - now < 30 * 86400000 && new Date(a.expiryDate).getTime() > now).length,
+          accountsExpiringSoon: accs.filter((a) => a.expiryDate && new Date(a.expiryDate).getTime() - now < 30 * 86400000 && new Date(a.expiryDate).getTime() > now).length,
           activeRentals: allRentals.filter((r) => r.status === "ACTIVE").length,
           endedRentals: allRentals.filter((r) => r.status === "ENDED").length,
           endingIn2Days: allRentals.filter((r) => r.status === "ACTIVE" && new Date(r.endDate).getTime() - now <= 2 * 86400000 && new Date(r.endDate).getTime() >= now).length,

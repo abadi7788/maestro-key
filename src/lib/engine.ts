@@ -50,7 +50,7 @@ export async function runDailyJob(opts: { sendAlerts?: boolean } = {}) {
   if (sendAlerts) {
     const windowEnd = addDays(now, 2);
     const soon = await db.select().from(rentals)
-      .where(and(eq(rentals.status, "ACTIVE"), eq(rentals.whatsappAlertSent, false)));
+      .where(and(eq(rentals.status, "ACTIVE"), eq(rentals.isLifetime, false), eq(rentals.whatsappAlertSent, false)));
     const tpl = await getSetting("whatsapp_expiry_template", "مرحباً {{name}}، اشتراكك في {{platform}} ينتهي {{end_date}}.");
     for (const r of soon) {
       if (new Date(r.endDate) > windowEnd || new Date(r.endDate) < now) continue;

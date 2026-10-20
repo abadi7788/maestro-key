@@ -63,7 +63,7 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
       {!rows ? <Spinner /> : filtered.length === 0 ? <Empty icon={<Boxes size={44} />} title={trash ? "سلة المحذوفات فارغة" : "لا توجد حسابات"} hint={trash ? "الحسابات المحذوفة ناعماً ستظهر هنا مع سبب الحذف." : "أضف أول حساب للمخزون بالزر أعلاه."} /> : (
         <div className="grid gap-3.5 lg:grid-cols-2">
           {filtered.map((a) => {
-            const expDays = daysLeft(a.expiryDate);
+            const expDays = a.expiryDate ? daysLeft(a.expiryDate) : null;
             const used = a.profiles?.filter((p: any) => p.isOccupied).length ?? 0;
             return (
               <article key={a.id} className={`card p-4.5 p-4 ${a.status === "NEEDS_PASSWORD_CHANGE" && !trash ? "border-red-300 bg-red-500/10/40" : ""}`}>
@@ -71,7 +71,7 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                   <PlatformLogo src={a.platformImage} name={a.platformName} color={a.platformColor} size={48} />
                   <div className="min-w-0 flex-1">
                     <div dir="ltr" className="truncate text-right font-mono text-[15px] font-bold">{a.email}</div>
-                    <div className="mt-0.5 text-xs font-semibold text-slate-500">{a.platformName} • {a.type === "FULL" ? "حساب كامل (عميل واحد)" : `بروفايلات: ${used}/${a.maxProfiles} مشغول`} • صلاحية الحساب حتى {fmtDate(a.expiryDate)} {expDays < 0 ? <Badge tone="red">منتهي الصلاحية!</Badge> : expDays <= 30 ? <Badge tone="amber">بقي {expDays} يوم</Badge> : <span className="text-slate-400">({expDays} يوم)</span>}</div>
+                    <div className="mt-0.5 text-xs font-semibold text-slate-500">{a.platformName} • {a.type === "FULL" ? "حساب كامل (عميل واحد)" : `بروفايلات: ${used}/${a.maxProfiles} مشغول`} • {a.expiryDate ? <>صلاحية الحساب حتى {fmtDate(a.expiryDate)} {expDays !== null && expDays < 0 ? <Badge tone="red">منتهي الصلاحية!</Badge> : expDays !== null && expDays <= 30 ? <Badge tone="amber">بقي {expDays} يوم</Badge> : <span className="text-slate-400">({expDays} يوم)</span>}</> : <Badge tone="gold">♾️ بدون انتهاء</Badge>}</div>
                   </div>
                   {trash ? <Badge tone="red">محذوف</Badge> : accountBadge(a.status)}
                 </div>
@@ -105,9 +105,9 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                   {!trash ? (
                     <>
                       <button onClick={() => reveal(a.id)} className="btn-ghost px-3 py-2 text-xs">{revealed[a.id] ? <EyeOff size={15} /> : <Eye size={15} />} {revealed[a.id] ? "إخفاء" : "عرض كلمة المرور"}</button>
-                      <button onClick={() => { setEditing(a); setForm({ email: a.email, pin: a.pin || "", notes: a.notes || "", expiryDate: String(a.expiryDate).slice(0, 10), platformId: a.platformId }); setShowForm(true); }} className="btn-ghost px-3 py-2 text-xs"><Pencil size={15} /> تعديل</button>
+                      <button onClick={() => { setEditing(a); setForm({ email: a.email, pin: a.pin || "", notes: a.notes || "", expiryDate: a.expiryDate ? String(a.expiryDate).slice(0, 10) : "", noExpiry: !a.expiryDate, platformId: a.platformId }); setShowForm(true); }} className="btn-ghost px-3 py-2 text-xs"><Pencil size={15} /> تعديل</button>
                       {a.status === "NEEDS_PASSWORD_CHANGE" && <button onClick={() => setPwFor(a)} className="btn-gold px-3 py-2 text-xs"><KeyRound size={15} /> تم تغيير كلمة المرور</button>}
-                      {expDays < 0 && <button disabled={busy} onClick={() => { if (confirm("هذا الحساب منتهي الصلاحية. هل تريد حذفه وإمكانية إضافة حساب جديد بدل منه؟")) act({ action: "deleteExpired", accountId: a.id }, "تم حذف الحساب منتهي الصلاحية"); }} className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-3 py-2 text-xs font-extrabold text-white hover:bg-red-700"><XOctagon size={15} /> حذف حساب منتهي</button>}
+                      {expDays !== null && expDays < 0 && <button disabled={busy} onClick={() => { if (confirm("هذا الحساب منتهي الصلاحية. هل تريد حذفه وإمكانية إضافة حساب جديد بدل منه؟")) act({ action: "deleteExpired", accountId: a.id }, "تم حذف الحساب منتهي الصلاحية"); }} className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-3 py-2 text-xs font-extrabold text-white hover:bg-red-700"><XOctagon size={15} /> حذف حساب منتهي</button>}
                       <button disabled={busy} onClick={() => { const reason = prompt("سبب نقل الحساب إلى سلة المحذوفات:") ?? ""; act({ action: "moveToTrash", accountId: a.id, reason }, "تم نقل الحساب إلى سلة المحذوفات (حذف ناعم)"); }} className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-[#101828] px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/10"><Trash2 size={15} /> حذف</button>
                     </>
                   ) : (
@@ -133,7 +133,14 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
           <div className={editing ? "sm:col-span-2" : ""}><label className="label">📧 إيميل الحساب</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
           <div><label className="label">🔑 كلمة المرور {editing && "(اتركها فارغة للإبقاء)"}</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={form.password || ""} onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
           <div><label className="label">PIN الحساب (اختياري)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={form.pin || ""} onChange={(e) => setForm({ ...form, pin: e.target.value })} /></div>
-          <div><label className="label">⏳ تاريخ انتهاء الحساب نفسه (مثلاً بعد 12 شهر)</label><input type="date" className="field" value={form.expiryDate || ""} onChange={(e) => setForm({ ...form, expiryDate: e.target.value })} /></div>
+          <div>
+            <label className="label">⏳ تاريخ انتهاء الحساب نفسه (مثلاً بعد 12 شهر)</label>
+            <input type="date" className="field" value={form.expiryDate || ""} disabled={!!form.noExpiry} onChange={(e) => setForm({ ...form, expiryDate: e.target.value })} />
+            <label className="mt-2 flex cursor-pointer items-center gap-2 text-[12px] font-bold text-slate-300">
+              <input type="checkbox" className="h-4 w-4 accent-[#c99327]" checked={!!form.noExpiry} onChange={(e) => setForm({ ...form, noExpiry: e.target.checked, expiryDate: e.target.checked ? "" : form.expiryDate })} />
+              ♾️ بدون انتهاء (للاشتراكات الدائمة)
+            </label>
+          </div>
           <div><label className="label">💵 سعر البيع المقترح (ر.ي)</label><input className="field" inputMode="numeric" placeholder="يسجله المدير ويظهر للموظف" value={form.salePrice || ""} onChange={(e) => setForm({ ...form, salePrice: e.target.value.replace(/\D/g, "") })} /></div>
           <div><label className="label">ملاحظات</label><input className="field" value={form.notes || ""} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
         </div>

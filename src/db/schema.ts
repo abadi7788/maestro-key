@@ -22,10 +22,11 @@ export const platforms = pgTable("platforms", {
   color: varchar("color", { length: 20 }).notNull().default("#0f172a"),
   shortName: varchar("short_name", { length: 10 }).notNull().default("▶"),
   imageUrl: text("image_url"),
-  // INVENTORY = من المخزون (تسليم فوري) | ON_DEMAND = عند الطلب (المدير يفعّل)
-  deliveryMode: varchar("delivery_mode", { length: 20 }).notNull().default("INVENTORY"),
+  // INSTANT_INVENTORY = تسليم فوري من المخزون | ON_DEMAND_EMAIL = تفعيل على إيميل العميل | LINK_ONLY = تسليم برابط فقط
+  deliveryMode: varchar("delivery_mode", { length: 20 }).notNull().default("INSTANT_INVENTORY"),
   requiresCustomerEmail: boolean("requires_customer_email").notNull().default(false),
   extraFieldLabel: varchar("extra_field_label", { length: 200 }),
+  isLifetime: boolean("is_lifetime").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -73,7 +74,7 @@ export const accounts = pgTable("accounts", {
   email: varchar("email", { length: 200 }).notNull(),
   passwordEncrypted: text("password_encrypted").notNull(),
   pin: varchar("pin", { length: 40 }),
-  expiryDate: timestamp("expiry_date").notNull(),
+  expiryDate: timestamp("expiry_date"), // nullable: حسابات الاشتراكات الدائمة بلا انتهاء
   // AVAILABLE | RENTED | NEEDS_PASSWORD_CHANGE
   status: varchar("status", { length: 40 }).notNull().default("AVAILABLE"),
   notes: text("notes"),
@@ -116,6 +117,7 @@ export const rentals = pgTable("rentals", {
   startDate: timestamp("start_date").notNull(),
   endDate: timestamp("end_date").notNull(),
   durationDays: integer("duration_days").notNull(),
+  isLifetime: boolean("is_lifetime").notNull().default(false),
   // ACTIVE | ENDED | CLOSED | REJECTED
   status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
   passwordUsedEncrypted: text("password_used_encrypted"),
