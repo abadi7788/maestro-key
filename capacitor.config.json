@@ -1,0 +1,9 @@
+{
+  "appId": "com.maestrokey.app",
+  "appName": "Maestro Key",
+  "webDir": "public",
+  "server": {
+    "url": "https://maestro-key.vercel.app",
+    "cleartext": true
+  }
+}
