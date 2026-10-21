@@ -71,8 +71,14 @@ export const accounts = pgTable("accounts", {
   platformId: integer("platform_id").notNull().references(() => platforms.id),
   type: varchar("type", { length: 20 }).notNull().default("FULL"), // FULL | PROFILE
   maxProfiles: integer("max_profiles").notNull().default(1),
-  email: varchar("email", { length: 200 }).notNull(),
-  passwordEncrypted: text("password_encrypted").notNull(),
+  // صيغة التسليم: CREDENTIALS (إيميل+باسورد) | INVITE_LINK (رابط دعوة) | LICENSE_KEY (كود)
+  deliveryKind: varchar("delivery_kind", { length: 20 }).notNull().default("CREDENTIALS"),
+  email: varchar("email", { length: 200 }),
+  passwordEncrypted: text("password_encrypted"),
+  inviteLink: text("invite_link"),
+  licenseKeyEncrypted: text("license_key_encrypted"),
+  maxUses: integer("max_uses"),
+  usedCount: integer("used_count").notNull().default(0),
   pin: varchar("pin", { length: 40 }),
   expiryDate: timestamp("expiry_date"), // nullable: حسابات الاشتراكات الدائمة بلا انتهاء
   // AVAILABLE | RENTED | NEEDS_PASSWORD_CHANGE
@@ -136,6 +142,13 @@ export const rentals = pgTable("rentals", {
   activatedNote: text("activated_note"),
   activatedAt: timestamp("activated_at"),
   activatedBy: integer("activated_by").references(() => users.id),
+  // مصدر الصرف: AUTO (تلقائي من المخزون) | MANUAL (تسليم يدوي فوري من الموظف)
+  deliverySource: varchar("delivery_source", { length: 20 }).notNull().default("AUTO"),
+  manualEmail: varchar("manual_email", { length: 200 }),
+  manualPasswordEncrypted: text("manual_password_encrypted"),
+  manualLink: text("manual_link"),
+  manualCodeEncrypted: text("manual_code_encrypted"),
+  manualNote: text("manual_note"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [index("rentals_customer_idx").on(t.customerId), index("rentals_status_idx").on(t.status), index("rentals_account_idx").on(t.accountId)]);

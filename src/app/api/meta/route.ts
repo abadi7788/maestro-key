@@ -29,6 +29,8 @@ export async function GET() {
     for (const acc of accs) {
       if (acc.status === "NEEDS_PASSWORD_CHANGE") continue;
       if (acc.expiryDate && new Date(acc.expiryDate) <= new Date()) continue;
+      // روابط/أكواد مستنفدة الاستخدامات لا تُحتسب متاحة
+      if (acc.maxUses != null && (acc.usedCount ?? 0) >= acc.maxUses) continue;
       let slots = 0;
       if (acc.type === "FULL") slots = acc.status === "AVAILABLE" ? 1 : 0;
       else {

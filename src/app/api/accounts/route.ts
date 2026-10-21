@@ -5,6 +5,7 @@ import { requireAdmin, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { encryptText } from "@/lib/crypto";
 import { refreshAccountStatus, runDailyJob } from "@/lib/engine";
+import { normalizeAccountDelivery, ACCOUNT_DELIVERY_LABELS } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
@@ -17,8 +18,12 @@ export async function GET(req: Request) {
     const trash = new URL(req.url).searchParams.get("trash") === "1";
     const rows = await db.select({
       id: accounts.id, platformId: accounts.platformId, type: accounts.type, maxProfiles: accounts.maxProfiles,
+      deliveryKind: accounts.deliveryKind,
       email: accounts.email, pin: accounts.pin, expiryDate: accounts.expiryDate, status: accounts.status,
-      notes: accounts.notes, isDeleted: accounts.isDeleted, deletedAt: accounts.deletedAt, deletedReason: accounts.deletedReason,
+      inviteLink: accounts.inviteLink, maxUses: accounts.maxUses, usedCount: accounts.usedCount,
+      hasLicenseKey: accounts.licenseKeyEncrypted,
+      notes: accounts.notes, salePrice: accounts.salePrice,
+      isDeleted: accounts.isDeleted, deletedAt: accounts.deletedAt, deletedReason: accounts.deletedReason,
       createdAt: accounts.createdAt, platformName: platforms.name, platformColor: platforms.color, platformShort: platforms.shortName, platformImage: platforms.imageUrl,
     }).from(accounts).innerJoin(platforms, eq(accounts.platformId, platforms.id))
       .where(eq(accounts.isDeleted, trash)).orderBy(desc(accounts.createdAt));
@@ -35,6 +40,7 @@ export async function GET(req: Request) {
     return Response.json({
       accounts: rows.map((r) => ({
         ...r,
+        hasLicenseKey: !!r.hasLicenseKey,
         profiles: profs.filter((p) => p.accountId === r.id).map((p) => ({
           ...p, rental: relRentals.find((x) => x.profileId === p.id) || null,
         })),
@@ -50,15 +56,47 @@ export async function POST(req: Request) {
     await ensureSeeded();
     const user = await requireAdmin();
     const b = await req.json().catch(() => ({}));
-    const platformId = Number(b.platformId); const type = b.type === "PROFILE" ? "PROFILE" : "FULL";
-    const maxProfiles = type === "PROFILE" ? Math.min(10, Math.max(2, Number(b.maxProfiles || 5))) : 1;
-    const email = String(b.email || "").trim(); const password = String(b.password || "");
-    const expiryDate = new Date(String(b.expiryDate || ""));
-    if (!platformId || !email || !password || isNaN(expiryDate.getTime())) return jsonError("المنصة والإيميل وكلمة المرور وتاريخ انتهاء الحساب إلزامية");
+    const platformId = Number(b.platformId);
+    if (!platformId) return jsonError("اختر المنصة أولاً");
+    // صيغة التسليم تحدد الحقول المطلوبة — وكل حقل تفصيلي اختياري بحد ذاته
+    const deliveryKind = normalizeAccountDelivery(b.deliveryKind);
+    const email = String(b.email || "").trim() || null;
+    const password = String(b.password || "");
+    const inviteLink = String(b.inviteLink || "").trim() || null;
+    const licenseKey = String(b.licenseKey || "").trim();
+    const maxUsesRaw = b.maxUses === "" || b.maxUses === null || b.maxUses === undefined ? null : Number(b.maxUses);
+    const maxUses = maxUsesRaw === null ? null : (Number.isFinite(maxUsesRaw) && maxUsesRaw > 0 ? Math.floor(maxUsesRaw) : null);
+    const pin = String(b.pin || "").trim() || null;
+    const notes = String(b.notes || "").trim() || null;
+    const salePrice = b.salePrice ? Number(b.salePrice) : null;
+    const expiryRaw = String(b.expiryDate || "").trim();
+    const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+    if (expiryRaw && (!expiryDate || isNaN(expiryDate.getTime()))) return jsonError("تاريخ الانتهاء غير صالح — اتركه فارغاً للاشتراك الدائم");
+
+    if (deliveryKind === "INVITE_LINK") {
+      if (!inviteLink) return jsonError("أدخل رابط الدعوة / التفعيل");
+    } else if (deliveryKind === "LICENSE_KEY") {
+      if (!licenseKey) return jsonError("أدخل الكود / المفتاح الرقمي");
+    } else {
+      if (!email && !password && !inviteLink && !licenseKey) return jsonError("أدخل أي بيانات تسليم (إيميل أو كلمة مرور أو رابط أو كود)");
+    }
+
+    const type = deliveryKind === "CREDENTIALS" && b.type === "PROFILE" ? "PROFILE" : "FULL";
+    const maxProfiles = type === "PROFILE"
+      ? (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(10, Math.max(1, Number(b.maxProfiles))))
+      : 1;
     const [acc] = await db.insert(accounts).values({
-      platformId, type, maxProfiles, email, passwordEncrypted: encryptText(password),
-      pin: String(b.pin || "") || null, expiryDate, notes: String(b.notes || "") || null,
-      salePrice: b.salePrice ? Number(b.salePrice) : null, status: "AVAILABLE",
+      platformId, type, maxProfiles,
+      deliveryKind,
+      email, passwordEncrypted: password ? encryptText(password) : null,
+      inviteLink: deliveryKind === "INVITE_LINK" ? inviteLink : (inviteLink || null),
+      licenseKeyEncrypted: licenseKey ? encryptText(licenseKey) : null,
+      maxUses: deliveryKind === "INVITE_LINK" ? maxUses : null,
+      usedCount: 0,
+      pin: deliveryKind === "CREDENTIALS" ? pin : null,
+      expiryDate, notes,
+      salePrice: salePrice && Number.isFinite(salePrice) ? salePrice : null,
+      status: "AVAILABLE",
     }).returning();
     if (type === "PROFILE") {
       await db.insert(profiles).values(Array.from({ length: maxProfiles }, (_, i) => ({
@@ -72,7 +110,7 @@ export async function POST(req: Request) {
       kind: "ADDITION",
       href: "/accounts",
     });
-    await audit(user, "ACCOUNT_CREATED", "accounts", acc.id, `إضافة حساب ${email} (${type})`);
+    await audit(user, "ACCOUNT_CREATED", "accounts", acc.id, `إضافة ${ACCOUNT_DELIVERY_LABELS[deliveryKind]} ${email || inviteLink ? `(${email || "رابط"})` : ""} (${type})`);
     return Response.json({ ok: true, id: acc.id });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }
@@ -86,8 +124,18 @@ export async function PUT(req: Request) {
     const [acc] = await db.select().from(accounts).where(eq(accounts.id, id)).limit(1);
     if (!acc) return jsonError("حساب غير موجود", 404);
     const patch: Partial<typeof accounts.$inferInsert> = { updatedAt: new Date() };
-    if (b.email) patch.email = String(b.email).trim();
+    if (b.email !== undefined) patch.email = String(b.email || "").trim() || null;
     if (b.password) patch.passwordEncrypted = encryptText(String(b.password));
+    if (b.clearPassword === true) patch.passwordEncrypted = null;
+    if (b.inviteLink !== undefined) patch.inviteLink = String(b.inviteLink || "").trim() || null;
+    if (b.licenseKey) patch.licenseKeyEncrypted = encryptText(String(b.licenseKey));
+    if (b.clearLicenseKey === true) patch.licenseKeyEncrypted = null;
+    if (b.maxUses !== undefined) {
+      const v = b.maxUses === "" || b.maxUses === null ? null : Number(b.maxUses);
+      patch.maxUses = v === null ? null : (Number.isFinite(v) && v > 0 ? Math.floor(v) : null);
+    }
+    if (b.usedCount !== undefined) patch.usedCount = Math.max(0, Number(b.usedCount) || 0);
+    if (b.deliveryKind) patch.deliveryKind = normalizeAccountDelivery(b.deliveryKind);
     if (b.pin !== undefined) patch.pin = String(b.pin || "") || null;
     if (b.expiryDate !== undefined) patch.expiryDate = b.expiryDate ? new Date(String(b.expiryDate)) : null;
     if (b.notes !== undefined) patch.notes = String(b.notes || "") || null;
@@ -95,7 +143,7 @@ export async function PUT(req: Request) {
     if (b.platformId) patch.platformId = Number(b.platformId);
     await db.update(accounts).set(patch).where(eq(accounts.id, id));
     await refreshAccountStatus(id);
-    await audit(user, "ACCOUNT_UPDATED", "accounts", id, `تعديل حساب ${acc.email}${b.password ? " (مع كلمة المرور)" : ""}`);
+    await audit(user, "ACCOUNT_UPDATED", "accounts", id, `تعديل حساب ${acc.email || `#${id}`}${b.password ? " (مع كلمة المرور)" : ""}`);
     return Response.json({ ok: true });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }

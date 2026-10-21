@@ -19,12 +19,12 @@ export async function POST(req: Request) {
     const action = String(b.action || "");
     const now = new Date();
 
-    // ---------- Reveal password (audited) ----------
+    // ---------- Reveal password / license (audited) ----------
     if (action === "revealPassword") {
       const [acc] = await db.select().from(accounts).where(eq(accounts.id, Number(b.accountId))).limit(1);
       if (!acc) return jsonError("حساب غير موجود", 404);
-      await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `المدير عرض كلمة مرور ${acc.email} من شاشة المخزون`);
-      return Response.json({ password: decryptText(acc.passwordEncrypted) });
+      await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `المدير عرض بيانات ${acc.email || `#${acc.id}`} من شاشة المخزون`);
+      return Response.json({ password: decryptText(acc.passwordEncrypted), licenseKey: decryptText(acc.licenseKeyEncrypted) });
     }
 
     // ---------- Receipt image (admin only, served on demand) ----------
@@ -42,8 +42,13 @@ export async function POST(req: Request) {
       await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null }).where(eq(payments.id, pay.id));
 
       // المدة تبدأ من لحظة تأكيد المدير (لا من لحظة سحب السند من الموظف)
+      // الاشتراك الدائم: تُحفظ تواريخه كما هي دون إعادة حساب
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, pay.rentalId)).limit(1);
-      if (rental) {
+      if (rental && rental.isLifetime) {
+        await db.update(rentals).set({
+          status: "ACTIVE", whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
+        }).where(eq(rentals.id, rental.id));
+      } else if (rental) {
         const days = Math.max(1, Number(pay.durationDays || rental.durationDays || 30));
         const start = now;
         const end = new Date(now.getTime() + days * 86400000);
@@ -82,10 +87,18 @@ export async function POST(req: Request) {
           if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, rental.profileId));
         }
         if (rental.accountId) {
+          // روابط الدعوة والأكواد: إرجاع مرة الاستخدام المستهلكة
+          const [rejAcc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+          if (rejAcc && (rejAcc.deliveryKind === "INVITE_LINK" || rejAcc.deliveryKind === "LICENSE_KEY")) {
+            const { sql } = await import("drizzle-orm");
+            await db.update(accounts)
+              .set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, status: "AVAILABLE", updatedAt: now })
+              .where(eq(accounts.id, rental.accountId));
+          }
           await refreshAccountStatus(rental.accountId);
           if (!pay.isExtension) {
             const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
-            if (acc?.type === "FULL") {
+            if (acc?.type === "FULL" && acc.deliveryKind !== "INVITE_LINK" && acc.deliveryKind !== "LICENSE_KEY") {
               const active = await db.select({ id: rentals.id }).from(rentals).where(and(eq(rentals.accountId, acc.id), eq(rentals.status, "ACTIVE")));
               if (!active.length) await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, acc.id));
             }

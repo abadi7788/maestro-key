@@ -32,6 +32,27 @@ export const DELIVERY_SHORT: Record<DeliveryMode, string> = {
   LINK_ONLY: "برابط فقط",
 };
 
+/**
+ * صيغة عنصر المخزون (AccountDeliveryKind) — تحدد ماذا يُسلَّم للعميل:
+ * CREDENTIALS: بيانات حساب (إيميل + باسورد، والباقي اختياري)
+ * INVITE_LINK: رابط دعوة/تفعيل (+ عدد مرات استخدام اختياري)
+ * LICENSE_KEY: كود / مفتاح رقمي فقط
+ */
+export type AccountDeliveryKind = "CREDENTIALS" | "INVITE_LINK" | "LICENSE_KEY";
+
+export function normalizeAccountDelivery(v: unknown): AccountDeliveryKind {
+  const s = String(v || "").trim().toUpperCase();
+  if (s === "INVITE_LINK" || s === "LINK" || s === "INVITE") return "INVITE_LINK";
+  if (s === "LICENSE_KEY" || s === "LICENSE" || s === "KEY" || s === "CODE") return "LICENSE_KEY";
+  return "CREDENTIALS";
+}
+
+export const ACCOUNT_DELIVERY_LABELS: Record<AccountDeliveryKind, string> = {
+  CREDENTIALS: "بيانات حساب (إيميل + باسورد)",
+  INVITE_LINK: "رابط دعوة / تفعيل",
+  LICENSE_KEY: "كود / مفتاح رقمي",
+};
+
 /** تاريخ بعيد للاشتراكات الدائمة (تُعرض «دائم ♾️» في الواجهات) */
 export function lifetimeEndDate(): Date {
   return new Date("2099-12-31T00:00:00Z");

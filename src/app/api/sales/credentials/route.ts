@@ -32,6 +32,36 @@ export async function GET(req: Request) {
     const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
     const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
 
+    // ---------- التسليم اليدوي الفوري: البيانات من الموظف نفسه — تُعرض فوراً ----------
+    if (rental.deliverySource === "MANUAL") {
+      const mPass = decryptText(rental.manualPasswordEncrypted);
+      const mCode = decryptText(rental.manualCodeEncrypted);
+      const lines = [
+        rental.manualEmail && `📧 الإيميل: ${rental.manualEmail}`,
+        mPass && `🔑 كلمة المرور: ${mPass}`,
+        rental.manualLink && `🔗 الرابط: ${rental.manualLink}`,
+        mCode && `🎟️ الكود: ${mCode}`,
+        rental.manualNote && `📝 ${rental.manualNote}`,
+      ].filter(Boolean).join("\n");
+      const tpl = await getSetting("whatsapp_activation_template", "");
+      const message = renderTemplate(tpl, {
+        name: cust?.name || "", platform: plat?.name || "",
+        email: rental.manualEmail || "", password: mPass || "",
+        link: rental.manualLink || "", note: rental.manualNote || "",
+        credentials: lines || "تم تسليم اشتراكك بنجاح ✓",
+        end_date: rental.isLifetime ? "دائم ♾️" : formatDate(new Date(rental.endDate)),
+      });
+      await audit(user, "MANUAL_REVEALED", "rentals", rental.id, `عرض بيانات تسليم يدوي — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
+      return Response.json({
+        ok: true, manual: true, deliverySource: "MANUAL", isLifetime: !!rental.isLifetime,
+        email: rental.manualEmail || "", password: mPass || "",
+        profileLabel: "", pin: "", link: rental.manualLink || "", licenseKey: mCode || "",
+        note: rental.manualNote || "", accountType: "MANUAL",
+        customerName: cust?.name || "", customerPhone: cust?.phone || "",
+        platformName: plat?.name || "", whatsappMessage: message,
+      });
+    }
+
     // ---------- طلبات "عند الطلب": بيانات التفعيل التي أدخلها المدير ----------
     // (التفعيل بحد ذاته هو تأكيد المدير، فلا نطلب تأكيد السند)
     if (rental.accountId === null || rental.accountId === undefined) {
@@ -113,21 +143,60 @@ export async function GET(req: Request) {
     const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
     if (!acc) return jsonError("الحساب غير موجود", 404);
     const prof = rental.profileId ? (await db.select().from(profiles).where(eq(profiles.id, rental.profileId)).limit(1))[0] ?? null : null;
+    const accKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
+
+    if (accKind === "INVITE_LINK") {
+      const tpl = await getSetting("whatsapp_activation_template", "");
+      const message = renderTemplate(tpl, {
+        name: cust?.name || "", platform: plat?.name || "",
+        email: "", password: "", link: acc.inviteLink || "", note: "",
+        credentials: `🔗 رابط الدعوة: ${acc.inviteLink || ""}`,
+        end_date: rental.isLifetime ? "دائم ♾️" : formatDate(new Date(rental.endDate)),
+      });
+      await audit(user, "LINK_REVEALED", "accounts", acc.id, `عرض رابط دعوة بعد تأكيد السند — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
+      return Response.json({
+        ok: true, deliveryMode: normalizeDeliveryMode(plat?.deliveryMode), isLifetime: !!rental.isLifetime,
+        email: "", password: "", profileLabel: "🔗 رابط دعوة", pin: "", link: acc.inviteLink || "", licenseKey: "", note: "",
+        accountType: acc.type, accountDeliveryKind: accKind,
+        customerName: cust?.name || "", customerPhone: cust?.phone || "",
+        platformName: plat?.name || "", whatsappMessage: message,
+      });
+    }
+    if (accKind === "LICENSE_KEY") {
+      const code = decryptText(acc.licenseKeyEncrypted);
+      const tpl = await getSetting("whatsapp_activation_template", "");
+      const message = renderTemplate(tpl, {
+        name: cust?.name || "", platform: plat?.name || "",
+        email: "", password: "", link: "", note: "",
+        credentials: `🎟️ الكود: ${code}`,
+        end_date: rental.isLifetime ? "دائم ♾️" : formatDate(new Date(rental.endDate)),
+      });
+      await audit(user, "LICENSE_REVEALED", "accounts", acc.id, `عرض كود ترخيص بعد تأكيد السند — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
+      return Response.json({
+        ok: true, deliveryMode: normalizeDeliveryMode(plat?.deliveryMode), isLifetime: !!rental.isLifetime,
+        email: "", password: "", profileLabel: "🎟️ كود ترخيص", pin: "", link: "", licenseKey: code, note: "",
+        accountType: acc.type, accountDeliveryKind: accKind,
+        customerName: cust?.name || "", customerPhone: cust?.phone || "",
+        platformName: plat?.name || "", whatsappMessage: message,
+      });
+    }
 
     const password = decryptText(acc.passwordEncrypted);
     const profileLabel = prof ? `بروفايل ${prof.profileNo}${prof.pin ? ` — PIN: ${prof.pin}` : ""}` : (acc.pin ? `PIN: ${acc.pin}` : "حساب كامل");
     const tpl = await getSetting("whatsapp_sale_template", "");
     const message = renderTemplate(tpl, {
-      name: cust?.name || "", platform: plat?.name || "", email: acc.email, password,
-      profile: profileLabel, end_date: formatDate(new Date(rental.endDate)),
+      name: cust?.name || "", platform: plat?.name || "", email: acc.email || "", password,
+      profile: profileLabel, end_date: rental.isLifetime ? "دائم ♾️" : formatDate(new Date(rental.endDate)),
     });
 
     await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `عرض بيانات الحساب بعد تأكيد السند — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
 
     return Response.json({
       ok: true, deliveryMode: normalizeDeliveryMode(plat?.deliveryMode), isLifetime: !!rental.isLifetime,
-      email: acc.email, password, profileLabel, pin: prof?.pin || acc.pin || "",
-      accountType: acc.type, customerName: cust?.name || "", customerPhone: cust?.phone || "",
+      email: acc.email || "", password, profileLabel, pin: prof?.pin || acc.pin || "",
+      link: "", licenseKey: "", note: "",
+      accountType: acc.type, accountDeliveryKind: accKind,
+      customerName: cust?.name || "", customerPhone: cust?.phone || "",
       platformName: plat?.name || "", whatsappMessage: message,
     });
   } catch (e) {

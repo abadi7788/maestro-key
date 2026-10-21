@@ -11,6 +11,12 @@ export async function getSetting(key: string, fallback = "") {
 export async function refreshAccountStatus(accountId: number) {
   const [acc] = await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1);
   if (!acc || acc.isDeleted) return;
+  // روابط الدعوة والأكواد: الحالة حسب مرات الاستخدام فقط (لا علاقة لها بالاشتراكات النشطة)
+  if (acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY") {
+    const exhausted = acc.maxUses != null && (acc.usedCount ?? 0) >= acc.maxUses;
+    await db.update(accounts).set({ status: exhausted ? "RENTED" : "AVAILABLE", updatedAt: new Date() }).where(eq(accounts.id, accountId));
+    return;
+  }
   const activeRentals = await db.select({ id: rentals.id }).from(rentals)
     .where(and(eq(rentals.accountId, accountId), eq(rentals.status, "ACTIVE")));
   const endedRentals = await db.select({ id: rentals.id }).from(rentals)

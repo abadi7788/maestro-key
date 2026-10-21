@@ -28,6 +28,7 @@ export async function GET(req: Request) {
       platformId: rentals.platformId, createdBy: rentals.createdBy, rentalType: rentals.rentalType,
       startDate: rentals.startDate, endDate: rentals.endDate, durationDays: rentals.durationDays,
       isLifetime: rentals.isLifetime,
+      deliverySource: rentals.deliverySource,
       status: rentals.status, whatsappAlertSent: rentals.whatsappAlertSent, whatsappAlertSentAt: rentals.whatsappAlertSentAt,
       customerEmail: rentals.customerEmail, customerExtra: rentals.customerExtra,
       activationStatus: rentals.activationStatus, activatedAt: rentals.activatedAt,
@@ -35,6 +36,7 @@ export async function GET(req: Request) {
       customerName: customers.name, customerPhone: customers.phone,
       platformName: platforms.name, platformColor: platforms.color, platformImage: platforms.imageUrl,
       sellerName: users.displayName, accountEmail: accounts.email, accountType: accounts.type,
+      accountDeliveryKind: accounts.deliveryKind,
     }).from(rentals)
       .innerJoin(customers, eq(rentals.customerId, customers.id))
       .innerJoin(platforms, eq(rentals.platformId, platforms.id))
