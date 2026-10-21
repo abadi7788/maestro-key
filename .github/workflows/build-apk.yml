@@ -1,5 +1,4 @@
-name: Build Android App
-
+# maestro-key-build
 on:
   push:
     branches: [ "main" ]
@@ -18,30 +17,21 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install dependencies
+      - name: Build Android APK
         run: |
+          mkdir -p public
           npm install --legacy-peer-deps
           npm install @capacitor/core @capacitor/cli @capacitor/android
-
-      - name: Cap Add and Sync
-        run: |
           npx cap add android
           npx cap sync
-
-      - name: Build Android Debug APK
-        run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: maestro-key-app
           path: android/app/build/outputs/apk/debug/app-debug.apk
