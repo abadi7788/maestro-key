@@ -24,10 +24,17 @@ jobs:
       - name: Build Android APK
         run: |
           mkdir -p public
+          mkdir -p assets
+          if [ -f icon.png ]; then
+            cp icon.png assets/icon.png
+          fi
           npm install --legacy-peer-deps
-          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets
           npx cap add android
           npx cap sync
+          if [ -f assets/icon.png ]; then
+            npx @capacitor/assets generate --android
+          fi
           cd android
           echo "android.useAndroidX=true" >> gradle.properties
           echo "android.enableJetifier=true" >> gradle.properties
