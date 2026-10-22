@@ -2,19 +2,6 @@
   "appId": "com.maestrokey.app",
   "appName": "Maestro Key",
   "webDir": "public",
-  "server": {
-    "url": "https://maestro-key.vercel.app",
-    "cleartext": true,
-    "allowNavigation": [
-      "maestro-key.vercel.app",
-      "*.vercel.app"
-    ]
-  },
-  "android": {
-    "allowMixedContent": true,
-    "captureInput": true,
-    "webContentsDebuggingEnabled": false
-  },
   "plugins": {
     "SplashScreen": {
       "launchShowDuration": 0,
