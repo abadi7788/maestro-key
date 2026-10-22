@@ -28,7 +28,6 @@ jobs:
             cp icon.png assets/icon.png
           fi
 
-          # إنشاء صفحة أوفلاين احترافية وبسيطة بنفس الثيم الأسود
           cat << 'EOF' > public/index.html
           <!DOCTYPE html>
           <html lang="ar" dir="rtl">
@@ -37,51 +36,16 @@ jobs:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>Maestro Key</title>
             <style>
-              body {
-                margin: 0;
-                background-color: #0b0c10;
-                color: #ffffff;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100vh;
-                font-family: system-ui, -apple-system, sans-serif;
-                text-align: center;
-              }
-              .logo { width: 90px; height: 90px; margin-bottom: 20px; border-radius: 50%; }
-              h2 { margin: 10px 0 5px; font-size: 20px; }
-              p { color: #888; font-size: 14px; margin-bottom: 25px; }
-              .btn {
-                background: linear-gradient(90deg, #0070f3, #00dfd8);
-                color: #fff;
-                border: none;
-                padding: 12px 28px;
-                border-radius: 25px;
-                font-size: 15px;
-                font-weight: bold;
-                cursor: pointer;
-              }
+              body { margin: 0; background-color: #000000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; text-align: center; }
+              .btn { background: #0070f3; color: #fff; border: none; padding: 12px 24px; border-radius: 20px; font-weight: bold; cursor: pointer; margin-top: 15px; }
             </style>
           </head>
           <body>
-            <img src="icon.png" class="logo" alt="Logo" onerror="this.style.display='none'">
             <h2>لا يوجد اتصال بالإنترنت</h2>
-            <p>يرجى التحقق من اتصال الشبكة والمحاولة مرة أخرى</p>
             <button class="btn" onclick="window.location.href='https://maestro-key.vercel.app'">إعادة المحاولة</button>
-            <script>
-              // محاولة إعادة التوجيه التلقائي للموقع عند توفر النت
-              window.addEventListener('online', () => {
-                window.location.href = 'https://maestro-key.vercel.app';
-              });
-            </script>
           </body>
           </html>
           EOF
-
-          if [ -f icon.png ]; then
-            cp icon.png public/icon.png
-          fi
 
           npm install --legacy-peer-deps
           npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets
@@ -91,10 +55,39 @@ jobs:
             npx @capacitor/assets generate --android
           fi
 
-          # ضبط إعدادات أندرويد لعدم قتل الصفحة والاحتفاظ بها في الخلفية
+          # تفعيل صلاحيات الإنترنت ومنع إعادة إنشاء النشاط عند العودة
           sed -i 's/android:launchMode="singleTop"/android:launchMode="singleTask"/' android/app/src/main/AndroidManifest.xml
           sed -i '/<application/a \        android:usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml
-          sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />' android/app/src/main/AndroidManifest.xml
+          sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
+
+          # برمجة زر الرجوع في أندرويد للرجوع داخل الموقع أو تصغير التطبيق بدلاً من الانهيار
+          MAIN_ACTIVITY=$(find android/app/src/main/java -name "MainActivity.java")
+          cat << 'EOF' > "$MAIN_ACTIVITY"
+          package com.maestrokey.app;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  if (this.bridge != null && this.bridge.getWebView() != null) {
+                      this.bridge.getWebView().getSettings().setDomStorageEnabled(true);
+                      this.bridge.getWebView().getSettings().setDatabaseEnabled(true);
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (this.bridge != null && this.bridge.getWebView() != null && this.bridge.getWebView().canGoBack()) {
+                      this.bridge.getWebView().goBack();
+                  } else {
+                      moveTaskToBack(true);
+                  }
+              }
+          }
+          EOF
 
           cd android
           echo "android.useAndroidX=true" >> gradle.properties
@@ -112,3 +105,4 @@ jobs:
         with:
           name: maestro-key-app
           path: android/app/build/outputs/apk/debug/*.apk
+
