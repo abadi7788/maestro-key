@@ -1,5 +1,4 @@
-name: maestro-key-build
-
+# maestro-key-build
 on:
   push:
     branches: [ "main" ]
@@ -35,6 +34,11 @@ jobs:
           if [ -f assets/icon.png ]; then
             npx @capacitor/assets generate --android
           fi
+
+          # تفعيل صلاحيات الإنترنت والشبكة والإشعارات
+          sed -i '/<application/a \        android:usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml
+          sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />' android/app/src/main/AndroidManifest.xml
+
           cd android
           echo "android.useAndroidX=true" >> gradle.properties
           echo "android.enableJetifier=true" >> gradle.properties
