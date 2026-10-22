@@ -5,5 +5,12 @@
   "server": {
     "url": "https://maestro-key.vercel.app",
     "cleartext": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0,
+      "launchAutoHide": true,
+      "backgroundColor": "#000000"
+    }
   }
 }
