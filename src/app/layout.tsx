@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+Import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Script from "next/script";
 import { Cairo } from "next/font/google";
@@ -32,6 +32,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             OneSignalDeferred.push(async function(OneSignal) {
               await OneSignal.init({
                 appId: "ac6dd3a1-1dcc-4580-8207-97aa0170ef09",
+                serviceWorkerParam: { scope: "/" },
+                serviceWorkerPath: "OneSignalSDKWorker.js",
+                allowLocalhostAsSecureOrigin: true,
                 notifyButton: {
                   enable: true,
                 },
@@ -43,4 +46,3 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     </html>
   );
 }
-
