@@ -1,4 +1,3 @@
-
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Script from "next/script";
@@ -32,8 +31,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             window.OneSignalDeferred = window.OneSignalDeferred || [];
             OneSignalDeferred.push(async function(OneSignal) {
               await OneSignal.init({
-                appId: "60f46825-c06a-4361-8ce6-9e5a531a4ba4",
-                safari_web_id: "web.onesignal.auto.60f46825-c06a-4361-8ce6-9e5a531a4ba4",
+                appId: "ac6dd3a1-1dcc-4580-8207-97aa0170ef09",
                 notifyButton: {
                   enable: true,
                 },
@@ -45,3 +43,4 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     </html>
   );
 }
+
