@@ -33,7 +33,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               await OneSignal.init({
                 appId: "ac6dd3a1-1dcc-4580-8207-97aa0170ef09",
                 serviceWorkerParam: { scope: "/" },
-                serviceWorkerPath: "OneSignalSDKWorker.js",
+                serviceWorkerPath: "/OneSignalSDKWorker.js",
                 allowLocalhostAsSecureOrigin: true,
                 notifyButton: {
                   enable: true,
