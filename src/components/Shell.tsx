@@ -7,6 +7,7 @@ import {
   Settings, ScrollText, LogOut, History, Menu, X, ShieldCheck, RefreshCcw,
 } from "lucide-react";
 import { api, fetchMe, type Me } from "@/lib/client";
+import { isAdminRole } from "@/lib/roles";
 import BrandLogo from "@/components/BrandLogo";
 import AlertWatcher from "@/components/AlertWatcher";
 
@@ -35,7 +36,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     fetchMe().then(async (u) => {
       if (!u) { router.replace("/login"); return; }
       setMe(u); setLoading(false);
-      if (u.role === "ADMIN") {
+      if (isAdminRole(u.role)) {
         try {
           const [rent, dash] = await Promise.all([api("/api/rentals?view=all"), api("/api/admin-data?view=dashboard")]);
           const ended = rent.rentals.filter((r: any) => r.status === "ENDED").length;
@@ -49,7 +50,7 @@ export default function Shell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!me) return;
     const tick = async () => {
-      if (me.role === "ADMIN") {
+      if (isAdminRole(me.role)) {
         try {
           const [rent, dash] = await Promise.all([api("/api/rentals?view=all"), api("/api/admin-data?view=dashboard")]);
           const ended = rent.rentals.filter((r: any) => r.status === "ENDED").length;
@@ -72,9 +73,9 @@ export default function Shell({ children }: { children: ReactNode }) {
   );
   if (!me) return null;
 
-  const items = NAV.filter((n) => !n.adminOnly || me.role === "ADMIN");
-  const visibleItems = me.role === "ADMIN" ? items.filter((n) => n.href !== "/my-sales") : items.filter((n) => n.href !== "/rentals");
-  const mobileItems = me.role === "ADMIN"
+  const items = NAV.filter((n) => !n.adminOnly || isAdminRole(me.role));
+  const visibleItems = isAdminRole(me.role) ? items.filter((n) => n.href !== "/my-sales") : items.filter((n) => n.href !== "/rentals");
+  const mobileItems = isAdminRole(me.role)
     ? visibleItems.filter((n) => ["/sale", "/dashboard", "/inbox", "/accounts"].includes(n.href))
     : visibleItems.filter((n) => ["/sale", "/renewals", "/my-sales", "/dashboard"].includes(n.href));
 
@@ -100,7 +101,7 @@ export default function Shell({ children }: { children: ReactNode }) {
 
         <div className="mb-5 mt-4 rounded-2xl bg-white/5 p-3.5">
           <div className="flex items-center gap-2 text-white"><ShieldCheck size={16} className="text-[#5ba2ff]" /><span className="text-sm font-extrabold">{me.displayName}</span></div>
-          <div className="mt-1 text-xs text-slate-400">@{me.username} — {me.role === "ADMIN" ? "مدير النظام (كل الصلاحيات)" : "موظف مبيعات"}</div>
+          <div className="mt-1 text-xs text-slate-400">@{me.username} — {isAdminRole(me.role) ? "مدير النظام (كل الصلاحيات)" : "موظف مبيعات"}</div>
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto">
@@ -125,9 +126,9 @@ export default function Shell({ children }: { children: ReactNode }) {
           <BrandLogo size={40} glow={false} />
           <div className="flex-1 min-w-0">
             <div className="font-black leading-none text-white">مايسترو كي</div>
-            <div className="truncate text-[11px] text-slate-400">{me.displayName} — {me.role === "ADMIN" ? "المدير" : "موظف"}</div>
+            <div className="truncate text-[11px] text-slate-400">{me.displayName} — {isAdminRole(me.role) ? "المدير" : "موظف"}</div>
           </div>
-          {me.role === "ADMIN" && inboxCount > 0 && <Link href="/inbox" className="relative rounded-lg bg-white/10 p-2 text-white"><BellRing size={20} /><span className="absolute -left-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-black">{inboxCount}</span></Link>}
+          {isAdminRole(me.role) && inboxCount > 0 && <Link href="/inbox" className="relative rounded-lg bg-white/10 p-2 text-white"><BellRing size={20} /><span className="absolute -left-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-black">{inboxCount}</span></Link>}
         </header>
 
         {/* Mobile drawer */}

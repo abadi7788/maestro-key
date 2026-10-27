@@ -2,8 +2,9 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { Check, KeyRound, Loader2, Lock, MessageCircle, ReceiptText, Search, X } from "lucide-react";
+import { Check, ExternalLink, KeyRound, Loader2, Lock, MessageCircle, ReceiptText, Search, X } from "lucide-react";
 import { api, fetchMe, fmtDate, fmtDateTime, money, waLink, daysLeft, type Me } from "@/lib/client";
+import { isAdminRole } from "@/lib/roles";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, ReceiptButton, Spinner, paymentBadge, rentalBadge } from "@/components/ui";
 
 export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
@@ -38,7 +39,7 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
   }
 
   const filtered = (rows || []).filter((r) => !q || `${r.customerName}${r.customerPhone}${r.platformName}${r.sellerName}`.includes(q));
-  const isAdmin = me?.role === "ADMIN";
+  const isAdmin = isAdminRole(me?.role);
 
   return (
     <div>
@@ -107,14 +108,14 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
               <div className="mt-3 flex flex-wrap gap-2">
                 {(r.payments.some((p: any) => p.status === "CONFIRMED") || r.activationStatus === "ACTIVATED") && (
                   <button onClick={() => openCreds(r)} className="inline-flex items-center gap-1.5 rounded-xl bg-[#0e1526] px-3.5 py-2 text-xs font-extrabold text-white transition hover:bg-[#182238] active:scale-[.98]">
-                    <KeyRound size={15} className="text-[#174ea6]" /> {r.accountType ? "عرض بيانات الحساب (مؤكد ✓)" : "عرض بيانات التفعيل ✓"}
+                    <KeyRound size={15} className="text-[#174ea6]" /> {r.deliveryMode === "LINK_ONLY" ? "عرض رابط التفعيل ✓" : r.accountType ? "عرض بيانات الحساب (مؤكد ✓)" : "عرض حالة التفعيل ✓"}
                   </button>
                 )}
                 {r.payments.some((p: any) => p.status === "PENDING") && r.activationStatus !== "ACTIVATED" && (
                   <span className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700"><Lock size={13} /> {r.accountType ? "البيانات مقفلة — بانتظار تأكيد المدير" : "بانتظار تفعيل المدير"}</span>
                 )}
                 <a className="btn-ghost py-2 text-xs" target="_blank" rel="noreferrer" href={waLink(r.customerPhone, `مرحباً ${r.customerName}، معك متجر مايسترو كي بخصوص اشتراك ${r.platformName}.`)}><MessageCircle size={15} className="text-[#1fa855]" /> مراسلة العميل</a>
-                {(r.status === "ACTIVE" || r.status === "ENDED") && (
+                {!r.isLifetime && (r.status === "ACTIVE" || r.status === "ENDED") && (
                   <Link href={`/sale?phone=${encodeURIComponent(r.customerPhone)}&platformId=${r.platformId}`} className="btn-ghost py-2 text-xs">↻ تسجيل تجديد لهذا العميل</Link>
                 )}
                 {isAdmin && r.status === "ENDED" && <Link href="/inbox" className="btn-ghost border-red-200 py-2 text-xs text-red-300">⚠️ يحتاج إجراء في التنبيهات</Link>}
@@ -134,29 +135,57 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
         </div>
       </Modal>
 
-      {/* Credentials reveal (only after admin confirmed the receipt) */}
-      <Modal open={!!credRental} onClose={() => { setCredRental(null); setCredData(null); }} title="🔑 بيانات الحساب المسحوب">
+      {/* Credentials reveal — يختلف العرض حسب نمط التسليم */}
+      <Modal open={!!credRental} onClose={() => { setCredRental(null); setCredData(null); }} title={credData?.deliveryMode === "LINK_ONLY" ? "🔗 رابط التفعيل" : credData?.deliveryMode === "ON_DEMAND_EMAIL" ? "⚡ حالة التفعيل" : "🔑 بيانات الحساب المسحوب"}>
         {credBusy ? <Spinner /> : credErr ? (
           <p className="py-6 text-center font-bold text-amber-700">{credErr}</p>
         ) : credData ? (
           <div className="space-y-3">
-            <p className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">✓ يمكنك الآن إرسال البيانات للعميل.</p>
-            {[
-              { l: "📧 الإيميل", v: credData.email },
-              { l: "🔑 كلمة المرور", v: credData.password },
-              { l: "👤 البروفايل / PIN", v: credData.profileLabel },
-              { l: "🔗 رابط التفعيل", v: credData.link },
-              { l: "📝 ملاحظة", v: credData.note },
-              { l: "🎫 الكود / المفتاح", v: credData.licenseKey },
-              { l: "🔁 عدد مرات الاستخدام", v: credData.maxUses ? String(credData.maxUses) : "" },
-            ].filter((row) => row.v).map((row) => (
-              <div key={row.l} className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
-                <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">{row.l}</div><div dir="ltr" className="truncate text-left font-mono text-[15px] font-bold text-white">{row.v}</div></div>
-                <CopyBtn text={row.v} />
-              </div>
-            ))}
+            {credData.deliveryMode === "LINK_ONLY" ? (
+              <>
+                <div className="rounded-2xl border border-[#2f7bff]/30 bg-gradient-to-br from-[#2f7bff]/15 to-transparent p-5 text-center">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#2f7bff]/20">
+                    <ExternalLink size={26} className="text-[#63a8ff]" />
+                  </div>
+                  <p className="mt-3 text-sm font-black text-white">رابط اشتراك {credData.platformName}</p>
+                  <p className="mt-1 break-all text-[12px] font-mono text-slate-400" dir="ltr">{credData.link}</p>
+                  {credData.note && <p className="mt-2 text-[12px] font-bold text-slate-300">📝 {credData.note}</p>}
+                </div>
+                <a href={credData.link} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#0e1526] px-5 py-3 font-extrabold text-white transition hover:bg-[#182238]">
+                  <ExternalLink size={18} /> فتح رابط التفعيل
+                </a>
+                <CopyBtn text={credData.link} label="نسخ الرابط" />
+              </>
+            ) : credData.deliveryMode === "ON_DEMAND_EMAIL" ? (
+              <>
+                <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/15 to-transparent p-5 text-center">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20">
+                    <Check size={26} className="text-emerald-300" />
+                  </div>
+                  <p className="mt-3 text-sm font-black text-white">تم التفعيل على إيميلك بنجاح ✓</p>
+                  <p className="mt-1 text-[12px] font-bold text-slate-300" dir="ltr">{credData.activatedOnEmail}</p>
+                  {credData.note && <p className="mt-2 text-[12px] font-bold text-slate-300">📝 {credData.note}</p>}
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">✓ يمكنك الآن إرسال البيانات للعميل.</p>
+                {[
+                  { l: "📧 الإيميل", v: credData.email },
+                  { l: "🔑 كلمة المرور", v: credData.password },
+                  { l: "👤 البروفايل / PIN", v: credData.profileLabel },
+                  { l: "🔗 رابط التفعيل", v: credData.link },
+                  { l: "📝 ملاحظة", v: credData.note },
+                ].filter((row) => row.v).map((row) => (
+                  <div key={row.l} className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                    <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">{row.l}</div><div dir="ltr" className="truncate text-left font-mono text-[15px] font-bold text-white">{row.v}</div></div>
+                    <CopyBtn text={row.v} />
+                  </div>
+                ))}
+              </>
+            )}
             <a href={waLink(credData.customerPhone, credData.whatsappMessage)} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1fa855] px-5 py-3 font-extrabold text-white transition hover:bg-[#178a45]">
-              <MessageCircle size={18} /> إرسال البيانات للعميل عبر واتساب
+              <MessageCircle size={18} /> إرسال للعميل عبر واتساب
             </a>
             <CopyBtn text={credData.whatsappMessage} label="نسخ رسالة الواتساب كاملة" />
             <p className="text-center text-[11px] text-slate-400">تم تسجيل عرض هذه البيانات في سجل التدقيق. لا تشاركها مع غير العميل.</p>

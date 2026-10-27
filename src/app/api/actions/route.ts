@@ -6,6 +6,7 @@ import { ensureSeeded } from "@/lib/seed";
 import { decryptText, encryptText } from "@/lib/crypto";
 import { formatDate, renderTemplate } from "@/lib/constants";
 import { getSetting, refreshAccountStatus, runDailyJob } from "@/lib/engine";
+import { normalizeDeliveryMode, lifetimeEndDate } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
@@ -18,12 +19,12 @@ export async function POST(req: Request) {
     const action = String(b.action || "");
     const now = new Date();
 
-    // ---------- Reveal password (audited) ----------
+    // ---------- Reveal password / license (audited) ----------
     if (action === "revealPassword") {
       const [acc] = await db.select().from(accounts).where(eq(accounts.id, Number(b.accountId))).limit(1);
       if (!acc) return jsonError("حساب غير موجود", 404);
-      await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `المدير عرض كلمة مرور ${acc.email} من شاشة المخزون`);
-      return Response.json({ password: decryptText(acc.passwordEncrypted) });
+      await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `المدير عرض بيانات ${acc.email || `#${acc.id}`} من شاشة المخزون`);
+      return Response.json({ password: decryptText(acc.passwordEncrypted), licenseKey: decryptText(acc.licenseKeyEncrypted) });
     }
 
     // ---------- Receipt image (admin only, served on demand) ----------
@@ -41,8 +42,13 @@ export async function POST(req: Request) {
       await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null }).where(eq(payments.id, pay.id));
 
       // المدة تبدأ من لحظة تأكيد المدير (لا من لحظة سحب السند من الموظف)
+      // الاشتراك الدائم: تُحفظ تواريخه كما هي دون إعادة حساب
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, pay.rentalId)).limit(1);
-      if (rental) {
+      if (rental && rental.isLifetime) {
+        await db.update(rentals).set({
+          status: "ACTIVE", whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
+        }).where(eq(rentals.id, rental.id));
+      } else if (rental) {
         const days = Math.max(1, Number(pay.durationDays || rental.durationDays || 30));
         const start = now;
         const end = new Date(now.getTime() + days * 86400000);
@@ -81,10 +87,18 @@ export async function POST(req: Request) {
           if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, rental.profileId));
         }
         if (rental.accountId) {
+          // روابط الدعوة والأكواد: إرجاع مرة الاستخدام المستهلكة
+          const [rejAcc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+          if (rejAcc && (rejAcc.deliveryKind === "INVITE_LINK" || rejAcc.deliveryKind === "LICENSE_KEY")) {
+            const { sql } = await import("drizzle-orm");
+            await db.update(accounts)
+              .set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, status: "AVAILABLE", updatedAt: now })
+              .where(eq(accounts.id, rental.accountId));
+          }
           await refreshAccountStatus(rental.accountId);
           if (!pay.isExtension) {
             const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
-            if (acc?.type === "FULL") {
+            if (acc?.type === "FULL" && acc.deliveryKind !== "INVITE_LINK" && acc.deliveryKind !== "LICENSE_KEY") {
               const active = await db.select({ id: rentals.id }).from(rentals).where(and(eq(rentals.accountId, acc.id), eq(rentals.status, "ACTIVE")));
               if (!active.length) await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, acc.id));
             }
@@ -147,51 +161,75 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    // ---------- Activate an order (on-demand subscriptions) ----------
+    // ---------- Activate an order (mode-aware) ----------
     if (action === "activateRental") {
       const rentalId = Number(b.rentalId);
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
       if (!rental) return jsonError("طلب غير موجود", 404);
       if (rental.activationStatus === "ACTIVATED") return jsonError("هذا الطلب مُفعّل مسبقاً", 409);
+      const [platRow] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
+      const mode = normalizeDeliveryMode(platRow?.deliveryMode);
 
-      const aEmail = String(b.email || "").trim();
-      const aPass = String(b.password || "").trim();
       const aLink = String(b.link || "").trim();
-      const aPin = String(b.pin || "").trim();
       const aNote = String(b.note || "").trim();
-      const aLicenseKey = String(b.licenseKey || "").trim();
+      // LINK_ONLY يتطلب الرابط فقط — لا إيميل ولا باسورد ولا PIN
+      if (mode === "LINK_ONLY" && !aLink) {
+        return jsonError("ضع رابط الاشتراك / الدعوة أولاً ثم أكّد الإرسال");
+      }
+      // بيانات اختيارية للأنماط الأخرى (تُحفظ فقط إن أُدخلت)
+      const aEmail = mode === "LINK_ONLY" ? "" : String(b.email || "").trim();
+      const aPass = mode === "LINK_ONLY" ? "" : String(b.password || "").trim();
+      const aPin = mode === "LINK_ONLY" ? "" : String(b.pin || "").trim();
 
-      await db.update(rentals).set({
+      // المدة تبدأ من لحظة التفعيل (الدائم يُحفظ كما هو)
+      const patch: Record<string, unknown> = {
         activationStatus: "ACTIVATED",
         activatedEmail: aEmail || null,
         activatedPassword: aPass ? encryptText(aPass) : null,
         activatedLink: aLink || null,
         activatedPin: aPin || null,
         activatedNote: aNote || null,
-        activatedLicenseKey: aLicenseKey || null,
         activatedAt: now,
         activatedBy: user.id,
+        status: "ACTIVE",
         updatedAt: now,
-      }).where(eq(rentals.id, rental.id));
+      };
+      if (!rental.isLifetime) {
+        const days = Math.max(1, rental.durationDays || 30);
+        patch.startDate = now;
+        patch.endDate = new Date(now.getTime() + days * 86400000);
+      }
+      await db.update(rentals).set(patch).where(eq(rentals.id, rental.id));
+
+      // التفعيل اعتماد ضمني: أكّد أي سندات معلقة على نفس الطلب
+      await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null })
+        .where(and(eq(payments.rentalId, rental.id), eq(payments.status, "PENDING")));
 
       const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
       const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
 
-      // رسالة الواتساب للعميل
-      const lines = [
-        aEmail && `📧 الإيميل: ${aEmail}`,
-        aPass && `🔑 كلمة المرور: ${aPass}`,
-        aPin && `🔒 PIN: ${aPin}`,
-        aLink && `🔗 رابط التفعيل: ${aLink}`,
-        aNote && `📝 ${aNote}`,
-      ].filter(Boolean).join("\n");
+      // رسالة الواتساب حسب النمط
+      const endLabel = rental.isLifetime ? "دائم ♾️" : formatDate(patch.endDate ? new Date(String(patch.endDate)) : new Date(rental.endDate));
+      let credentials: string;
+      if (mode === "LINK_ONLY") {
+        credentials = `🔗 رابط التفعيل: ${aLink}${aNote ? `\n📝 ${aNote}` : ""}`;
+      } else if (mode === "ON_DEMAND_EMAIL") {
+        credentials = `تم التفعيل على إيميلك بنجاح ✓${aNote ? `\n📝 ${aNote}` : ""}`;
+      } else {
+        credentials = [
+          aEmail && `📧 الإيميل: ${aEmail}`,
+          aPass && `🔑 كلمة المرور: ${aPass}`,
+          aPin && `🔒 PIN: ${aPin}`,
+          aLink && `🔗 رابط التفعيل: ${aLink}`,
+          aNote && `📝 ${aNote}`,
+        ].filter(Boolean).join("\n") || "تم تفعيل حسابك بنجاح ✓";
+      }
       const tpl = await getSetting("whatsapp_activation_template",
         "مبروك {{name}} 🎉\nاشتراك {{platform}} تم تفعيله بنجاح من متجر مايسترو كي 🔑\n{{credentials}}\n⏳ صالح حتى: {{end_date}}");
       const message = renderTemplate(tpl, {
         name: cust?.name || "", platform: plat?.name || "",
         email: aEmail, password: aPass, link: aLink, note: aNote,
-        credentials: lines || "تم تفعيل حسابك بنجاح ✓",
-        end_date: formatDate(new Date(rental.endDate)),
+        credentials, end_date: endLabel,
       });
 
       const hasMeta = !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID);
@@ -202,15 +240,17 @@ export async function POST(req: Request) {
 
       // إشعار الموظف الذي سجّل الطلب
       await notifyAdmin({
-        title: "تم تفعيل الطلب",
-        body: `فعّل المدير اشتراك ${cust?.name || ""} (${plat?.name || ""}). يمكنك الآن عرض البيانات وإرسالها للعميل.`,
+        title: mode === "LINK_ONLY" ? "تم إرسال رابط التفعيل" : "تم تفعيل الطلب",
+        body: mode === "LINK_ONLY"
+          ? `أرسل المدير رابط اشتراك ${cust?.name || ""} (${plat?.name || ""}). اعرضه وأرسله للعميل.`
+          : `فعّل المدير اشتراك ${cust?.name || ""} (${plat?.name || ""}). يمكنك الآن عرض البيانات وإرسالها للعميل.`,
         kind: "ACTIVATED",
         href: "/my-sales",
         forUserId: rental.createdBy,
       });
 
-      await audit(user, "RENTAL_ACTIVATED", "rentals", rental.id, `تفعيل طلب ${plat?.name || ""} للعميل ${cust?.name || ""}`);
-      return Response.json({ ok: true, customerPhone: cust?.phone || "", whatsappMessage: message });
+      await audit(user, "RENTAL_ACTIVATED", "rentals", rental.id, `تفعيل طلب ${plat?.name || ""} (${mode}) للعميل ${cust?.name || ""}`);
+      return Response.json({ ok: true, customerPhone: cust?.phone || "", whatsappMessage: message, deliveryMode: mode });
     }
 
     // ---------- Trash ----------

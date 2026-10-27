@@ -1,6 +1,7 @@
 import crypto from "crypto";
+import { getSessionSecret } from "./session-shared";
 
-const secret = process.env.ACCOUNT_ENCRYPTION_KEY || process.env.SESSION_SECRET || "maestro-key-dev-secret-change-in-production-2026";
+const secret = getSessionSecret();
 const key = crypto.createHash("sha256").update(secret).digest();
 
 export function encryptText(plain: string): string {

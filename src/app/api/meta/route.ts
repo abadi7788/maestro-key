@@ -28,7 +28,9 @@ export async function GET() {
 
     for (const acc of accs) {
       if (acc.status === "NEEDS_PASSWORD_CHANGE") continue;
-      if (acc.expiryDate && new Date(acc.expiryDate) <= new Date()) continue; // null = no expiry
+      if (acc.expiryDate && new Date(acc.expiryDate) <= new Date()) continue;
+      // روابط/أكواد مستنفدة الاستخدامات لا تُحتسب متاحة
+      if (acc.maxUses != null && (acc.usedCount ?? 0) >= acc.maxUses) continue;
       let slots = 0;
       if (acc.type === "FULL") slots = acc.status === "AVAILABLE" ? 1 : 0;
       else {
@@ -53,6 +55,7 @@ export async function GET() {
     return Response.json({ platforms: plats, paymentMethods: banks, durations: ALLOWED_DURATIONS, availability, availabilityByType, priceByType });
   } catch (e) {
     if (e instanceof Response) return e;
+    console.error("[api/meta] failed:", e instanceof Error ? e.message : e);
     return Response.json({ error: "خطأ في الخادم" }, { status: 500 });
   }
 }
