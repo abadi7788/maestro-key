@@ -123,7 +123,7 @@ export async function POST(req: Request) {
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, Number(b.rentalId))).limit(1);
       if (!rental) return jsonError("اشتراك غير موجود", 404);
       await db.update(rentals).set({ status: "CLOSED", updatedAt: now }).where(eq(rentals.id, rental.id));
-      if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, rental.profileId));
+      if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null }).where(eq(profiles.id, rental.profileId));
       if (rental.accountId) {
         // If no active/ended rentals remain on a PROFILE account -> require password change before resale
         const remaining = await db.select({ id: rentals.id }).from(rentals)

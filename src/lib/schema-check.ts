@@ -284,6 +284,45 @@ const STATEMENTS: string[] = [
   `ALTER TABLE alerts ADD COLUMN IF NOT EXISTS href VARCHAR(200)`,
   `ALTER TABLE alerts ADD COLUMN IF NOT EXISTS for_user_id INTEGER`,
 
+  // 2026-01: حالة البروفايلات
+  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'`,
+  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP`,
+  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_by INTEGER REFERENCES users(id)`,
+  `CREATE INDEX IF NOT EXISTS profiles_available_idx ON profiles(account_id, status, id)`,
+  `UPDATE profiles SET status = 'SOLD', sold_at = created_at WHERE is_occupied = true AND status = 'AVAILABLE'`,
+  `UPDATE profiles SET status = 'AVAILABLE' WHERE is_occupied = false AND status = 'SOLD'`,
+
+  // 2026-01: الصلاحيات اليدوية
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
+
+  // 2026-01: إرجاع الرصيد
+  `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP`,
+  `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refund_reason TEXT`,
+
+  // 2026-01: تنبيه انخفاض المخزون
+  `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 3`,
+
+  // 2026-01: محفظة مايسترو كي (RYE / YER)
+  `CREATE TABLE IF NOT EXISTS wallet_balances (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(20) NOT NULL,
+    amount INTEGER NOT NULL,
+    balance_before INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
+    rental_id INTEGER REFERENCES rentals(id),
+    note TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS wallet_transactions_user_idx ON wallet_transactions(user_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions(rental_id)`,
+
   // ---------- 3) ترخية قيود قديمة + ضمان الافتراضيات + توحيد القيم ----------
   `ALTER TABLE accounts ALTER COLUMN expiry_date DROP NOT NULL`,
   `ALTER TABLE accounts ALTER COLUMN email DROP NOT NULL`,

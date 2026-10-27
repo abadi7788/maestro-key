@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { accounts, profiles, customers, rentals, payments, platforms } from "@/db/schema";
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { deductFromWallet, refundToWallet } from "@/lib/wallet";
 import { requireUser, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { encryptText, hashText } from "@/lib/crypto";
@@ -263,23 +264,22 @@ export async function POST(req: Request) {
       }
     }
 
-    // ---------- New sale path: atomic claim ----------
+    // ---------- New sale path: atomic claim with FOR UPDATE SKIP LOCKED ----------
     const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
-    const candidates = await db.select().from(accounts)
+
+    // 1) البحث عن مرشح مناسب (حساب موجود + غير منتهي الصلاحية)
+    const accCandidates = await db.select().from(accounts)
       .where(and(eq(accounts.platformId, platformId), eq(accounts.isDeleted, false)))
       .orderBy(asc(accounts.expiryDate));
 
     let claimedAcc: typeof accounts.$inferSelect | null = null;
     let claimedProfile: typeof profiles.$inferSelect | null = null;
 
-    for (const acc of candidates) {
+    for (const acc of accCandidates) {
       if (acc.status === "NEEDS_PASSWORD_CHANGE") continue;
       if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < neededEnd) continue;
-      if (saleType === "FULL" && acc.type !== "FULL") continue;
-      if (saleType === "PROFILE" && acc.type !== "PROFILE") continue;
       const accKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
       if (accKind !== "CREDENTIALS") {
-        // روابط الدعوة والأكواد: حجز ذري لمرة استخدام واحدة (يمنع تجاوز maxUses)
         if (acc.status !== "AVAILABLE") continue;
         const inc = await db.update(accounts).set({ usedCount: sql`${accounts.usedCount} + 1`, updatedAt: now })
           .where(and(eq(accounts.id, acc.id), eq(accounts.status, "AVAILABLE"), or(isNull(accounts.maxUses), lt(accounts.usedCount, accounts.maxUses))))
@@ -287,18 +287,50 @@ export async function POST(req: Request) {
         if (!inc.length) continue;
         claimedAcc = inc[0]; claimedProfile = null; break;
       }
+
       if (acc.type === "FULL") {
         if (acc.status !== "AVAILABLE") continue;
         const claimed = await db.update(accounts).set({ status: "RENTED", updatedAt: now })
           .where(and(eq(accounts.id, acc.id), eq(accounts.status, "AVAILABLE"))).returning();
         if (claimed.length) { claimedAcc = claimed[0]; break; }
       } else {
-        const free = await db.select().from(profiles)
-          .where(and(eq(profiles.accountId, acc.id), eq(profiles.isOccupied, false))).orderBy(asc(profiles.profileNo)).limit(1);
-        if (!free.length) continue;
-        const claimed = await db.update(profiles).set({ isOccupied: true })
-          .where(and(eq(profiles.id, free[0].id), eq(profiles.isOccupied, false))).returning();
-        if (claimed.length) { claimedAcc = acc; claimedProfile = claimed[0]; break; }
+        // ===== الصرف الصارم على مستوى البروفايل — FOR UPDATE SKIP LOCKED =====
+        // يستدعي أول بروفايل متاح حسب id ASC فقط (الجديد أولاً) وينهيه فوراً
+        // مع قفل الصف لمنع التزامن: لا يُصرف نفس الـPIN مرتين في نفس اللحظة.
+        const claimed = await db.execute(sql`
+          UPDATE profiles
+          SET status = 'SOLD',
+              sold_at = now(),
+              sold_by = ${user.id},
+              is_occupied = true,
+              current_rental_id = NULL
+          WHERE id = (
+            SELECT id FROM profiles
+            WHERE account_id = ${acc.id} AND status = 'AVAILABLE'
+            ORDER BY id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+          )
+          RETURNING id, account_id, profile_no, profile_name, pin, status
+        `);
+        const rows = claimed.rows as Array<{ id: number; account_id: number; profile_no: number; profile_name: string | null; pin: string | null; status: string }>;
+        if (rows.length) {
+          claimedAcc = acc;
+          claimedProfile = {
+            id: rows[0].id,
+            accountId: rows[0].account_id,
+            profileNo: rows[0].profile_no,
+            profileName: rows[0].profile_name,
+            pin: rows[0].pin,
+            isOccupied: true,
+            currentRentalId: null,
+            status: rows[0].status,
+            soldAt: now,
+            soldBy: user.id,
+            createdAt: now,
+          } as typeof profiles.$inferSelect;
+          break;
+        }
       }
     }
 
@@ -309,7 +341,7 @@ export async function POST(req: Request) {
     }
 
     try {
-      const isRenewalType = candidates && false; // new rentals for returning customers flagged below
+      const isRenewalType = accCandidates && false; // new rentals for returning customers flagged below
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
       const [rental] = await db.insert(rentals).values({
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,

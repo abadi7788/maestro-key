@@ -13,6 +13,7 @@ export const users = pgTable("users", {
   lockedUntil: timestamp("locked_until"),
   lastLoginAt: timestamp("last_login_at"),
   email: varchar("email", { length: 180 }),
+  permissions: text("permissions"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -28,6 +29,7 @@ export const platforms = pgTable("platforms", {
   extraFieldLabel: varchar("extra_field_label", { length: 200 }),
   isLifetime: boolean("is_lifetime").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
+  lowStockThreshold: integer("low_stock_threshold").notNull().default(3),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -100,8 +102,11 @@ export const profiles = pgTable("profiles", {
   pin: varchar("pin", { length: 40 }),
   isOccupied: boolean("is_occupied").notNull().default(false),
   currentRentalId: integer("current_rental_id"),
+  status: varchar("status", { length: 20 }).notNull().default("AVAILABLE"),
+  soldAt: timestamp("sold_at"),
+  soldBy: integer("sold_by").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [uniqueIndex("profiles_account_no_idx").on(t.accountId, t.profileNo)]);
+}, (t) => [uniqueIndex("profiles_account_no_idx").on(t.accountId, t.profileNo), index("profiles_available_idx").on(t.accountId, t.status, t.id)]);
 
 export const customers = pgTable("customers", {
   id: serial("id").primaryKey(),
@@ -149,6 +154,8 @@ export const rentals = pgTable("rentals", {
   manualLink: text("manual_link"),
   manualCodeEncrypted: text("manual_code_encrypted"),
   manualNote: text("manual_note"),
+  refundedAt: timestamp("refunded_at"),
+  refundReason: text("refund_reason"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [index("rentals_customer_idx").on(t.customerId), index("rentals_status_idx").on(t.status), index("rentals_account_idx").on(t.accountId)]);
@@ -202,3 +209,22 @@ export const whatsappLogs = pgTable("whatsapp_logs", {
   status: varchar("status", { length: 40 }).notNull().default("QUEUED"), // SENT | QUEUED | SIMULATED | FAILED
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+export const walletBalances = pgTable("wallet_balances", {
+  userId: integer("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  balance: integer("balance").notNull().default(0),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [index("wallet_balances_user_idx").on(t.userId)]);
+
+export const walletTransactions = pgTable("wallet_transactions", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  type: varchar("type", { length: 20 }).notNull(),
+  amount: integer("amount").notNull(),
+  balanceBefore: integer("balance_before").notNull(),
+  balanceAfter: integer("balance_after").notNull(),
+  rentalId: integer("rental_id").references(() => rentals.id),
+  note: text("note"),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("wallet_transactions_user_idx").on(t.userId, t.createdAt)]);

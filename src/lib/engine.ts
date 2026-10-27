@@ -30,10 +30,11 @@ export async function refreshAccountStatus(accountId: number) {
     // If ended rentals were closed by password-change action, caller sets AVAILABLE explicitly.
     if (!activeRentals.length && !endedRentals.length && acc.status !== "NEEDS_PASSWORD_CHANGE") status = "AVAILABLE";
   } else {
-    const profs = await db.select().from(profiles).where(eq(profiles.accountId, accountId));
-    const free = profs.filter((p) => !p.isOccupied).length;
+    // حساب بروفايلات: الحالة حسب عدد البروفايلات المتاحة فعلياً
+    const freeCount = await db.select({ id: profiles.id }).from(profiles)
+      .where(and(eq(profiles.accountId, accountId), eq(profiles.status, "AVAILABLE")));
     if (acc.status === "NEEDS_PASSWORD_CHANGE" && activeRentals.length === 0) status = "NEEDS_PASSWORD_CHANGE";
-    else status = free > 0 ? "AVAILABLE" : "RENTED";
+    else status = freeCount.length > 0 ? "AVAILABLE" : "RENTED";
   }
   await db.update(accounts).set({ status, updatedAt: new Date() }).where(eq(accounts.id, accountId));
 }

@@ -34,7 +34,7 @@ export async function GET() {
       let slots = 0;
       if (acc.type === "FULL") slots = acc.status === "AVAILABLE" ? 1 : 0;
       else {
-        const profs = await db.select().from(profiles).where(and(eq(profiles.accountId, acc.id), eq(profiles.isOccupied, false)));
+        const profs = await db.select().from(profiles).where(and(eq(profiles.accountId, acc.id), eq(profiles.status, "AVAILABLE")));
         slots = profs.length;
       }
       if (slots > 0) {
