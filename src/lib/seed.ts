@@ -1,6 +1,5 @@
 import { db } from "@/db";
 import { users, platforms, paymentMethods, settings } from "@/db/schema";
-import { ensureSchema } from "./schema-check";
 import bcrypt from "bcryptjs";
 
 let seeding: Promise<void> | null = null;
@@ -16,8 +15,6 @@ let seeding: Promise<void> | null = null;
  * يضيفها المدير يدوياً من شاشات النظام (المخزون / العملاء / نقطة البيع).
  */
 async function doSeed() {
-  // أولاً: تأكد من اكتمال المخطط (يصلح قواعد البيانات القديمة تلقائياً قبل أي استعلام)
-  await ensureSchema();
   const existing = await db.select({ id: users.id }).from(users).limit(1);
   if (existing.length) return;
 

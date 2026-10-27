@@ -72,11 +72,11 @@ self.addEventListener("fetch", (event) => {
         const cache = await caches.open(STATIC_CACHE);
         const cached = await cache.match(req);
         if (cached) return cached;
-        
+
         // البحث عن صفحة الأوفلاين بصيغتيها لضمان إيجادها
         const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline");
         if (offlineFallback) return offlineFallback;
-        
+
         return new Response("غير متصل بالإنترنت", {
           status: 503,
           headers: { "content-type": "text/plain; charset=utf-8" },
