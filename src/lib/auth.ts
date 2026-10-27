@@ -3,7 +3,6 @@ import { db } from "@/db";
 import { users, auditLogs } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { verifySession } from "./crypto";
-import { isAdminRole } from "./roles";
 
 export type CurrentUser = typeof users.$inferSelect;
 
@@ -25,8 +24,7 @@ export async function requireUser() {
 
 export async function requireAdmin() {
   const user = await requireUser();
-  // فحص موحّد غير حساس لحالة الأحرف (ADMIN/admin) — أي دور غير مدير يُرفض
-  if (!isAdminRole(user.role)) throw new Response(JSON.stringify({ error: "هذه الصلاحية للمدير فقط" }), { status: 403, headers: { "content-type": "application/json" } });
+  if (user.role !== "ADMIN") throw new Response(JSON.stringify({ error: "هذه الصلاحية للمدير فقط" }), { status: 403, headers: { "content-type": "application/json" } });
   return user;
 }
 

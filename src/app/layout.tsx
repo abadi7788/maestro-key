@@ -1,6 +1,5 @@
-Import type { Metadata } from "next";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import Script from "next/script";
 import { Cairo } from "next/font/google";
 import "./globals.css";
 
@@ -19,30 +18,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ar" dir="rtl">
-      <body className={`${cairo.className} bg-[#070b14] text-slate-100 antialiased`}>
-        {children}
-
-        <Script
-          src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"
-          strategy="afterInteractive"
-        />
-        <Script id="onesignal-init" strategy="afterInteractive">
-          {`
-            window.OneSignalDeferred = window.OneSignalDeferred || [];
-            OneSignalDeferred.push(async function(OneSignal) {
-              await OneSignal.init({
-                appId: "ac6dd3a1-1dcc-4580-8207-97aa0170ef09",
-                serviceWorkerParam: { scope: "/" },
-                serviceWorkerPath: "/OneSignalSDKWorker.js",
-                allowLocalhostAsSecureOrigin: true,
-                notifyButton: {
-                  enable: true,
-                },
-              });
-            });
-          `}
-        </Script>
-      </body>
+      <body className={`${cairo.className} bg-[#070b14] text-slate-100 antialiased`}>{children}</body>
     </html>
   );
 }

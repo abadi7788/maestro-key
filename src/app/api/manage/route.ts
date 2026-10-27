@@ -3,7 +3,6 @@ import { platforms, paymentMethods, users, settings, customers, rentals, payment
 import { and, eq, ne } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAdmin, audit, jsonError } from "@/lib/auth";
-import { normalizeRole, isAdminRole } from "@/lib/roles";
 import { encryptText } from "@/lib/crypto";
 import { ensureSeeded } from "@/lib/seed";
 import { notifyAdmin } from "@/lib/notify";
@@ -22,20 +21,14 @@ export async function POST(req: Request) {
       const imageUrl = typeof b.imageUrl === "string" ? b.imageUrl : undefined;
       if (imageUrl && imageUrl.length > 1_800_000) return jsonError("صورة المنصة كبيرة جداً، اختر صورة أصغر");
       if (imageUrl && !imageUrl.startsWith("data:image") && !imageUrl.startsWith("/")) return jsonError("صيغة الصورة غير مدعومة");
-      const rawMode = String(b.deliveryMode || "INSTANT_INVENTORY").trim().toUpperCase();
-      const deliveryMode = rawMode === "LINK_ONLY" ? "LINK_ONLY"
-        : rawMode === "ON_DEMAND_EMAIL" || rawMode === "ON_DEMAND" ? "ON_DEMAND_EMAIL"
-        : "INSTANT_INVENTORY";
       const patch: Record<string, unknown> = {
         name,
         color: String(b.color || "#0f172a"),
         shortName: String(b.shortName || name.slice(0, 1) || "▶").slice(0, 4),
         isActive: b.isActive !== false,
-        deliveryMode,
-        // نمط الإيميل يفرض طلب الإيميل دائماً — نمط الرابط لا يطلبه أبداً
-        requiresCustomerEmail: deliveryMode === "LINK_ONLY" ? false : (deliveryMode === "ON_DEMAND_EMAIL" ? true : b.requiresCustomerEmail === true),
+        deliveryMode: b.deliveryMode === "ON_DEMAND" ? "ON_DEMAND" : "INVENTORY",
+        requiresCustomerEmail: b.requiresCustomerEmail === true,
         extraFieldLabel: typeof b.extraFieldLabel === "string" ? b.extraFieldLabel.trim() || null : undefined,
-        isLifetime: b.isLifetime === true,
       };
       if (imageUrl !== undefined) patch.imageUrl = imageUrl || null;
       if (b.id) await db.update(platforms).set(patch).where(eq(platforms.id, Number(b.id)));
@@ -59,34 +52,17 @@ export async function POST(req: Request) {
       if (!username || password.length < 6) return jsonError("اسم مستخدم وكلمة مرور (6 أحرف على الأقل) مطلوبة");
       const exists = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
       if (exists.length) return jsonError("اسم المستخدم موجود مسبقاً", 409);
-      await db.insert(users).values({ username, passwordHash: await bcrypt.hash(password, 10), displayName: String(b.displayName || username), role: normalizeRole(b.role) });
+      await db.insert(users).values({ username, passwordHash: await bcrypt.hash(password, 10), displayName: String(b.displayName || username), role: b.role === "ADMIN" ? "ADMIN" : "EMPLOYEE" });
       await notifyAdmin({ title: "إضافة موظف", body: `تم إضافة الموظف ${String(b.displayName || username)}`, kind: "ADDITION", href: "/settings" });
       await audit(admin, "USER_CREATED", "users", null, username);
       return Response.json({ ok: true });
     }
     if (action === "updateUser") {
       const id = Number(b.id);
-      const [target] = await db.select().from(users).where(eq(users.id, id)).limit(1);
-      if (!target) return jsonError("المستخدم غير موجود", 404);
       const patch: Partial<typeof users.$inferInsert> = {};
       if (b.displayName) patch.displayName = String(b.displayName);
-      if (b.role) {
-        const nextRole = normalizeRole(b.role);
-        if (id === admin.id && nextRole !== "ADMIN") return jsonError("لا يمكنك تخفيض صلاحيات حسابك وأنت داخل النظام");
-        if (isAdminRole(target.role) && nextRole !== "ADMIN") {
-          const all = await db.select({ id: users.id, role: users.role }).from(users);
-          if (all.filter((u) => isAdminRole(u.role)).length <= 1) return jsonError("لا يمكن تخفيض آخر مدير في النظام");
-        }
-        patch.role = nextRole;
-      }
-      if (b.isActive !== undefined) {
-        if (id === admin.id && !b.isActive) return jsonError("لا يمكنك تعطيل حسابك وأنت داخل النظام");
-        if (isAdminRole(target.role) && !b.isActive) {
-          const active = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.isActive, true));
-          if (active.filter((u) => u.id !== id && isAdminRole(u.role)).length < 1) return jsonError("لا يمكن تعطيل آخر مدير نشط في النظام");
-        }
-        patch.isActive = !!b.isActive;
-      }
+      if (b.role) patch.role = b.role === "ADMIN" ? "ADMIN" : "EMPLOYEE";
+      if (b.isActive !== undefined) patch.isActive = !!b.isActive;
       if (b.password) patch.passwordHash = await bcrypt.hash(String(b.password), 10);
       if (b.unlock) { patch.failedAttempts = 0; patch.lockedUntil = null; }
       await db.update(users).set(patch).where(eq(users.id, id));
@@ -111,29 +87,31 @@ export async function POST(req: Request) {
     }
     if (action === "deleteUser") {
       const id = Number(b.id);
-      if (!id) return jsonError("مستخدم غير صالح");
       if (id === admin.id) return jsonError("لا يمكنك حذف حسابك وأنت داخل النظام");
       const [target] = await db.select().from(users).where(eq(users.id, id)).limit(1);
       if (!target) return jsonError("المستخدم غير موجود", 404);
-      if (isAdminRole(target.role)) {
-        const all = await db.select({ id: users.id, role: users.role }).from(users);
-        if (all.filter((u) => isAdminRole(u.role)).length <= 1) return jsonError("لا يمكن حذف آخر مدير في النظام");
+      if (target.role === "ADMIN") {
+        const admins = await db.select({ id: users.id }).from(users).where(eq(users.role, "ADMIN"));
+        if (admins.length <= 1) return jsonError("لا يمكن حذف آخر مدير في النظام");
       }
       try {
-        // نقل كل ارتباطات المستخدم (7 علاقات) للحفاظ على السجلات ثم حذف الحساب
-        await db.update(rentals).set({ createdBy: admin.id }).where(eq(rentals.createdBy, id));
-        await db.update(rentals).set({ activatedBy: admin.id }).where(eq(rentals.activatedBy, id));
-        await db.update(payments).set({ createdBy: admin.id }).where(eq(payments.createdBy, id));
-        await db.update(payments).set({ reviewedBy: admin.id }).where(eq(payments.reviewedBy, id));
-        await db.update(auditLogs).set({ userId: admin.id }).where(eq(auditLogs.userId, id));
-        await db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, id));
-        await db.delete(alerts).where(eq(alerts.forUserId, id));
-        await db.delete(users).where(eq(users.id, id));
-      } catch {
-        return jsonError("تعذر حذف المستخدم — مرتبط ببيانات لا يمكن نقلها. عطّله بدلاً من الحذف.", 500);
+        await db.transaction(async (tx) => {
+          // Reassign historical records to the acting admin (preserve financial/audit trail)
+          await tx.update(rentals).set({ createdBy: admin.id }).where(eq(rentals.createdBy, id));
+          await tx.update(rentals).set({ activatedBy: admin.id }).where(eq(rentals.activatedBy, id));
+          await tx.update(payments).set({ createdBy: admin.id }).where(eq(payments.createdBy, id));
+          await tx.update(payments).set({ reviewedBy: admin.id }).where(eq(payments.reviewedBy, id));
+          await tx.update(auditLogs).set({ userId: admin.id }).where(eq(auditLogs.userId, id));
+          // Delete user-owned device subscriptions and targeted alerts
+          await tx.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, id));
+          await tx.delete(alerts).where(eq(alerts.forUserId, id));
+          await tx.delete(users).where(eq(users.id, id));
+        });
+      } catch (e: any) {
+        return jsonError("تعذر حذف الموظف: " + (e?.message || "خطأ غير متوقع"), 500);
       }
       await audit(admin, "USER_DELETED", "users", id, `حذف المستخدم ${target.username}`);
-      return Response.json({ ok: true, username: target.username });
+      return Response.json({ ok: true });
     }
     if (action === "deleteBank") {
       const id = Number(b.id);

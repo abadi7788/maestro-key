@@ -32,10 +32,8 @@ export async function sendPushToUsers(userIds: number[], payload: { title: strin
 }
 
 export async function adminUserIds() {
-  // مقارنة غير حساسة لحالة الأحرف حتى لا يفوتنا أي مدير
-  const rows = await db.select({ id: users.id, role: users.role }).from(users);
-  const { isAdminRole } = await import("./roles");
-  return rows.filter((r) => isAdminRole(r.role)).map((r) => r.id);
+  const rows = await db.select({ id: users.id }).from(users).where(eq(users.role, "ADMIN"));
+  return rows.map((r) => r.id);
 }
 
 export { or };

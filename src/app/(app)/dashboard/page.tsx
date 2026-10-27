@@ -7,7 +7,6 @@ import {
   RefreshCcw, ShieldAlert, ShoppingCart, TrendingUp, Users, Wallet,
 } from "lucide-react";
 import { api, fetchMe, fmtDate, money, daysLeft, type Me } from "@/lib/client";
-import { isAdminRole, isEmployeeRole } from "@/lib/roles";
 import { Badge, PlatformLogo, Spinner, StatCard, rentalBadge, paymentBadge } from "@/components/ui";
 
 export default function DashboardPage() {
@@ -18,7 +17,7 @@ export default function DashboardPage() {
 
   async function load(user: Me) {
     const m = await api("/api/meta").catch(() => null); setMeta(m);
-    if (isAdminRole(user.role)) {
+    if (user.role === "ADMIN") {
       const [d, r] = await Promise.all([api("/api/admin-data?view=dashboard"), api("/api/rentals?view=all")]);
       setData(d); setRentals(r.rentals);
     } else {
@@ -48,12 +47,12 @@ export default function DashboardPage() {
             <div className="flex items-center gap-2 text-[#174ea6]"><KeyRound size={20} /><span className="text-sm font-extrabold">متجر مايسترو كي</span></div>
             <h1 className="mt-2 text-2xl font-black sm:text-3xl">أهلاً {me.displayName} 👋</h1>
             <p className="mt-1 max-w-xl text-sm font-semibold leading-relaxed text-slate-600">
-              {isAdminRole(me.role) ? "عندك كل الصلاحيات: المخزون، مراجعة السندات، إجراءات الانتهاء، المحذوفات، وسجل التدقيق." : "واجهتك للبيع والتجديد فقط. اربط كل عملية بسند — وسيظهر لك الحساب المسحوب فوراً لإرساله للعميل."}
+              {me.role === "ADMIN" ? "عندك كل الصلاحيات: المخزون، مراجعة السندات، إجراءات الانتهاء، المحذوفات، وسجل التدقيق." : "واجهتك للبيع والتجديد فقط. اربط كل عملية بسند — وسيظهر لك الحساب المسحوب فوراً لإرساله للعميل."}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Link href="/sale" className="btn-gold shadow-lg"><ShoppingCart size={19} /> بيع / تجديد جديد</Link>
-            {isAdminRole(me.role) && <button onClick={runJob} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-white10 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-white20"><Play size={17} /> تشغيل المهمة اليومية الآن</button>}
+            {me.role === "ADMIN" && <button onClick={runJob} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-white10 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-white20"><Play size={17} /> تشغيل المهمة اليومية الآن</button>}
           </div>
         </div>
         {jobMsg && <div className="mt-4 rounded-xl bg-emerald-500/100/15 px-4 py-3 text-sm font-bold text-emerald-200">✓ {jobMsg}</div>}
@@ -71,7 +70,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {isAdminRole(me.role) && s && (
+      {me.role === "ADMIN" && s && (
         <>
           {(s.endedRentals > 0 || s.pendingPayments > 0 || s.needsPasswordChange > 0) && (
             <Link href="/inbox" className="flex items-center gap-3 rounded-3xl border-2 border-red-200 bg-red-500/10 p-4.5 px-5 py-4 transition hover:bg-red-100">
@@ -96,7 +95,7 @@ export default function DashboardPage() {
         </>
       )}
 
-      {isEmployeeRole(me.role) && (
+      {me.role === "EMPLOYEE" && (
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="flex items-center gap-2 text-lg font-black"><RefreshCcw size={20} className="text-[#2563eb]" /> تجديدات مستحقة ({due.length})</h2>
@@ -113,8 +112,8 @@ export default function DashboardPage() {
       {/* Recent rentals */}
       <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-lg font-black"><TrendingUp size={20} className="text-[#2563eb]" /> {isAdminRole(me.role) ? "أحدث العمليات" : "أحدث عملياتي"}</h2>
-          <Link href={isAdminRole(me.role) ? "/rentals" : "/my-sales"} className="text-sm font-extrabold text-[#2563eb]">عرض الكل ←</Link>
+          <h2 className="flex items-center gap-2 text-lg font-black"><TrendingUp size={20} className="text-[#2563eb]" /> {me.role === "ADMIN" ? "أحدث العمليات" : "أحدث عملياتي"}</h2>
+          <Link href={me.role === "ADMIN" ? "/rentals" : "/my-sales"} className="text-sm font-extrabold text-[#2563eb]">عرض الكل ←</Link>
         </div>
         <div className="space-y-2.5">
           {rentals.slice(0, 6).map((r: any) => (
@@ -122,7 +121,7 @@ export default function DashboardPage() {
               <PlatformLogo src={r.platformImage} name={r.platformName} color={r.platformColor} size={42} />
               <div className="min-w-[140px] flex-1">
                 <div className="font-extrabold leading-tight">{r.customerName}</div>
-                <div className="text-xs font-semibold text-slate-500">{r.platformName} • {r.isLifetime ? "اشتراك دائم ♾️" : <>حتى {fmtDate(r.endDate)}</>} {isAdminRole(me.role) && `• باع: ${r.sellerName}`}</div>
+                <div className="text-xs font-semibold text-slate-500">{r.platformName} • حتى {fmtDate(r.endDate)} {me.role === "ADMIN" && `• باع: ${r.sellerName}`}</div>
               </div>
               {rentalBadge(r.status)}
               {r.payments?.[0] && paymentBadge(r.payments[0].status)}

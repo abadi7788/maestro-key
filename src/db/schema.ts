@@ -22,11 +22,10 @@ export const platforms = pgTable("platforms", {
   color: varchar("color", { length: 20 }).notNull().default("#0f172a"),
   shortName: varchar("short_name", { length: 10 }).notNull().default("▶"),
   imageUrl: text("image_url"),
-  // INSTANT_INVENTORY = تسليم فوري من المخزون | ON_DEMAND_EMAIL = تفعيل على إيميل العميل | LINK_ONLY = تسليم برابط فقط
-  deliveryMode: varchar("delivery_mode", { length: 20 }).notNull().default("INSTANT_INVENTORY"),
+  // INVENTORY = من المخزون (تسليم فوري) | ON_DEMAND = عند الطلب (المدير يفعّل)
+  deliveryMode: varchar("delivery_mode", { length: 20 }).notNull().default("INVENTORY"),
   requiresCustomerEmail: boolean("requires_customer_email").notNull().default(false),
   extraFieldLabel: varchar("extra_field_label", { length: 200 }),
-  isLifetime: boolean("is_lifetime").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -71,16 +70,15 @@ export const accounts = pgTable("accounts", {
   platformId: integer("platform_id").notNull().references(() => platforms.id),
   type: varchar("type", { length: 20 }).notNull().default("FULL"), // FULL | PROFILE
   maxProfiles: integer("max_profiles").notNull().default(1),
-  // صيغة التسليم: CREDENTIALS (إيميل+باسورد) | INVITE_LINK (رابط دعوة) | LICENSE_KEY (كود)
-  deliveryKind: varchar("delivery_kind", { length: 20 }).notNull().default("CREDENTIALS"),
-  email: varchar("email", { length: 200 }),
-  passwordEncrypted: text("password_encrypted"),
-  inviteLink: text("invite_link"),
-  licenseKeyEncrypted: text("license_key_encrypted"),
-  maxUses: integer("max_uses"),
-  usedCount: integer("used_count").notNull().default(0),
+  email: varchar("email", { length: 200 }),                       // nullable (invite/key accounts have no email)
+  passwordEncrypted: text("password_encrypted"),                   // nullable
   pin: varchar("pin", { length: 40 }),
-  expiryDate: timestamp("expiry_date"), // nullable: حسابات الاشتراكات الدائمة بلا انتهاء
+  // Delivery type: CREDENTIALS (email+password) | INVITE_LINK | LICENSE_KEY
+  deliveryType: varchar("delivery_type", { length: 20 }).notNull().default("CREDENTIALS"),
+  inviteLink: text("invite_link"),
+  inviteMaxUses: integer("invite_max_uses"),
+  licenseKey: text("license_key"),
+  expiryDate: timestamp("expiry_date"),                            // nullable (no fixed expiry)
   // AVAILABLE | RENTED | NEEDS_PASSWORD_CHANGE
   status: varchar("status", { length: 40 }).notNull().default("AVAILABLE"),
   notes: text("notes"),
@@ -123,7 +121,6 @@ export const rentals = pgTable("rentals", {
   startDate: timestamp("start_date").notNull(),
   endDate: timestamp("end_date").notNull(),
   durationDays: integer("duration_days").notNull(),
-  isLifetime: boolean("is_lifetime").notNull().default(false),
   // ACTIVE | ENDED | CLOSED | REJECTED
   status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
   passwordUsedEncrypted: text("password_used_encrypted"),
@@ -139,16 +136,10 @@ export const rentals = pgTable("rentals", {
   activatedPassword: text("activated_password"),
   activatedLink: text("activated_link"),
   activatedPin: varchar("activated_pin", { length: 40 }),
+  activatedLicenseKey: text("activated_license_key"),
   activatedNote: text("activated_note"),
   activatedAt: timestamp("activated_at"),
   activatedBy: integer("activated_by").references(() => users.id),
-  // مصدر الصرف: AUTO (تلقائي من المخزون) | MANUAL (تسليم يدوي فوري من الموظف)
-  deliverySource: varchar("delivery_source", { length: 20 }).notNull().default("AUTO"),
-  manualEmail: varchar("manual_email", { length: 200 }),
-  manualPasswordEncrypted: text("manual_password_encrypted"),
-  manualLink: text("manual_link"),
-  manualCodeEncrypted: text("manual_code_encrypted"),
-  manualNote: text("manual_note"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => [index("rentals_customer_idx").on(t.customerId), index("rentals_status_idx").on(t.status), index("rentals_account_idx").on(t.accountId)]);

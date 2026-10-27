@@ -77,9 +77,5 @@ export async function GET(req: Request) {
     }
 
     return jsonError("عرض غير معروف");
-  } catch (e) {
-    if (e instanceof Response) return e;
-    console.error("[api/admin-data] failed:", e instanceof Error ? e.message : e);
-    return jsonError("خطأ في الخادم", 500);
-  }
+  } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }

@@ -4,11 +4,10 @@ import Link from "next/link";
 import {
   Camera, CheckCircle2, ChevronLeft, ImagePlus, Landmark, Loader2, Lock,
   Phone, Search, ShoppingCart, Sparkles, Trash2, User, Wallet, XCircle, RefreshCcw, Plus,
-  Crown, UserRound, ScanLine, ArrowLeft, Zap, Hand,
+  Crown, UserRound, ScanLine, ArrowLeft, MessageCircle,
 } from "lucide-react";
-import { api, fileToDataUrl, fmtDate, daysLeft, waLink } from "@/lib/client";
+import { api, fileToDataUrl, fmtDate, daysLeft } from "@/lib/client";
 import { Badge, CopyBtn, PlatformLogo, Spinner, rentalBadge } from "@/components/ui";
-import { normalizeDeliveryMode } from "@/lib/delivery";
 
 type Meta = any;
 
@@ -22,14 +21,14 @@ export default function SaleForm() {
   const [bankId, setBankId] = useState<number>(0); const [ref, setRef] = useState("");
   const [receipt, setReceipt] = useState(""); const [forceNew, setForceNew] = useState(false);
   const [customerEmail, setCustomerEmail] = useState(""); const [customerExtra, setCustomerExtra] = useState("");
-  const [deliverySource, setDeliverySource] = useState<"AUTO" | "MANUAL">("AUTO");
-  const [manualEmail, setManualEmail] = useState(""); const [manualPassword, setManualPassword] = useState("");
-  const [manualLink, setManualLink] = useState(""); const [manualCode, setManualCode] = useState("");
-  const [manualNote, setManualNote] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const [result, setResult] = useState<any>(null);
   const [scan, setScan] = useState<"idle" | "reading" | "ok" | "fail">("idle");
   const [scanNote, setScanNote] = useState("");
+  const [deliveryMode, setDeliveryMode] = useState<"AUTO" | "MANUAL">("AUTO");
+  const [manualDeliveryType, setManualDeliveryType] = useState<"CREDENTIALS" | "INVITE_LINK" | "LICENSE_KEY">("CREDENTIALS");
+  const [manualEmail, setManualEmail] = useState(""); const [manualPassword, setManualPassword] = useState("");
+  const [manualPin, setManualPin] = useState(""); const [manualLink, setManualLink] = useState(""); const [manualLicenseKey, setManualLicenseKey] = useState(""); const [manualNote, setManualNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -71,7 +70,7 @@ export default function SaleForm() {
     return lookup.rentals.find((r: any) => r.platformId === platformId && r.status === "ACTIVE")
       || lookup.rentals.find((r: any) => r.platformId === platformId && r.status === "ENDED") || null;
   }, [lookup, platformId]);
-  const effectiveForceNew = deliverySource === "MANUAL" || forceNew || (!!renewable && !!renewable.accountType && renewable.accountType !== accountType);
+  const effectiveForceNew = forceNew || (!!renewable && !!renewable.accountType && renewable.accountType !== accountType);
 
   useEffect(() => {
     const hinted = meta?.priceByType?.[platformId]?.[accountType];
@@ -88,12 +87,8 @@ export default function SaleForm() {
   }, [meta, platformId, accountType]);
 
   const plat = meta?.platforms?.find((p: any) => p.id === platformId) || null;
-  const deliveryMode = normalizeDeliveryMode(plat?.deliveryMode);
-  const isInstant = deliveryMode === "INSTANT_INVENTORY";
-  const isEmailMode = deliveryMode === "ON_DEMAND_EMAIL";
-  const isLinkMode = deliveryMode === "LINK_ONLY";
-  const isLifetime = !!plat?.isLifetime;
-  const emailRequired = isEmailMode || (isInstant && !!plat?.requiresCustomerEmail);
+  const isOnDemand = plat?.deliveryMode === "ON_DEMAND";
+  const isManual = deliveryMode === "MANUAL";
 
   if (!meta) return <Spinner text="جارٍ تجهيز نقطة البيع…" />;
 
@@ -127,13 +122,13 @@ export default function SaleForm() {
     if (!lookup?.customer && !name.trim()) return setErr("أدخل اسم العميل الجديد");
     if (!bankId || !ref.trim()) return setErr("اختر البنك وأدخل رقم العملية");
     if (!receipt) return setErr("📸 إرفاق صورة السند إلزامي قبل سحب الاشتراك");
-    if (emailRequired && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
-    if (!isLifetime && (!duration || duration < 1)) return setErr("أدخل مدة الاشتراك بالأيام");
-    if (deliverySource === "MANUAL" && !manualEmail.trim() && !manualPassword && !manualLink.trim() && !manualCode.trim()) {
-      return setErr("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود على الأقل)");
+    if (plat?.requiresCustomerEmail && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
+    if (isManual) {
+      if (manualDeliveryType === "CREDENTIALS" && !manualEmail.trim()) return setErr("أدخل إيميل الحساب للتسليم");
+      if (manualDeliveryType === "INVITE_LINK" && !manualLink.trim()) return setErr("أدخل رابط الدعوة");
+      if (manualDeliveryType === "LICENSE_KEY" && !manualLicenseKey.trim()) return setErr("أدخل الكود / المفتاح");
     }
-    if (!isInstant && renewable && !forceNew) { /* طلبات عند الطلب: دائماً طلب جديد مستقل */ }
-    if (deliverySource === "AUTO" && isInstant && (effectiveForceNew || !renewable)) {
+    if (!isManual && !isOnDemand && (effectiveForceNew || !renewable)) {
       const availableForType = meta?.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
       if (availableForType <= 0) return setErr(accountType === "PROFILE" ? "لا يوجد ملف / بروفايل متاح لهذه المنصة حالياً" : "لا يوجد حساب كامل متاح لهذه المنصة حالياً");
     }
@@ -146,69 +141,60 @@ export default function SaleForm() {
           paymentMethodId: bankId, transactionRef: ref.trim(), amount: Number(amount || 0),
           receiptImageData: receipt, mode: effectiveForceNew ? "NEW" : "AUTO", accountType,
           customerEmail: customerEmail.trim(), customerExtra: customerExtra.trim(),
-          deliverySource,
-          manualEmail: manualEmail.trim(), manualPassword, manualLink: manualLink.trim(),
-          manualCode: manualCode.trim(), manualNote: manualNote.trim(),
+          deliveryMode, manualDeliveryType, manualEmail: manualEmail.trim(), manualPassword: manualPassword.trim(),
+          manualPin: manualPin.trim(), manualLink: manualLink.trim(), manualLicenseKey: manualLicenseKey.trim(), manualNote: manualNote.trim(),
         }),
       });
       setResult(d); window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   }
 
-  function reset() { setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setDeliverySource("AUTO"); setManualEmail(""); setManualPassword(""); setManualLink(""); setManualCode(""); setManualNote(""); setAmount(""); setDuration(0); setErr(""); setScan("idle"); setScanNote(""); }
+  function reset() { setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setErr(""); setScan("idle"); setScanNote(""); setDeliveryMode("AUTO"); setManualDeliveryType("CREDENTIALS"); setManualEmail(""); setManualPassword(""); setManualPin(""); setManualLink(""); setManualLicenseKey(""); setManualNote(""); }
+
+  // ---------------- Manual immediate delivery: show delivery info now ----------------
+  if (result?.manual) {
+    const d = result.delivery || {};
+    const rows = [
+      d.email && { l: "📧 الإيميل", v: d.email },
+      d.password && { l: "🔑 كلمة المرور", v: d.password },
+      d.pin && { l: "🔒 PIN", v: d.pin },
+      d.link && { l: "🔗 رابط الدعوة", v: d.link },
+      d.licenseKey && { l: "🎫 الكود / المفتاح", v: d.licenseKey },
+      d.note && { l: "📝 ملاحظة", v: d.note },
+    ].filter(Boolean) as { l: string; v: string }[];
+    const waUrl = `https://wa.me/${(result.customer?.phone || "").replace(/\D/g, "")}?text=${encodeURIComponent(result.whatsappMessage || "")}`;
+    return (
+      <div className="pop-in mx-auto max-w-xl">
+        <div className="card overflow-hidden">
+          <div className="bg-emerald-600 px-6 py-7 text-center text-white">
+            <CheckCircle2 size={52} className="mx-auto" />
+            <h2 className="mt-2 text-2xl font-black">تم البيع والتسليم بنجاح 🎉</h2>
+            <p className="mt-1 text-sm font-semibold text-emerald-100">أدناه بيانات التسليم — انسخها وأرسلها للعميل</p>
+          </div>
+          <div className="space-y-3 p-5">
+            <div className="flex items-center justify-between text-sm"><span className="font-bold text-slate-500">العميل</span><span className="font-extrabold">{result.customer?.name} • <span dir="ltr">{result.customer?.phone}</span></span></div>
+            <div className="flex items-center justify-between text-sm"><span className="font-bold text-slate-500">الاشتراك</span><span className="font-extrabold">{result.platformName} — {result.durationDays} يوم</span></div>
+            <div className="space-y-2 rounded-2xl border-2 border-dashed border-emerald-300 bg-[#f2fbf7] p-4">
+              {rows.map((row) => (
+                <div key={row.l} className="flex items-center gap-2 rounded-xl bg-white px-3 py-2.5 shadow-sm">
+                  <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">{row.l}</div><div dir="ltr" className="truncate text-left font-mono text-[15px] font-bold text-slate-900">{row.v}</div></div>
+                  <CopyBtn text={row.v} />
+                </div>
+              ))}
+            </div>
+            <a href={waUrl} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1fa855] px-5 py-3.5 font-extrabold text-white transition hover:bg-[#178a45]">
+              <MessageCircle size={18} /> إرسال بيانات التسليم عبر واتساب
+            </a>
+            <div className="flex justify-center"><CopyBtn text={result.whatsappMessage || ""} label="نسخ الرسالة كاملة" /></div>
+            <button onClick={reset} className="btn-primary w-full"><Plus size={18} /> عملية بيع جديدة</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ---------------- SUBMITTED: locked until admin confirms ----------------
   if (result) {
-    if (result.manual && result.delivered) {
-      const d = result.delivered;
-      const rows = [
-        { l: "📧 الإيميل", v: d.email },
-        { l: "🔑 كلمة المرور", v: d.password },
-        { l: "🔗 الرابط", v: d.link },
-        { l: "🎟️ الكود", v: d.code },
-        { l: "📝 ملاحظة", v: d.note },
-      ].filter((r) => r.v);
-      return (
-        <div className="pop-in mx-auto max-w-2xl">
-          <div className="card-deep overflow-hidden">
-            <div className="relative px-7 py-10 text-center">
-              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[#26c281] to-[#0b6e4f] shadow-[0_16px_40px_rgba(38,194,129,.4)]">
-                <CheckCircle2 size={44} strokeWidth={2.2} className="text-white" />
-              </div>
-              <h2 className="mt-5 text-3xl font-black tracking-tight text-white">تم التسليم اليدوي بنجاح</h2>
-              <p className="mx-auto mt-2 max-w-md text-sm font-semibold leading-relaxed text-slate-300">{result.message}</p>
-            </div>
-            <div className="space-y-4 px-6 pb-7">
-              <div className="rounded-2xl border border-white/10 bg-white/[.04] p-4">
-                <div className="flex items-center justify-between gap-3 py-1.5">
-                  <span className="text-xs font-bold text-slate-400">العميل</span>
-                  <span className="text-sm font-extrabold text-white">{result.customer.name} • <span dir="ltr" className="font-mono">{result.customer.phone}</span></span>
-                </div>
-                <div className="my-2 h-px bg-white/10" />
-                <div className="flex items-center justify-between gap-3 py-1.5">
-                  <span className="text-xs font-bold text-slate-400">الطلب</span>
-                  <span className="text-sm font-extrabold text-white">{result.platformName} — تسليم يدوي — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {rows.map((row) => (
-                  <div key={row.l} className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
-                    <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">{row.l}</div><div dir="ltr" className="truncate text-left font-mono text-[15px] font-bold text-white">{row.v}</div></div>
-                    <CopyBtn text={row.v} />
-                  </div>
-                ))}
-              </div>
-              <a href={waLink(result.customer.phone, result.whatsappMessage)} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1fa855] px-5 py-3.5 font-extrabold text-white transition hover:bg-[#178a45]">
-                إرسال البيانات للعميل عبر واتساب
-              </a>
-              <div className="flex justify-center"><CopyBtn text={result.whatsappMessage} label="نسخ رسالة الواتساب كاملة" /></div>
-              <p className="text-center text-[11px] font-semibold text-slate-500">سُجّل السند بانتظار مراجعة المدير — والبيانات ظاهرة لأنك أدخلتها بنفسك.</p>
-              <button onClick={reset} className="btn-primary w-full"><Plus size={18} /> عملية بيع جديدة</button>
-            </div>
-          </div>
-        </div>
-      );
-    }
     return (
       <div className="pop-in mx-auto max-w-2xl">
         <div className="card-deep hero-lock overflow-hidden">
@@ -231,7 +217,7 @@ export default function SaleForm() {
               <div className="my-2 h-px bg-white/10" />
               <div className="flex items-center justify-between gap-3 py-1.5">
                 <span className="text-xs font-bold text-slate-400">الطلب</span>
-                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.deliveryMode === "LINK_ONLY" ? "تسليم برابط" : result.deliveryMode === "ON_DEMAND_EMAIL" || result.onDemand ? "تفعيل على الإيميل" : result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
+                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.onDemand ? "عند الطلب" : result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.durationDays} يوم</span>
               </div>
             </div>
 
@@ -243,9 +229,9 @@ export default function SaleForm() {
                   </div>
                   <p className="mt-3 text-base font-black text-white">الطلب بانتظار تفعيل المدير</p>
                   <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    {result.deliveryMode === "LINK_ONLY"
-                      ? <>هذا الاشتراك يُسلَّم <b className="text-white">برابط دعوة</b> (لا يُسحب من المخزون). المدير سيضع الرابط ويضغط «تأكيد الإرسال» فيصل العميل إشعار واتساب بالرابط، ويظهر لك في <b className="text-white">«مبيعاتي»</b>.</>
-                      : <>هذا الاشتراك يُفعَّل <b className="text-white">يدوياً على إيميل العميل</b> (لا يُسحب من المخزون). المدير سيصله إشعار فوراً، وبعد أن يفعّل حساب العميل ويضغط «تأكيد التفعيل» يصل العميل إشعار واتساب، وتظهر لك الحالة في <b className="text-white">«مبيعاتي»</b>.</>}
+                    هذا الاشتراك يُفعَّل <b className="text-white">يدوياً عند الطلب</b> (لا يُسحب من المخزون).
+                    المدير سيصله إشعار فوراً، وبعد أن يفعّل حساب العميل ويضغط «تم التفعيل»
+                    يصل العميل إشعار واتساب بالبيانات، وتظهر لك البيانات في <b className="text-white">«مبيعاتي»</b>.
                   </p>
                 </>
               ) : (
@@ -297,33 +283,78 @@ export default function SaleForm() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {meta.platforms.map((p: any) => {
               const s = slots(p.id); const active = platformId === p.id;
-              const pm = normalizeDeliveryMode(p.deliveryMode);
+              const od = p.deliveryMode === "ON_DEMAND";
               return (
                 <button key={p.id} type="button" onClick={() => setPlatformId(p.id)}
-                  className={`choice ${active ? "choice-selected-blue" : ""} ${pm === "INSTANT_INVENTORY" && s === 0 ? "opacity-50" : ""}`}>
+                  className={`choice ${active ? "choice-selected-blue" : ""} ${!od && s === 0 ? "opacity-50" : ""}`}>
                   <div className="flex items-start justify-between gap-2">
                     <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={64} />
                     {active && <CheckCircle2 size={18} className="text-white" />}
                   </div>
                   <div className="mt-3 text-[13px] font-extrabold leading-tight">{p.name}</div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {pm === "LINK_ONLY"
-                      ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-blue"}`}>🔗 تسليم برابط</span>
-                      : pm === "ON_DEMAND_EMAIL"
-                        ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-amber"}`}>📧 تفعيل على الإيميل</span>
-                        : s > 0
-                          ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {s} مكان</span>
-                          : <span className={`pill ${active ? "bg-white/15 text-white/70" : "pill-red"}`}>غير متاح حالياً</span>}
-                    {p.isLifetime && <span className="pill pill-gold">♾️ دائم</span>}
+                  <div className="mt-2">
+                    {od
+                      ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-amber"}`}>عند الطلب — يفعّله المدير</span>
+                      : s > 0
+                        ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {s} مكان</span>
+                        : <span className={`pill ${active ? "bg-white/15 text-white/70" : "pill-red"}`}>غير متاح حالياً</span>}
                   </div>
                 </button>
               );
             })}
           </div>
 
-          {isInstant && <div className="divider" />}
+          {/* Delivery mode: auto from stock vs manual immediate */}
+          <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4">
+            <h4 className="mb-2 text-sm font-black text-white">طريقة التسليم</h4>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button type="button" onClick={() => setDeliveryMode("AUTO")}
+                className={`choice ${!isManual ? "choice-selected-blue" : ""}`}>
+                <div className="flex items-center gap-2">
+                  <RefreshCcw size={16} className={!isManual ? "text-white" : "text-[#63a8ff]"} />
+                  <span className="text-sm font-extrabold">صرف تلقائي من المخزون</span>
+                </div>
+                <p className="mt-1 text-[11px] font-semibold text-slate-400">يُسحب حساب جاهز من مخزون المنصة</p>
+              </button>
+              <button type="button" onClick={() => setDeliveryMode("MANUAL")}
+                className={`choice ${isManual ? "choice-selected" : ""}`}>
+                <div className="flex items-center gap-2">
+                  <Plus size={16} className={isManual ? "text-white" : "text-[#63a8ff]"} />
+                  <span className="text-sm font-extrabold">تسليم يدوي فوري</span>
+                </div>
+                <p className="mt-1 text-[11px] font-semibold text-slate-400">أدخل بيانات التسليم بنفسك</p>
+              </button>
+            </div>
+          </div>
 
-          {isInstant && (
+          {isManual && (
+            <div className="space-y-3 rounded-2xl border border-[#5ba2ff]/30 bg-[#2f7bff]/5 p-4">
+              <h4 className="text-sm font-black text-white">محتوى التسليم اليدوي</h4>
+              <select className="field" value={manualDeliveryType} onChange={(e) => setManualDeliveryType(e.target.value as any)}>
+                <option value="CREDENTIALS">بيانات حساب (إيميل + كلمة مرور)</option>
+                <option value="INVITE_LINK">رابط دعوة / تفعيل</option>
+                <option value="LICENSE_KEY">كود / مفتاح رقمي</option>
+              </select>
+              {manualDeliveryType === "CREDENTIALS" && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div><label className="label">📧 إيميل الحساب *</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualEmail} onChange={(e) => setManualEmail(e.target.value)} placeholder="customer@gmail.com" /></div>
+                  <div><label className="label">🔑 كلمة المرور</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualPassword} onChange={(e) => setManualPassword(e.target.value)} placeholder="••••••" /></div>
+                  <div><label className="label">🔒 PIN (اختياري)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualPin} onChange={(e) => setManualPin(e.target.value)} /></div>
+                </div>
+              )}
+              {manualDeliveryType === "INVITE_LINK" && (
+                <div><label className="label">🔗 رابط الدعوة / التفعيل *</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualLink} onChange={(e) => setManualLink(e.target.value)} placeholder="https://…" /></div>
+              )}
+              {manualDeliveryType === "LICENSE_KEY" && (
+                <div><label className="label">🎫 الكود / المفتاح *</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualLicenseKey} onChange={(e) => setManualLicenseKey(e.target.value)} /></div>
+              )}
+              <div><label className="label">📝 ملاحظة للعميل (اختياري)</label><input className="field" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div>
+            </div>
+          )}
+
+          {!isManual && !isOnDemand && <div className="divider" />}
+
+          {!isManual && !isOnDemand && (
           <div>
             <h4 className="flex items-center gap-2 text-sm font-black text-white">
               <Sparkles size={16} className="text-[#1e5eff]" />
@@ -363,53 +394,6 @@ export default function SaleForm() {
             </div>
           </div>
           )}
-
-          <div className="divider" />
-
-          <div>
-            <h4 className="flex items-center gap-2 text-sm font-black text-white">
-              <Zap size={16} className="text-[#f5d67b]" />
-              طريقة الصرف
-            </h4>
-            <p className="mt-1 text-xs font-semibold text-slate-400">اختر الصرف التلقائي من المخزون، أو التسليم اليدوي الفوري ببيانات تدخلها بنفسك.</p>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button type="button" onClick={() => setDeliverySource("AUTO")}
-                className={`choice ${deliverySource === "AUTO" ? "choice-selected-blue" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${deliverySource === "AUTO" ? "bg-white/15 text-white" : "bg-[#2f7bff]/15 text-[#63a8ff]"}`}>
-                    <Zap size={22} />
-                  </div>
-                  <div>
-                    <div className="text-[15px] font-black">صرف تلقائي من المخزون</div>
-                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold leading-relaxed text-slate-400">يسحب النظام حساباً جاهزاً تلقائياً، والبيانات تظهر بعد تأكيد المدير.</p>
-                  </div>
-                </div>
-              </button>
-              <button type="button" onClick={() => setDeliverySource("MANUAL")}
-                className={`choice ${deliverySource === "MANUAL" ? "choice-selected" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${deliverySource === "MANUAL" ? "bg-white/15 text-white" : "bg-[#c99327]/15 text-[#f5d67b]"}`}>
-                    <Hand size={22} />
-                  </div>
-                  <div>
-                    <div className="text-[15px] font-black">تسليم يدوي فوري</div>
-                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold leading-relaxed text-slate-400">تدخل البيانات بنفسك وتُسلَّم للعميل فوراً دون انتظار المخزون.</p>
-                  </div>
-                </div>
-              </button>
-            </div>
-
-            {deliverySource === "MANUAL" && (
-              <div className="pop-in mt-3 grid gap-3 rounded-2xl border border-amber-300/30 bg-amber-400/5 p-4 sm:grid-cols-2">
-                <div className="sm:col-span-2 text-[12px] font-bold text-amber-200">أدخل بيانات التسليم (يكفي حقل واحد على الأقل — إيميل أو كلمة مرور أو رابط أو كود):</div>
-                <div><label className="label">📧 الإيميل</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualEmail} onChange={(e) => setManualEmail(e.target.value)} /></div>
-                <div><label className="label">🔑 كلمة المرور</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualPassword} onChange={(e) => setManualPassword(e.target.value)} /></div>
-                <div><label className="label">🔗 الرابط</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="https://..." value={manualLink} onChange={(e) => setManualLink(e.target.value)} /></div>
-                <div><label className="label">🎟️ الكود</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualCode} onChange={(e) => setManualCode(e.target.value)} /></div>
-                <div className="sm:col-span-2"><label className="label">📝 ملاحظة (اختياري)</label><input className="field" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div>
-              </div>
-            )}
-          </div>
         </div>
       </section>
 
@@ -453,7 +437,7 @@ export default function SaleForm() {
                   </div>
                 )}
 
-                {renewable && (
+                {renewable && !isManual && (
                   <div className="card-deep p-4">
                     <div className="flex items-center gap-2">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10">
@@ -499,19 +483,19 @@ export default function SaleForm() {
           ) : null}
 
           {/* بيانات إضافية يطلبها المنصة حسب إعداداتها */}
-          {(emailRequired || (plat?.extraFieldLabel && !isLinkMode)) && (
+          {(plat?.requiresCustomerEmail || plat?.extraFieldLabel) && (
             <div className="pop-in space-y-3 rounded-2xl border border-[#5ba2ff]/30 bg-gradient-to-br from-[#2c6dff]/10 to-transparent px-5 py-4">
               <div className="flex items-center gap-2">
                 <ScanLine size={16} className="text-[#63a8ff]" />
                 <span className="text-[13px] font-black text-white">بيانات يحتاجها المدير لتفعيل هذا الاشتراك</span>
               </div>
-              {emailRequired && (
+              {plat?.requiresCustomerEmail && (
                 <div>
                   <label className="label">📧 إيميل العميل (للتفعيل عليه) <span className="text-[#ff5769]">إلزامي</span></label>
                   <input className="field" dir="ltr" style={{ textAlign: "left" }} type="email" placeholder="customer@gmail.com" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
                 </div>
               )}
-              {plat?.extraFieldLabel && !isLinkMode && (
+              {plat?.extraFieldLabel && (
                 <div>
                   <label className="label">{plat.extraFieldLabel}</label>
                   <input className="field" placeholder={plat.extraFieldLabel} value={customerExtra} onChange={(e) => setCustomerExtra(e.target.value)} />
@@ -523,7 +507,7 @@ export default function SaleForm() {
       </section>
 
       {/* تنبيه: اشتراك عند الطلب */}
-      {!isInstant && (
+      {isOnDemand && (
         <div className="pop-in flex items-start gap-3 rounded-2xl border border-[#fbbf24]/30 bg-gradient-to-br from-[#f59e0b]/10 to-transparent px-5 py-4">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15">
             <ScanLine size={20} className="text-[#fbbf24]" />
@@ -552,15 +536,9 @@ export default function SaleForm() {
 
         <div className="grid gap-4 p-6 sm:grid-cols-2">
           <div>
-            <label className="label">⏳ مدة الاشتراك</label>
-            {isLifetime ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم — بدون مدة انتهاء</div>
-            ) : (
-              <>
-                <input className="field" inputMode="numeric" min={1} placeholder="مثال: 1 أو 15 أو 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-                <p className="mt-1 text-[11px] font-semibold text-slate-500">من يوم واحد فما فوق. الموظف يختار العدد يدوياً.</p>
-              </>
-            )}
+            <label className="label">⏳ مدة الاشتراك بالأيام</label>
+            <input className="field" inputMode="numeric" min={1} placeholder="مثال: 1 أو 15 أو 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
+            <p className="mt-1 text-[11px] font-semibold text-slate-500">من يوم واحد فما فوق. الموظف يختار العدد يدوياً.</p>
           </div>
           <div>
             <label className="label">💵 السعر (ر.ي)</label>
@@ -682,7 +660,7 @@ export default function SaleForm() {
       </div>
 
       <p className="px-4 pb-4 text-center text-[11.5px] font-semibold leading-relaxed text-slate-400">
-        يُحجز الحساب مؤقتاً باسم العملية، لكن بياناته تبقى مقفلة ولا تُسلَّم للعميل حتى يؤكد المدير السند.{" "}
+        {isManual ? "لن يُسحب حساب من المخزون." : "يُحجز الحساب مؤقتاً باسم العملية، لكن بياناته تبقى مقفلة ولا تُسلَّم للعميل حتى يؤكد المدير السند."}{" "}
         <Link href="/renewals" className="link-brand">عرض التجديدات المستحقة</Link>
       </p>
     </div>

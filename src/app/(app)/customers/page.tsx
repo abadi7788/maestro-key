@@ -55,7 +55,7 @@ export default function CustomersPage() {
                       <span className="text-xs font-bold text-slate-500" dir="ltr">{c.phone}</span>
                     </span>
                     <span className="flex flex-wrap gap-1.5">
-                      {active.length ? active.map((r: any) => <Badge key={r.id} tone="green">{r.isLifetime ? `${r.platformName} — دائم ♾️` : `${r.platformName} حتى ${fmtDate(r.endDate)}`}</Badge>) : <Badge>لا اشتراك نشط</Badge>}
+                      {active.length ? active.map((r: any) => <Badge key={r.id} tone="green">{r.platformName} حتى {fmtDate(r.endDate)}</Badge>) : <Badge>لا اشتراك نشط</Badge>}
                       <Badge tone="gold">دفع إجمالاً: {money(c.totalPaid)}</Badge>
                     </span>
                   </button>
@@ -72,7 +72,7 @@ export default function CustomersPage() {
                         {c.rentals.map((r: any) => (
                           <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#101828] px-3 py-2.5 text-[13px] font-semibold shadow-sm">
                             <span className="font-extrabold">{r.platformName}</span>{rentalBadge(r.status)}
-                            <span className="text-slate-500">{r.isLifetime ? "اشتراك دائم ♾️" : <>{fmtDate(r.startDate)} ← {fmtDate(r.endDate)} ({r.durationDays} يوم)</>}{r.activationStatus === "ACTIVATED" ? " • ⚡ مُفعّل" : r.activationStatus === "PENDING" ? " • ⏳ بانتظار التفعيل" : ""}</span>
+                            <span className="text-slate-500">{fmtDate(r.startDate)} ← {fmtDate(r.endDate)} ({r.durationDays} يوم)</span>
                             <span dir="ltr" className="font-mono text-xs text-slate-400">{r.accountEmail}</span>
                             {r.whatsappAlertSent && <Badge tone="blue">نُبّه واتساب ✓</Badge>}
                           </div>
