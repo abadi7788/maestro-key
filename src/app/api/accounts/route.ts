@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { accounts, profiles, platforms, rentals, customers } from "@/db/schema";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { requireAdmin, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { encryptText } from "@/lib/crypto";
@@ -16,8 +16,6 @@ export async function GET(req: Request) {
     await requireAdmin();
     await runDailyJob({ sendAlerts: false });
     const trash = new URL(req.url).searchParams.get("trash") === "1";
-
-    // قراءة الحسابات مع مطابقة حالة الأحرف بشكل غير حساس لضمان ظهور الـ 27 حساباً
     const rows = await db.select({
       id: accounts.id, platformId: accounts.platformId, type: accounts.type, maxProfiles: accounts.maxProfiles,
       deliveryKind: accounts.deliveryKind,
@@ -28,13 +26,7 @@ export async function GET(req: Request) {
       isDeleted: accounts.isDeleted, deletedAt: accounts.deletedAt, deletedReason: accounts.deletedReason,
       createdAt: accounts.createdAt, platformName: platforms.name, platformColor: platforms.color, platformShort: platforms.shortName, platformImage: platforms.imageUrl,
     }).from(accounts).innerJoin(platforms, eq(accounts.platformId, platforms.id))
-      .where(
-        and(
-          eq(accounts.isDeleted, trash),
-          // قراءة الحسابات سواء كانت الحالة مسجلة بحروف كبيرة أو صغيرة
-          sql`LOWER(${accounts.status}) IN ('available', 'full', 'rented', 'needs_password_change')`
-        )
-      ).orderBy(desc(accounts.createdAt));
+      .where(eq(accounts.isDeleted, trash)).orderBy(desc(accounts.createdAt));
 
     const ids = rows.map((r) => r.id);
     const profs = ids.length ? await db.select().from(profiles).where(inArray(profiles.accountId, ids)).orderBy(profiles.profileNo) : [];
@@ -66,7 +58,7 @@ export async function POST(req: Request) {
     const b = await req.json().catch(() => ({}));
     const platformId = Number(b.platformId);
     if (!platformId) return jsonError("اختر المنصة أولاً");
-    
+    // صيغة التسليم تحدد الحقول المطلوبة — وكل حقل تفصيلي اختياري بحد ذاته
     const deliveryKind = normalizeAccountDelivery(b.deliveryKind);
     const email = String(b.email || "").trim() || null;
     const password = String(b.password || "");
@@ -74,7 +66,7 @@ export async function POST(req: Request) {
     const licenseKey = String(b.licenseKey || "").trim();
     const maxUsesRaw = b.maxUses === "" || b.maxUses === null || b.maxUses === undefined ? null : Number(b.maxUses);
     const maxUses = maxUsesRaw === null ? null : (Number.isFinite(maxUsesRaw) && maxUsesRaw > 0 ? Math.floor(maxUsesRaw) : null);
-    
+    const pin = String(b.pin || "").trim() || null;
     const notes = String(b.notes || "").trim() || null;
     const salePrice = b.salePrice ? Number(b.salePrice) : null;
     const expiryRaw = String(b.expiryDate || "").trim();
@@ -90,16 +82,9 @@ export async function POST(req: Request) {
     }
 
     const type = deliveryKind === "CREDENTIALS" && b.type === "PROFILE" ? "PROFILE" : "FULL";
-    
-    // استخراج مصفوفة البروفايلات المدخلة ديناميكياً
-    const incomingProfiles: Array<{ profileName?: string; pin?: string }> = Array.isArray(b.profiles) ? b.profiles : [];
     const maxProfiles = type === "PROFILE"
-      ? (incomingProfiles.length > 0 ? incomingProfiles.length : (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(10, Math.max(1, Number(b.maxProfiles)))))
+      ? (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(10, Math.max(1, Number(b.maxProfiles))))
       : 1;
-
-    // الحساب الكامل لا يحتاج PIN نهائياً
-    const pin = (deliveryKind === "CREDENTIALS" && type === "PROFILE") ? (String(b.pin || "").trim() || null) : null;
-
     const [acc] = await db.insert(accounts).values({
       platformId, type, maxProfiles,
       deliveryKind,
@@ -108,31 +93,16 @@ export async function POST(req: Request) {
       licenseKeyEncrypted: licenseKey ? encryptText(licenseKey) : null,
       maxUses: deliveryKind === "INVITE_LINK" ? maxUses : null,
       usedCount: 0,
-      pin,
+      pin: deliveryKind === "CREDENTIALS" ? pin : null,
       expiryDate, notes,
       salePrice: salePrice && Number.isFinite(salePrice) ? salePrice : null,
       status: "AVAILABLE",
     }).returning();
-
-    // حفظ البروفايلات التابعة بالاسم والـ PIN المخصص
     if (type === "PROFILE") {
-      if (incomingProfiles.length > 0) {
-        await db.insert(profiles).values(incomingProfiles.map((p, i) => ({
-          accountId: acc.id,
-          profileNo: i + 1,
-          profileName: String(p.profileName || `بروفايل ${i + 1}`).trim(),
-          pin: String(p.pin || "").trim() || null,
-          status: "AVAILABLE",
-          isOccupied: false,
-        })));
-      } else {
-        await db.insert(profiles).values(Array.from({ length: maxProfiles }, (_, i) => ({
-          accountId: acc.id, profileNo: i + 1, profileName: `بروفايل ${i + 1}`, pin: null,
-          status: "AVAILABLE", isOccupied: false,
-        })));
-      }
+      await db.insert(profiles).values(Array.from({ length: maxProfiles }, (_, i) => ({
+        accountId: acc.id, profileNo: i + 1, profileName: `بروفايل ${i + 1}`, pin: `${1000 + i + 1}`,
+      })));
     }
-
     const [plat] = await db.select({ name: platforms.name }).from(platforms).where(eq(platforms.id, platformId)).limit(1);
     await notifyAdmin({
       title: "إضافة حساب",
