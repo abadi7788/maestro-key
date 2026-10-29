@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, text, varchar, integer, boolean, timestamp, uniqueIndex, index,
+  pgTable, serial, text, varchar, integer, boolean, timestamp, uniqueIndex, index, numeric,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -7,7 +7,8 @@ export const users = pgTable("users", {
   username: varchar("username", { length: 80 }).notNull().unique(),
   passwordHash: text("password_hash").notNull(),
   displayName: varchar("display_name", { length: 120 }).notNull(),
-  role: varchar("role", { length: 20 }).notNull().default("EMPLOYEE"), // ADMIN | EMPLOYEE
+  role: varchar("role", { length: 20 }).notNull().default("USER"), // ADMIN | EMPLOYEE / STAFF | USER
+  walletBalance: numeric("wallet_balance", { precision: 12, scale: 2 }).default("0.00"),
   isActive: boolean("is_active").notNull().default(true),
   failedAttempts: integer("failed_attempts").notNull().default(0),
   lockedUntil: timestamp("locked_until"),
@@ -118,7 +119,6 @@ export const customers = pgTable("customers", {
 
 export const rentals = pgTable("rentals", {
   id: serial("id").primaryKey(),
-  // nullable: طلبات "عند الطلب" لا ترتبط بحساب مخزون حتى يُفعّل
   accountId: integer("account_id").references(() => accounts.id),
   profileId: integer("profile_id").references(() => profiles.id),
   customerId: integer("customer_id").notNull().references(() => customers.id),
@@ -134,12 +134,10 @@ export const rentals = pgTable("rentals", {
   passwordUsedEncrypted: text("password_used_encrypted"),
   whatsappAlertSent: boolean("whatsapp_alert_sent").notNull().default(false),
   whatsappAlertSentAt: timestamp("whatsapp_alert_sent_at"),
-  // بيانات إضافية من العميل للتفعيل (إيميل/حقل مخصص)
   customerEmail: varchar("customer_email", { length: 200 }),
   customerExtra: text("customer_extra"),
   // NOT_REQUIRED | PENDING | ACTIVATED
   activationStatus: varchar("activation_status", { length: 20 }).notNull().default("NOT_REQUIRED"),
-  // بيانات التسليم التي يدخلها المدير عند "تم التفعيل"
   activatedEmail: varchar("activated_email", { length: 200 }),
   activatedPassword: text("activated_password"),
   activatedLink: text("activated_link"),
@@ -147,7 +145,6 @@ export const rentals = pgTable("rentals", {
   activatedNote: text("activated_note"),
   activatedAt: timestamp("activated_at"),
   activatedBy: integer("activated_by").references(() => users.id),
-  // مصدر الصرف: AUTO (تلقائي من المخزون) | MANUAL (تسليم يدوي فوري من الموظف)
   deliverySource: varchar("delivery_source", { length: 20 }).notNull().default("AUTO"),
   manualEmail: varchar("manual_email", { length: 200 }),
   manualPasswordEncrypted: text("manual_password_encrypted"),
@@ -163,7 +160,7 @@ export const rentals = pgTable("rentals", {
 export const payments = pgTable("payments", {
   id: serial("id").primaryKey(),
   rentalId: integer("rental_id").notNull().references(() => rentals.id),
-  paymentMethodId: integer("payment_method_id").notNull().references(() => paymentMethods.id),
+  paymentMethodId: integer("payment_method_id").references(() => paymentMethods.id), // جعله اختياري في حال الدفع من المحفظة
   transactionRef: varchar("transaction_ref", { length: 160 }).notNull(),
   amount: integer("amount").notNull().default(0),
   receiptImageData: text("receipt_image_data"),
@@ -179,7 +176,7 @@ export const payments = pgTable("payments", {
   previousRentalStatus: varchar("previous_rental_status", { length: 20 }),
   createdBy: integer("created_by").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (t) => [uniqueIndex("payments_method_ref_idx").on(t.paymentMethodId, t.transactionRef)]);
+}, (t) => [index("payments_rental_idx").on(t.rentalId)]);
 
 export const auditLogs = pgTable("audit_logs", {
   id: serial("id").primaryKey(),
@@ -206,7 +203,7 @@ export const whatsappLogs = pgTable("whatsapp_logs", {
   phone: varchar("phone", { length: 40 }).notNull(),
   message: text("message").notNull(),
   kind: varchar("kind", { length: 40 }).notNull().default("EXPIRY_WARNING"),
-  status: varchar("status", { length: 40 }).notNull().default("QUEUED"), // SENT | QUEUED | SIMULATED | FAILED
+  status: varchar("status", { length: 40 }).notNull().default("QUEUED"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
