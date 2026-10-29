@@ -32,6 +32,10 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  let walletDeducted = false;
+  let chargedUserId: number | null = null;
+  let chargedAmount = 0;
+
   try {
     await ensureSeeded();
     const user = await requireUser();
@@ -39,70 +43,90 @@ export async function POST(req: Request) {
     const b = await req.json().catch(() => ({}));
     const platformId = Number(b.platformId);
     const durationDays = Number(b.durationDays);
-    const paymentMethodId = Number(b.paymentMethodId);
-    const transactionRef = String(b.transactionRef || "").trim();
+    const paymentType = b.paymentType === "WALLET" ? "WALLET" : "RECEIPT";
+    const paymentMethodId = paymentType === "WALLET" ? null : Number(b.paymentMethodId);
+    const transactionRef = paymentType === "WALLET" ? (b.transactionRef || `WALLET-${Date.now().toString().slice(-6)}`) : String(b.transactionRef || "").trim();
     const amount = Number(b.amount || 0);
-    const receipt: string = String(b.receiptImageData || "");
+    const receipt: string = paymentType === "WALLET" ? "" : String(b.receiptImageData || "");
     const customerName = String(b.customerName || "").trim();
     const customerPhone = cleanPhone(String(b.customerPhone || ""));
     const forceNew = b.mode === "NEW";
-    // مصدر الصرف: AUTO (تلقائي من المخزون) | MANUAL (تسليم يدوي فوري من الموظف)
     const deliverySource = b.deliverySource === "MANUAL" ? "MANUAL" : "AUTO";
     const manualEmail = String(b.manualEmail || "").trim();
     const manualPassword = String(b.manualPassword || "");
     const manualLink = String(b.manualLink || "").trim();
     const manualCode = String(b.manualCode || "").trim();
     const manualNote = String(b.manualNote || "").trim();
-    // نوع الاشتراك المطلوب: FULL = حساب كامل، PROFILE = ملف/بروفايل، AUTO = أيهما متوفر (افتراضي)
+    const manualProfileName = String(b.manualProfileName || "").trim();
+    const manualPin = String(b.manualPin || "").trim();
+
     const rawType = b.accountType ?? b.saleType;
     const saleType = rawType === "FULL" || rawType === "FULL_PROFILE" ? "FULL" : rawType === "PROFILE" ? "PROFILE" : "AUTO";
-    const accountTypeLabel = saleType === "FULL" ? "FULL" : "PROFILE";
 
     if (!platformId) return jsonError("اختر المنصة أولاً");
-    // ملاحظة: التحقق من المدة يتم بعد قراءة المنصة (الاشتراك الدائم لا يحتاج مدة)
     if (!Number.isFinite(amount) || amount <= 0) return jsonError("أدخل سعر الاشتراك يدوياً");
     if (customerPhone.length < 7) return jsonError("أدخل رقم واتساب العميل بشكل صحيح");
-    if (!paymentMethodId || !transactionRef) return jsonError("يجب اختيار البنك وإدخال رقم العملية لإتمام العملية");
-    if (!receipt || !receipt.startsWith("data:image")) return jsonError("إرفاق صورة السند إلزامي — صوّر السند أو ارفعه من الألبوم");
-    if (receipt.length > 2_200_000) return jsonError("صورة السند كبيرة جداً، أعد تصويرها");
 
-    // Duplicate receipt guards
-    const dupRef = await db.select({ id: payments.id }).from(payments)
-      .where(and(eq(payments.paymentMethodId, paymentMethodId), eq(payments.transactionRef, transactionRef))).limit(1);
-    if (dupRef.length) return jsonError("هذا السند مُستخدَم سابقاً — نفس البنك ورقم العملية مسجلان من قبل", 409);
-    const receiptHash = hashText(receipt);
-    const dupImg = await db.select({ id: payments.id }).from(payments).where(eq(payments.receiptHash, receiptHash)).limit(1);
-    if (dupImg.length) return jsonError("صورة السند هذه مُستخدمة سابقاً في عملية أخرى", 409);
+    if (paymentType === "WALLET") {
+      try {
+        await deductFromWallet(user.id, amount, "شراء اشتراك عبر المحفظة");
+        walletDeducted = true;
+        chargedUserId = user.id;
+        chargedAmount = amount;
+      } catch (err: any) {
+        return jsonError(err.message || "رصيد المحفظة غير كافٍ لإتمام العملية", 400);
+      }
+    } else {
+      if (!paymentMethodId || !transactionRef) return jsonError("يجب اختيار البنك وإدخال رقم العملية لإتمام العملية");
+      if (!receipt || !receipt.startsWith("data:image")) return jsonError("إرفاق صورة السند إلزامي — صوّر السند أو ارفعه من الألبوم");
+      if (receipt.length > 2_200_000) return jsonError("صورة السند كبيرة جداً، أعد تصويرها");
+
+      const dupRef = await db.select({ id: payments.id }).from(payments)
+        .where(and(eq(payments.paymentMethodId, paymentMethodId), eq(payments.transactionRef, transactionRef))).limit(1);
+      if (dupRef.length) return jsonError("هذا السند مُستخدَم سابقاً — نفس البنك ورقم العملية مسجلان من قبل", 409);
+      const receiptHash = hashText(receipt);
+      const dupImg = await db.select({ id: payments.id }).from(payments).where(eq(payments.receiptHash, receiptHash)).limit(1);
+      if (dupImg.length) return jsonError("صورة السند هذه مُستخدمة سابقاً في عملية أخرى", 409);
+    }
 
     const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
-    if (!platform) return jsonError("منصة غير موجودة");
+    if (!platform) {
+      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: منصة غير موجودة");
+      return jsonError("منصة غير موجودة");
+    }
+
     const mode: DeliveryMode = normalizeDeliveryMode(platform.deliveryMode);
     const lifetime = !!platform.isLifetime;
     const days = lifetime ? 0 : durationDays;
     if (!lifetime && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: مدة اشتراك غير صالحة");
       return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
     }
 
-    // ---------- بيانات إضافية من العميل حسب نمط التسليم ----------
     const customerEmail = String(b.customerEmail || "").trim();
     const customerExtra = String(b.customerExtra || "").trim();
     const emailRequired = mode === "ON_DEMAND_EMAIL" || (mode === "INSTANT_INVENTORY" && platform.requiresCustomerEmail);
     if (emailRequired && !customerEmail) {
+      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: مطلوب إيميل العميل");
       return jsonError("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله أولاً");
     }
 
-    // Customer upsert by phone
     let [customer] = await db.select().from(customers).where(eq(customers.phone, customerPhone)).limit(1);
     if (!customer) {
-      if (!customerName) return jsonError("أدخل اسم العميل الجديد");
+      if (!customerName) {
+        if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: اسم العميل مفقود");
+        return jsonError("أدخل اسم العميل الجديد");
+      }
       [customer] = await db.insert(customers).values({ name: customerName, phone: customerPhone }).returning();
     }
 
     const now = new Date();
+    const paymentStatus = paymentType === "WALLET" ? "CONFIRMED" : "PENDING";
 
-    // ---------- مسار التسليم اليدوي الفوري: الموظف يسلّم مباشرة دون سحب من المخزون ----------
+    // ---------- مسار التسليم اليدوي الفوري ----------
     if (deliverySource === "MANUAL") {
       if (!manualEmail && !manualPassword && !manualLink && !manualCode) {
+        if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: لم يتم إدخال بيانات تسليم");
         return jsonError("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود)");
       }
       const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
@@ -119,17 +143,31 @@ export async function POST(req: Request) {
         manualCodeEncrypted: manualCode ? encryptText(manualCode) : null,
         manualNote: manualNote || null,
       }).returning();
+
       await db.insert(payments).values({
-        rentalId: rental.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-        status: "PENDING", durationDays: days, createdBy: user.id,
+        rentalId: rental.id, 
+        paymentMethodId: paymentMethodId ?? null, 
+        transactionRef, 
+        amount, 
+        receiptImageData: receipt || null, 
+        receiptHash: receipt ? hashText(receipt) : null,
+        status: paymentStatus, 
+        reviewedBy: paymentType === "WALLET" ? user.id : null,
+        reviewedAt: paymentType === "WALLET" ? now : null,
+        durationDays: days, 
+        createdBy: user.id,
       });
+
       const lines = [
         manualEmail && `📧 الإيميل: ${manualEmail}`,
         manualPassword && `🔑 كلمة المرور: ${manualPassword}`,
+        saleType === "PROFILE" && manualProfileName && `👤 البروفايل: ${manualProfileName}`,
+        saleType === "PROFILE" && manualPin && `🔒 PIN البروفايل: ${manualPin}`,
         manualLink && `🔗 الرابط: ${manualLink}`,
         manualCode && `🎟️ الكود: ${manualCode}`,
         manualNote && `📝 ${manualNote}`,
       ].filter(Boolean).join("\n");
+
       const tpl = await getSetting("whatsapp_activation_template",
         "مبروك {{name}} 🎉\nاشتراك {{platform}} تم تفعيله بنجاح من متجر مايسترو كي 🔑\n{{credentials}}\n⏳ صالح حتى: {{end_date}}");
       const message = renderTemplate(tpl, {
@@ -138,26 +176,30 @@ export async function POST(req: Request) {
         credentials: lines || "تم تسليم اشتراكك بنجاح ✓",
         end_date: lifetime ? "دائم ♾️" : formatDate(neededEnd),
       });
+
       await notifyAdmin({
-        title: "تسليم يدوي فوري",
-        body: `سلّم ${user.displayName || user.username} اشتراك ${customer.name} (${platform.name}) يدوياً — السند بانتظار المراجعة`,
+        title: paymentType === "WALLET" ? "تسليم يدوي (مدفوع بالمحفظة)" : "تسليم يدوي فوري",
+        body: `سلّم ${user.displayName || user.username} اشتراك ${customer.name} (${platform.name}) — ${paymentType === "WALLET" ? "خُصم من المحفظة" : "السند بانتظار المراجعة"}`,
         kind: "MANUAL_SALE",
         href: "/rentals",
       });
-      await audit(user, "MANUAL_SALE", "rentals", rental.id, `تسليم يدوي ${platform.name} — ${customer.name} (${customerPhone}) — سند ${transactionRef}`);
+
+      await audit(user, "MANUAL_SALE", "rentals", rental.id, `تسليم يدوي ${platform.name} — ${customer.name} (${customerPhone}) — ${paymentType}`);
+
       return Response.json({
         ok: true, rentalId: rental.id, manual: true,
         deliveryMode: mode, deliverySource: "MANUAL", isLifetime: lifetime,
-        message: "تم التسليم اليدوي بنجاح — انسخ البيانات وأرسلها للعميل الآن.",
+        accountType: saleType,
+        message: paymentType === "WALLET" ? "تم الخصم من المحفظة والتسليم اليدوي بنجاح!" : "تم التسليم اليدوي بنجاح — انسخ البيانات وأرسلها للعميل الآن.",
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name, durationDays: days,
-        endDate: neededEnd.toISOString(), paymentStatus: "PENDING",
-        delivered: { email: manualEmail, password: manualPassword, link: manualLink, code: manualCode, note: manualNote },
+        endDate: neededEnd.toISOString(), paymentStatus,
+        delivered: { email: manualEmail, password: manualPassword, profileName: manualProfileName, pin: manualPin, link: manualLink, code: manualCode, note: manualNote },
         whatsappMessage: message,
       });
     }
 
-    // ---------- مسار "عند الطلب" (إيميل / رابط): بدون حساب مخزون — المدير يفعّل يدوياً ----------
+    // ---------- مسار "عند الطلب" (إيميل / رابط) ----------
     if (mode !== "INSTANT_INVENTORY") {
       const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
@@ -167,53 +209,58 @@ export async function POST(req: Request) {
         durationDays: days, isLifetime: lifetime, status: "ACTIVE", activationStatus: "PENDING",
         customerEmail: customerEmail || null, customerExtra: customerExtra || null,
       }).returning();
+
       await db.insert(payments).values({
-        rentalId: rental.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-        status: "PENDING", durationDays: days, createdBy: user.id,
+        rentalId: rental.id, 
+        paymentMethodId: paymentMethodId ?? null, 
+        transactionRef, 
+        amount, 
+        receiptImageData: receipt || null, 
+        receiptHash: receipt ? hashText(receipt) : null,
+        status: paymentStatus, 
+        durationDays: days, 
+        createdBy: user.id,
       });
+
       await notifyAdmin({
         title: mode === "LINK_ONLY" ? "طلب رابط — بانتظار الإرسال" : "طلب جديد — بانتظار التفعيل",
-        body: mode === "LINK_ONLY"
-          ? `ضع رابط اشتراك ${customer.name} (${platform.name}) ثم اضغط «تأكيد الإرسال»`
-          : `فعّل اشتراك ${customer.name} (${platform.name}) على إيميله ثم اضغط «تأكيد التفعيل»`,
+        body: `${customer.name} (${platform.name}) — ${paymentType === "WALLET" ? "تم الدفع بالمحفظة" : "بانتظار السند"}`,
         kind: "ACTIVATION",
         href: "/inbox",
       });
-      await audit(user, "ON_DEMAND_SALE", "rentals", rental.id, `طلب ${mode} ${platform.name} — ${customer.name} (${customerPhone}) — بانتظار تفعيل المدير`);
+
       return Response.json({
         ok: true, rentalId: rental.id, onDemand: true, pendingActivation: true,
         deliveryMode: mode, isLifetime: lifetime,
-        message: "تم استلام الطلب والسند وإرساله للمدير. سيُفعَّل اشتراك العميل يدوياً، ويصله إشعار فور التفعيل.",
+        message: paymentType === "WALLET" ? "تم استلام الطلب وخصم المبلغ من المحفظة بنجاح، بانتظار التفعيل." : "تم استلام الطلب والسند وإرساله للمدير.",
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name, durationDays: days,
-        endDate: neededEnd.toISOString(), paymentStatus: "PENDING",
+        endDate: neededEnd.toISOString(), paymentStatus,
       });
     }
 
     async function respondWithAccount(rentalId: number, acc: typeof accounts.$inferSelect, prof: typeof profiles.$inferSelect | null, endDate: Date, isRenewal: boolean) {
-      // 🔒 الأمان: لا تُعرض بيانات الحساب (إيميل/كلمة مرور) للموظف إلا بعد تأكيد المدير للسند.
       const accKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
       const profileLabel = accKind === "INVITE_LINK" ? "🔗 رابط دعوة" : accKind === "LICENSE_KEY" ? "🎟️ كود ترخيص" : (prof ? `بروفايل ${prof.profileNo}` : (acc.type === "FULL" ? "حساب كامل" : "بروفايل"));
-      await audit(user, isRenewal ? "RENEWAL_RECORDED" : "SALE_RECORDED", "rentals", rentalId,
-        `${isRenewal ? "تسجيل تجديد" : "سحب اشتراك"} ${platform.name} — عميل ${customer.name} — بانتظار تأكيد المدير للسند (بيانات الحساب مقفلة)`);
+      
       return Response.json({
         ok: true, rentalId, isRenewal,
-        message: isRenewal
-          ? "تم استلام طلب التجديد والسند — بانتظار مراجعة المدير وتأكيده."
-          : "تم استلام طلب الاشتراك والسند — بانتظار مراجعة المدير. بعد التأكيد ستظهر بيانات الحساب في «مبيعاتي».",
+        message: paymentType === "WALLET" 
+          ? "تم الخصم من المحفظة واعتماد الاشتراك فوراً بنجاح!" 
+          : (isRenewal ? "تم استلام طلب التجديد والسند — بانتظار مراجعة المدير." : "تم استلام طلب الاشتراك والسند — بانتظار مراجعة المدير."),
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name,
         accountType: acc.type === "FULL" ? "FULL" : "PROFILE",
         accountDeliveryKind: accKind,
         durationDays: days, isLifetime: lifetime, deliveryMode: mode,
-        pendingReview: true,
+        pendingReview: paymentType !== "WALLET",
         accountLabel: profileLabel,
         endDate: endDate.toISOString(),
-        paymentStatus: "PENDING",
+        paymentStatus,
       });
     }
 
-    // ---------- Renewal path: extend ACTIVE or reactivate ENDED-not-yet-removed ----------
+    // ---------- Renewal path ----------
     if (!forceNew) {
       const candidates = await db.select().from(rentals)
         .where(and(eq(rentals.customerId, customer.id), eq(rentals.platformId, platformId)))
@@ -235,6 +282,7 @@ export async function POST(req: Request) {
         if (acc && stillHeld) {
           const newEnd = lifetime ? lifetimeEndDate() : (renewable.status === "ACTIVE" ? addDays(new Date(renewable.endDate), days) : addDays(now, days));
           if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < newEnd) {
+            if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: الحساب ينتهي قبل مدة التجديد");
             return jsonError("الحساب الحالي للعميل ينتهي قبل نهاية مدة التجديد. اختر «بيع جديد» لسحب حساب آخر يغطي المدة.", 409);
           }
           await db.update(rentals).set({
@@ -242,32 +290,32 @@ export async function POST(req: Request) {
             endDate: newEnd, durationDays: lifetime ? 0 : days, isLifetime: lifetime,
             whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
           }).where(eq(rentals.id, renewable.id));
+
           await db.insert(payments).values({
-            rentalId: renewable.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-            status: "PENDING", isExtension: true, durationDays: days, previousEndDate: renewable.endDate,
-            previousRentalStatus: renewable.status, createdBy: user.id,
+            rentalId: renewable.id, 
+            paymentMethodId: paymentMethodId ?? null, 
+            transactionRef, 
+            amount, 
+            receiptImageData: receipt || null, 
+            receiptHash: receipt ? hashText(receipt) : null,
+            status: paymentStatus, 
+            isExtension: true, 
+            durationDays: days, 
+            previousEndDate: renewable.endDate,
+            previousRentalStatus: renewable.status, 
+            createdBy: user.id,
           });
+
           await refreshAccountStatus(acc.id);
-          // refresh may keep NEEDS_PASSWORD_CHANGE for FULL if no ended logic; active rental forces RENTED
-          // (روابط الدعوة والأكواد متعددة الاستخدام تُدار حالتها بعدد الاستخدامات فقط)
           const renKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
           if (acc.type === "FULL" && renKind === "CREDENTIALS") await db.update(accounts).set({ status: "RENTED" }).where(eq(accounts.id, acc.id));
-          await notifyAdmin({
-            title: "طلب تجديد",
-            body: `يرجى الموافقة على الطلب — ${customer.name} / ${platform.name}`,
-            kind: "REQUEST",
-            href: "/inbox",
-          });
-          await audit(user, "RENEWAL", "rentals", renewable.id, `تجديد ${platform.name} للعميل ${customer.name} — ${durationDays} يوم — سند ${transactionRef}`);
           return respondWithAccount(renewable.id, acc, prof, newEnd, true);
         }
       }
     }
 
-    // ---------- New sale path: atomic claim with FOR UPDATE SKIP LOCKED ----------
+    // ---------- New sale path ----------
     const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
-
-    // 1) البحث عن مرشح مناسب (حساب موجود + غير منتهي الصلاحية)
     const accCandidates = await db.select().from(accounts)
       .where(and(eq(accounts.platformId, platformId), eq(accounts.isDeleted, false)))
       .orderBy(asc(accounts.expiryDate));
@@ -289,14 +337,13 @@ export async function POST(req: Request) {
       }
 
       if (acc.type === "FULL") {
+        if (saleType === "PROFILE") continue;
         if (acc.status !== "AVAILABLE") continue;
         const claimed = await db.update(accounts).set({ status: "RENTED", updatedAt: now })
           .where(and(eq(accounts.id, acc.id), eq(accounts.status, "AVAILABLE"))).returning();
         if (claimed.length) { claimedAcc = claimed[0]; break; }
       } else {
-        // ===== الصرف الصارم على مستوى البروفايل — FOR UPDATE SKIP LOCKED =====
-        // يستدعي أول بروفايل متاح حسب id ASC فقط (الجديد أولاً) وينهيه فوراً
-        // مع قفل الصف لمنع التزامن: لا يُصرف نفس الـPIN مرتين في نفس اللحظة.
+        if (saleType === "FULL") continue;
         const claimed = await db.execute(sql`
           UPDATE profiles
           SET status = 'SOLD',
@@ -335,13 +382,12 @@ export async function POST(req: Request) {
     }
 
     if (!claimedAcc) {
+      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: لا يوجد مخزون كافٍ");
       const typeLabel = saleType === "FULL" ? "حساب كامل" : saleType === "PROFILE" ? "ملف/بروفايل" : "حساب متاح";
-      await audit(user, "NO_STOCK", "platforms", platformId, `محاولة بيع ${platform.name} (${typeLabel}) — لا يوجد متاح يغطي ${lifetime ? "اشتراك دائم" : `${days} يوم`}`);
-      return jsonError(`عفواً، لا يوجد «${typeLabel}» متاح حالياً لهذه المنصة يغطي المدة المطلوبة. تم إشعار المدير في سجل النظام.`, 409);
+      return jsonError(`عفواً، لا يوجد «${typeLabel}» متاح حالياً لهذه المنصة يغطي المدة المطلوبة.`, 409);
     }
 
     try {
-      const isRenewalType = accCandidates && false; // new rentals for returning customers flagged below
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
       const [rental] = await db.insert(rentals).values({
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,
@@ -350,25 +396,38 @@ export async function POST(req: Request) {
         customerEmail: customerEmail || null, customerExtra: customerExtra || null,
         activationStatus: (platform.requiresCustomerEmail || platform.extraFieldLabel) ? "PENDING" : "NOT_REQUIRED",
       }).returning();
-      void isRenewalType;
+
       if (claimedProfile) await db.update(profiles).set({ currentRentalId: rental.id }).where(eq(profiles.id, claimedProfile.id));
+
       await db.insert(payments).values({
-        rentalId: rental.id, paymentMethodId, transactionRef, amount, receiptImageData: receipt, receiptHash,
-        status: "PENDING", durationDays: days, createdBy: user.id,
+        rentalId: rental.id, 
+        paymentMethodId: paymentMethodId ?? null, 
+        transactionRef, 
+        amount, 
+        receiptImageData: receipt || null, 
+        receiptHash: receipt ? hashText(receipt) : null,
+        status: paymentStatus, 
+        reviewedBy: paymentType === "WALLET" ? user.id : null,
+        reviewedAt: paymentType === "WALLET" ? now : null,
+        durationDays: days, 
+        createdBy: user.id,
       });
+
       await refreshAccountStatus(claimedAcc.id);
       const claimedKind = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
       if (claimedAcc.type === "FULL" && claimedKind === "CREDENTIALS") await db.update(accounts).set({ status: "RENTED" }).where(eq(accounts.id, claimedAcc.id));
+
       await notifyAdmin({
-        title: "طلب جديد",
-        body: `يرجى الموافقة على الطلب — ${customer.name} / ${platform.name}`,
+        title: paymentType === "WALLET" ? "طلب جديد مدفوع بالمحفظة" : "طلب جديد",
+        body: `${customer.name} / ${platform.name} — ${paymentType === "WALLET" ? "تم الاعتماد الفوري" : "بانتظار تأكيد السند"}`,
         kind: "REQUEST",
         href: "/inbox",
       });
-      await audit(user, "SALE", "rentals", rental.id, `بيع ${platform.name} للعميل ${customer.name} (${customer.phone}) — ${lifetime ? "دائم" : `${days} يوم`} — سند ${transactionRef}`);
+
+      await audit(user, "SALE", "rentals", rental.id, `بيع ${platform.name} للعميل ${customer.name} — ${paymentType}`);
       return respondWithAccount(rental.id, claimedAcc, claimedProfile, neededEnd, false);
     } catch (err) {
-      // Release claim on failure
+      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: فشل حفظ سجل البيع");
       if (claimedProfile) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, claimedProfile.id));
       const ck = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
       if (ck !== "CREDENTIALS") {
