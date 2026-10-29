@@ -4,9 +4,9 @@ import Link from "next/link";
 import {
   Camera, CheckCircle2, ChevronLeft, ImagePlus, Landmark, Loader2, Lock,
   Phone, Search, ShoppingCart, Sparkles, Trash2, User, Wallet, XCircle, RefreshCcw, Plus,
-  Crown, UserRound, ScanLine, ArrowLeft, Zap, Hand,
+  Crown, UserRound, ScanLine, ArrowLeft, Zap, Hand, Coins,
 } from "lucide-react";
-import { api, fileToDataUrl, fmtDate, daysLeft, waLink } from "@/lib/client";
+import { api, fileToDataUrl, fmtDate, daysLeft, waLink, fetchMe } from "@/lib/client";
 import { Badge, CopyBtn, PlatformLogo, Spinner, rentalBadge } from "@/components/ui";
 import { normalizeDeliveryMode } from "@/lib/delivery";
 
@@ -14,11 +14,15 @@ type Meta = any;
 
 export default function SaleForm() {
   const [meta, setMeta] = useState<Meta>(null);
+  const [me, setMe] = useState<any>(null);
   const [platformId, setPlatformId] = useState<number>(0);
   const [phone, setPhone] = useState(""); const [name, setName] = useState("");
   const [lookup, setLookup] = useState<any>(null); const [looking, setLooking] = useState(false);
   const [duration, setDuration] = useState(0); const [amount, setAmount] = useState("");
   const [accountType, setAccountType] = useState<"FULL" | "PROFILE">("PROFILE");
+  
+  // Payment Type: RECEIPT (Bank Transfer) or WALLET
+  const [paymentType, setPaymentType] = useState<"RECEIPT" | "WALLET">("RECEIPT");
   const [bankId, setBankId] = useState<number>(0); const [ref, setRef] = useState("");
   const [receipt, setReceipt] = useState(""); const [forceNew, setForceNew] = useState(false);
   const [customerEmail, setCustomerEmail] = useState(""); const [customerExtra, setCustomerExtra] = useState("");
@@ -26,6 +30,8 @@ export default function SaleForm() {
   const [manualEmail, setManualEmail] = useState(""); const [manualPassword, setManualPassword] = useState("");
   const [manualLink, setManualLink] = useState(""); const [manualCode, setManualCode] = useState("");
   const [manualNote, setManualNote] = useState("");
+  const [manualProfileName, setManualProfileName] = useState("");
+  const [manualPin, setManualPin] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
   const [result, setResult] = useState<any>(null);
   const [scan, setScan] = useState<"idle" | "reading" | "ok" | "fail">("idle");
@@ -33,6 +39,7 @@ export default function SaleForm() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    fetchMe().then((u) => setMe(u)).catch(() => {});
     api("/api/meta").then((m) => {
       setMeta(m);
       const q = new URLSearchParams(window.location.search);
@@ -44,17 +51,19 @@ export default function SaleForm() {
     }).catch(() => {});
   }, []);
 
-  // Live availability sync: if the admin adds/removes stock, this form updates without losing typed data.
   useEffect(() => {
     const onSync = async () => {
-      const m = await api("/api/meta").catch(() => null);
+      const [m, u] = await Promise.all([
+        api("/api/meta").catch(() => null),
+        fetchMe().catch(() => null)
+      ]);
       if (m) setMeta(m);
+      if (u) setMe(u);
     };
     window.addEventListener("maestro-sync", onSync);
     return () => window.removeEventListener("maestro-sync", onSync);
   }, []);
 
-  // Customer lookup by phone (debounced)
   useEffect(() => {
     const clean = phone.replace(/\D/g, "");
     if (clean.length < 7) { setLookup(null); return; }
@@ -78,7 +87,6 @@ export default function SaleForm() {
     if (hinted) setAmount(String(hinted));
   }, [platformId, accountType, meta]);
 
-  // If the chosen type has no stock on this platform but the other type does, switch to it.
   useEffect(() => {
     if (!meta || !platformId) return;
     const cur = meta.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
@@ -122,52 +130,78 @@ export default function SaleForm() {
 
   async function submit() {
     setErr("");
+    const numericAmount = Number(amount || 0);
     if (!platformId) return setErr("اختر المنصة");
     if (phone.replace(/\D/g, "").length < 7) return setErr("أدخل رقم واتساب العميل");
     if (!lookup?.customer && !name.trim()) return setErr("أدخل اسم العميل الجديد");
-    if (!bankId || !ref.trim()) return setErr("اختر البنك وأدخل رقم العملية");
-    if (!receipt) return setErr("📸 إرفاق صورة السند إلزامي قبل سحب الاشتراك");
+
+    if (paymentType === "WALLET") {
+      const walletBal = Number(me?.walletBalance || 0);
+      if (numericAmount <= 0) return setErr("حدد مبلغ الطلب أولاً للخصم من المحفظة");
+      if (walletBal < numericAmount) return setErr(`رصيد محفظتك غير كافٍ (${walletBal.toLocaleString()} ر.ي) والمطلوب (${numericAmount.toLocaleString()} ر.ي)`);
+    } else {
+      if (!bankId || !ref.trim()) return setErr("اختر البنك وأدخل رقم العملية");
+      if (!receipt) return setErr("📸 إرفاق صورة السند إلزامي قبل سحب الاشتراك");
+    }
+
     if (emailRequired && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
     if (!isLifetime && (!duration || duration < 1)) return setErr("أدخل مدة الاشتراك بالأيام");
     if (deliverySource === "MANUAL" && !manualEmail.trim() && !manualPassword && !manualLink.trim() && !manualCode.trim()) {
       return setErr("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود على الأقل)");
     }
-    if (!isInstant && renewable && !forceNew) { /* طلبات عند الطلب: دائماً طلب جديد مستقل */ }
     if (deliverySource === "AUTO" && isInstant && (effectiveForceNew || !renewable)) {
       const availableForType = meta?.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
       if (availableForType <= 0) return setErr(accountType === "PROFILE" ? "لا يوجد ملف / بروفايل متاح لهذه المنصة حالياً" : "لا يوجد حساب كامل متاح لهذه المنصة حالياً");
     }
+
     setBusy(true);
     try {
       const d = await api("/api/sales", {
         method: "POST",
         body: JSON.stringify({
           platformId, durationDays: duration, customerName: name, customerPhone: phone,
-          paymentMethodId: bankId, transactionRef: ref.trim(), amount: Number(amount || 0),
-          receiptImageData: receipt, mode: effectiveForceNew ? "NEW" : "AUTO", accountType,
+          paymentType,
+          paymentMethodId: paymentType === "WALLET" ? null : bankId, 
+          transactionRef: paymentType === "WALLET" ? `WALLET-${Date.now().toString().slice(-6)}` : ref.trim(), 
+          amount: numericAmount,
+          receiptImageData: paymentType === "WALLET" ? null : receipt, 
+          mode: effectiveForceNew ? "NEW" : "AUTO", 
+          accountType,
           customerEmail: customerEmail.trim(), customerExtra: customerExtra.trim(),
           deliverySource,
           manualEmail: manualEmail.trim(), manualPassword, manualLink: manualLink.trim(),
           manualCode: manualCode.trim(), manualNote: manualNote.trim(),
+          manualProfileName: accountType === "PROFILE" ? manualProfileName.trim() : null,
+          manualPin: accountType === "PROFILE" ? manualPin.trim() : null,
         }),
       });
       setResult(d); window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
   }
 
-  function reset() { setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setDeliverySource("AUTO"); setManualEmail(""); setManualPassword(""); setManualLink(""); setManualCode(""); setManualNote(""); setAmount(""); setDuration(0); setErr(""); setScan("idle"); setScanNote(""); }
+  function reset() {
+    setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); 
+    setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setDeliverySource("AUTO"); 
+    setManualEmail(""); setManualPassword(""); setManualLink(""); setManualCode(""); setManualNote(""); 
+    setManualProfileName(""); setManualPin("");
+    setAmount(""); setDuration(0); setErr(""); setScan("idle"); setScanNote(""); 
+  }
 
-  // ---------------- SUBMITTED: locked until admin confirms ----------------
+  // ---------------- SUBMITTED VIEW ----------------
   if (result) {
     if (result.manual && result.delivered) {
       const d = result.delivered;
+      const isFull = result.accountType === "FULL" || accountType === "FULL";
       const rows = [
         { l: "📧 الإيميل", v: d.email },
         { l: "🔑 كلمة المرور", v: d.password },
+        (!isFull && d.profileName) ? { l: "👤 الملف / البروفايل", v: d.profileName } : null,
+        (!isFull && d.pin) ? { l: "🔒 رمز PIN", v: d.pin } : null,
         { l: "🔗 الرابط", v: d.link },
         { l: "🎟️ الكود", v: d.code },
         { l: "📝 ملاحظة", v: d.note },
-      ].filter((r) => r.v);
+      ].filter(Boolean) as { l: string; v: string }[];
+
       return (
         <div className="pop-in mx-auto max-w-2xl">
           <div className="card-deep overflow-hidden">
@@ -187,7 +221,7 @@ export default function SaleForm() {
                 <div className="my-2 h-px bg-white/10" />
                 <div className="flex items-center justify-between gap-3 py-1.5">
                   <span className="text-xs font-bold text-slate-400">الطلب</span>
-                  <span className="text-sm font-extrabold text-white">{result.platformName} — تسليم يدوي — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
+                  <span className="text-sm font-extrabold text-white">{result.platformName} — {isFull ? "حساب كامل" : "بروفايل مستقل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
                 </div>
               </div>
               <div className="space-y-2">
@@ -202,23 +236,25 @@ export default function SaleForm() {
                 إرسال البيانات للعميل عبر واتساب
               </a>
               <div className="flex justify-center"><CopyBtn text={result.whatsappMessage} label="نسخ رسالة الواتساب كاملة" /></div>
-              <p className="text-center text-[11px] font-semibold text-slate-500">سُجّل السند بانتظار مراجعة المدير — والبيانات ظاهرة لأنك أدخلتها بنفسك.</p>
               <button onClick={reset} className="btn-primary w-full"><Plus size={18} /> عملية بيع جديدة</button>
             </div>
           </div>
         </div>
       );
     }
+
     return (
       <div className="pop-in mx-auto max-w-2xl">
         <div className="card-deep hero-lock overflow-hidden">
           <div className="relative px-7 py-10 text-center">
             <div className="relative">
-              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[#ff5769] to-[#c11231] shadow-[0_16px_40px_rgba(225,29,51,.4)]">
+              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[#2f7bff] to-[#174ea6] shadow-[0_16px_40px_rgba(47,123,255,.4)]">
                 <CheckCircle2 size={44} strokeWidth={2.2} className="text-white" />
               </div>
             </div>
-            <h2 className="mt-5 text-3xl font-black tracking-tight text-white">تم إرسال الطلب إلى المدير</h2>
+            <h2 className="mt-5 text-3xl font-black tracking-tight text-white">
+              {paymentType === "WALLET" ? "تم تأكيد وسحب الطلب بنجاح" : "تم إرسال الطلب إلى المدير"}
+            </h2>
             <p className="mx-auto mt-2 max-w-md text-sm font-semibold leading-relaxed text-slate-300">{result.message}</p>
           </div>
 
@@ -231,21 +267,19 @@ export default function SaleForm() {
               <div className="my-2 h-px bg-white/10" />
               <div className="flex items-center justify-between gap-3 py-1.5">
                 <span className="text-xs font-bold text-slate-400">الطلب</span>
-                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.deliveryMode === "LINK_ONLY" ? "تسليم برابط" : result.deliveryMode === "ON_DEMAND_EMAIL" || result.onDemand ? "تفعيل على الإيميل" : result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
+                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
               </div>
             </div>
 
             <div className="relative rounded-2xl border border-white/15 bg-gradient-to-br from-white/[.06] to-white/[.02] p-6 text-center">
-              {result.pendingActivation ? (
+              {paymentType === "WALLET" ? (
                 <>
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
-                    <ScanLine size={28} className="text-[#fbbf24]" />
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20 backdrop-blur">
+                    <CheckCircle2 size={28} className="text-emerald-400" />
                   </div>
-                  <p className="mt-3 text-base font-black text-white">الطلب بانتظار تفعيل المدير</p>
+                  <p className="mt-3 text-base font-black text-white">تم الخصم المباشر من رصيد المحفظة</p>
                   <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    {result.deliveryMode === "LINK_ONLY"
-                      ? <>هذا الاشتراك يُسلَّم <b className="text-white">برابط دعوة</b> (لا يُسحب من المخزون). المدير سيضع الرابط ويضغط «تأكيد الإرسال» فيصل العميل إشعار واتساب بالرابط، ويظهر لك في <b className="text-white">«مبيعاتي»</b>.</>
-                      : <>هذا الاشتراك يُفعَّل <b className="text-white">يدوياً على إيميل العميل</b> (لا يُسحب من المخزون). المدير سيصله إشعار فوراً، وبعد أن يفعّل حساب العميل ويضغط «تأكيد التفعيل» يصل العميل إشعار واتساب، وتظهر لك الحالة في <b className="text-white">«مبيعاتي»</b>.</>}
+                    تم اعتماد العملية فوراً وسحب الاشتراك دون الحاجة لمراجعة السند البنكي. يمكنك مراجعة البيانات في <b className="text-white">«مبيعاتي»</b>.
                   </p>
                 </>
               ) : (
@@ -253,11 +287,10 @@ export default function SaleForm() {
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
                     <Lock size={28} className="text-[#5ba2ff]" />
                   </div>
-                  <p className="mt-3 text-base font-black text-white">بيانات الحساب مقفلة الآن</p>
+                  <p className="mt-3 text-base font-black text-white">بيانات الحساب مقفلة بانتظار السند</p>
                   <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    لن يظهر الإيميل ولا كلمة المرور ولا البروفايل قبل <b className="text-white">تأكيد المدير للسند</b>.
+                    لن تظهر البيانات قبل <b className="text-white">تأكيد المدير للسند</b>.
                     بعد التأكيد افتح <b className="text-white">«مبيعاتي»</b> واضغط «عرض بيانات الحساب» لإرسالها للعميل.
-                    تبدأ مدة الاشتراك من <b className="text-white">لحظة تأكيد المدير</b>.
                   </p>
                 </>
               )}
@@ -277,8 +310,9 @@ export default function SaleForm() {
     );
   }
 
-  // ---------------- FORM ----------------
+  // ---------------- MAIN FORM ----------------
   const slots = (pid: number) => meta.availability?.[pid]?.slots ?? 0;
+
   return (
     <div className="mx-auto max-w-4xl space-y-5 stagger">
       {/* Step 1: platform */}
@@ -287,8 +321,8 @@ export default function SaleForm() {
           <div className="section-head">
             <span className="step-num">١</span>
             <div>
-              <h3 className="section-title">اختر المنصة</h3>
-              <p className="section-sub">يظهر عدد الأماكن المتاحة فقط — بيانات الحسابات لا تظهر إلا بعد إتمام البيع.</p>
+              <h3 className="section-title">اختر المنصة ونوع الحساب</h3>
+              <p className="section-sub">يظهر عدد الأماكن المتاحة — يتم حجب كلمة المرور حتى إتمام الدفع والتأكيد.</p>
             </div>
           </div>
         </div>
@@ -329,12 +363,12 @@ export default function SaleForm() {
               <Sparkles size={16} className="text-[#1e5eff]" />
               اختر نوع الاشتراك
             </h4>
-            <p className="mt-1 text-xs font-semibold text-slate-400">بعد اختيار المنصة، حدد هل العميل يريد حساباً كاملاً أو ملفاً / بروفايل.</p>
+            <p className="mt-1 text-xs font-semibold text-slate-400">حدد هل الاشتراك حساب كامل بدون PIN أو ملف بروفايل مشترك بـ PIN.</p>
 
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               {([
-                { type: "FULL", icon: <Crown size={22} />, title: "حساب كامل", desc: "عميل واحد يستلم الإيميل وكلمة المرور كاملة" },
-                { type: "PROFILE", icon: <UserRound size={22} />, title: "ملف / بروفايل", desc: "ملف داخل حساب مشترك مع رقم بروفايل و PIN" },
+                { type: "FULL", icon: <Crown size={22} />, title: "حساب كامل", desc: "إيميل + باسورد بدون رمز PIN للعميل الواحد" },
+                { type: "PROFILE", icon: <UserRound size={22} />, title: "ملف / بروفايل", desc: "ملف مخصص مع PIN مستقل داخل حساب مشترك" },
               ] as const).map((opt) => {
                 const count = meta.availabilityByType?.[platformId]?.[opt.type]?.slots ?? 0;
                 const active = accountType === opt.type;
@@ -371,7 +405,6 @@ export default function SaleForm() {
               <Zap size={16} className="text-[#f5d67b]" />
               طريقة الصرف
             </h4>
-            <p className="mt-1 text-xs font-semibold text-slate-400">اختر الصرف التلقائي من المخزون، أو التسليم اليدوي الفوري ببيانات تدخلها بنفسك.</p>
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <button type="button" onClick={() => setDeliverySource("AUTO")}
                 className={`choice ${deliverySource === "AUTO" ? "choice-selected-blue" : ""}`}>
@@ -381,7 +414,7 @@ export default function SaleForm() {
                   </div>
                   <div>
                     <div className="text-[15px] font-black">صرف تلقائي من المخزون</div>
-                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold leading-relaxed text-slate-400">يسحب النظام حساباً جاهزاً تلقائياً، والبيانات تظهر بعد تأكيد المدير.</p>
+                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold text-slate-400">يسحب النظام الحساب المتاح تلقائياً.</p>
                   </div>
                 </div>
               </button>
@@ -393,7 +426,7 @@ export default function SaleForm() {
                   </div>
                   <div>
                     <div className="text-[15px] font-black">تسليم يدوي فوري</div>
-                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold leading-relaxed text-slate-400">تدخل البيانات بنفسك وتُسلَّم للعميل فوراً دون انتظار المخزون.</p>
+                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold text-slate-400">تدخل بيانات الحساب بنفسك للعميل.</p>
                   </div>
                 </div>
               </button>
@@ -401,11 +434,19 @@ export default function SaleForm() {
 
             {deliverySource === "MANUAL" && (
               <div className="pop-in mt-3 grid gap-3 rounded-2xl border border-amber-300/30 bg-amber-400/5 p-4 sm:grid-cols-2">
-                <div className="sm:col-span-2 text-[12px] font-bold text-amber-200">أدخل بيانات التسليم (يكفي حقل واحد على الأقل — إيميل أو كلمة مرور أو رابط أو كود):</div>
+                <div className="sm:col-span-2 text-[12px] font-bold text-amber-200">أدخل بيانات التسليم اليدوي:</div>
                 <div><label className="label">📧 الإيميل</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualEmail} onChange={(e) => setManualEmail(e.target.value)} /></div>
                 <div><label className="label">🔑 كلمة المرور</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualPassword} onChange={(e) => setManualPassword(e.target.value)} /></div>
-                <div><label className="label">🔗 الرابط</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="https://..." value={manualLink} onChange={(e) => setManualLink(e.target.value)} /></div>
-                <div><label className="label">🎟️ الكود</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualCode} onChange={(e) => setManualCode(e.target.value)} /></div>
+                
+                {accountType === "PROFILE" && (
+                  <>
+                    <div><label className="label">👤 اسم البروفايل</label><input className="field" placeholder="بروفايل 1" value={manualProfileName} onChange={(e) => setManualProfileName(e.target.value)} /></div>
+                    <div><label className="label">🔒 رمز PIN الخاص بالبروفايل</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="1234" value={manualPin} onChange={(e) => setManualPin(e.target.value)} /></div>
+                  </>
+                )}
+
+                <div><label className="label">🔗 الرابط (إن وجد)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="https://..." value={manualLink} onChange={(e) => setManualLink(e.target.value)} /></div>
+                <div><label className="label">🎟️ الكود (إن وجد)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualCode} onChange={(e) => setManualCode(e.target.value)} /></div>
                 <div className="sm:col-span-2"><label className="label">📝 ملاحظة (اختياري)</label><input className="field" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div>
               </div>
             )}
@@ -420,7 +461,7 @@ export default function SaleForm() {
             <span className="step-num">٢</span>
             <div>
               <h3 className="section-title">بيانات المشترك</h3>
-              <p className="section-sub">ابحث برقم الواتساب أولاً — إن كان العميل معروفاً سيظهر تلقائياً مع اشتراكاته السابقة.</p>
+              <p className="section-sub">رقم واتساب العميل للتحقق من الاشتراكات السابقة والتجديد.</p>
             </div>
           </div>
         </div>
@@ -443,7 +484,7 @@ export default function SaleForm() {
                   <div className="space-y-2">
                     <p className="text-xs font-extrabold text-slate-400">اشتراكاته السابقة</p>
                     {lookup.rentals.slice(0, 4).map((r: any) => (
-                      <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-white/[.04] px-3.5 py-2.5 text-xs font-bold shadow-sm ring-1 ring-black/[.03]">
+                      <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-white/[.04] px-3.5 py-2.5 text-xs font-bold">
                         <span className="font-black text-white">{r.platformName}</span>
                         {r.accountType && <span className={`pill ${r.accountType === "FULL" ? "pill-amber" : "pill-blue"}`}>{r.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"}</span>}
                         {rentalBadge(r.status)}
@@ -452,43 +493,11 @@ export default function SaleForm() {
                     ))}
                   </div>
                 )}
-
-                {renewable && (
-                  <div className="card-deep p-4">
-                    <div className="flex items-center gap-2">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10">
-                        <Sparkles size={16} className="text-[#5ba2ff]" />
-                      </div>
-                      <div className="text-[13px] font-extrabold text-white">له اشتراك قابل للتجديد على نفس المنصة</div>
-                    </div>
-                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <button type="button" onClick={() => { setForceNew(false); if (renewable.accountType) setAccountType(renewable.accountType); }}
-                        className={`rounded-xl px-4 py-3 text-[13px] font-extrabold transition ${!effectiveForceNew ? "bg-gradient-to-l from-[#2c6dff] to-[#174ea6] text-white shadow-lg shadow-[#174ea6]/30" : "bg-white/10 text-slate-200 hover:bg-white/15"}`}>
-                        <RefreshCcw size={14} className="ml-1.5 inline" /> تجديد / تمديد نفس الحساب
-                      </button>
-                      <button type="button" onClick={() => setForceNew(true)}
-                        className={`rounded-xl px-4 py-3 text-[13px] font-extrabold transition ${effectiveForceNew ? "bg-gradient-to-l from-[#2c6dff] to-[#174ea6] text-white shadow-lg shadow-[#174ea6]/30" : "bg-white/10 text-slate-200 hover:bg-white/15"}`}>
-                        <Plus size={14} className="ml-1.5 inline" /> بيع جديد بالنوع المختار
-                      </button>
-                    </div>
-                    <p className="mt-3 text-[11.5px] font-semibold leading-relaxed text-slate-300">
-                      {effectiveForceNew
-                        ? `سيُسحب ${accountType === "PROFILE" ? "ملف / بروفايل" : "حساب كامل"} جديد من المخزون حسب النوع المختار أعلى.`
-                        : renewable.status === "ACTIVE"
-                          ? "ستُمدَّد المدة فوق تاريخ الانتهاء الحالي بدون تغيير بيانات الدخول."
-                          : "سيُعاد تفعيل نفس حسابه / بروفايله قبل إزالته من المدير."}
-                    </p>
-                  </div>
-                )}
               </div>
             </div>
           ) : phone.replace(/\D/g, "").length >= 7 && !looking ? (
             <div className="pop-in rounded-2xl border border-white/10 bg-gradient-to-br from-white/[.04] to-transparent px-5 py-4">
-              <div className="flex items-center gap-2">
-                <span className="pill pill-amber">عميل جديد</span>
-                <span className="text-xs font-bold text-slate-400">أكمل الاسم ليتم التسجيل</span>
-              </div>
-              <div className="mt-3">
+              <div className="mt-2">
                 <label className="label">👤 اسم العميل</label>
                 <div className="relative">
                   <User size={18} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -498,16 +507,11 @@ export default function SaleForm() {
             </div>
           ) : null}
 
-          {/* بيانات إضافية يطلبها المنصة حسب إعداداتها */}
           {(emailRequired || (plat?.extraFieldLabel && !isLinkMode)) && (
             <div className="pop-in space-y-3 rounded-2xl border border-[#5ba2ff]/30 bg-gradient-to-br from-[#2c6dff]/10 to-transparent px-5 py-4">
-              <div className="flex items-center gap-2">
-                <ScanLine size={16} className="text-[#63a8ff]" />
-                <span className="text-[13px] font-black text-white">بيانات يحتاجها المدير لتفعيل هذا الاشتراك</span>
-              </div>
               {emailRequired && (
                 <div>
-                  <label className="label">📧 إيميل العميل (للتفعيل عليه) <span className="text-[#ff5769]">إلزامي</span></label>
+                  <label className="label">📧 إيميل العميل (للتفعيل) <span className="text-[#ff5769]">إلزامي</span></label>
                   <input className="field" dir="ltr" style={{ textAlign: "left" }} type="email" placeholder="customer@gmail.com" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
                 </div>
               )}
@@ -522,141 +526,162 @@ export default function SaleForm() {
         </div>
       </section>
 
-      {/* تنبيه: اشتراك عند الطلب */}
-      {!isInstant && (
-        <div className="pop-in flex items-start gap-3 rounded-2xl border border-[#fbbf24]/30 bg-gradient-to-br from-[#f59e0b]/10 to-transparent px-5 py-4">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15">
-            <ScanLine size={20} className="text-[#fbbf24]" />
-          </div>
-          <div>
-            <p className="text-[14px] font-black text-white">هذا الاشتراك «عند الطلب» — لا يُسحب من المخزون</p>
-            <p className="mt-1 text-[12.5px] font-semibold leading-relaxed text-slate-300">
-              بعد تأكيد السند، يفعّله المدير يدوياً على حساب العميل، ثم يضغط «تم التفعيل»
-              فيصل العميل إشعار واتساب بالبيانات وتظهر لك في «مبيعاتي».
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Step 3: duration */}
       <section className="card card-hover overflow-hidden">
         <div className="border-b border-white/10 bg-white/[.03] px-6 py-5">
           <div className="section-head">
             <span className="step-num">٣</span>
             <div>
-              <h3 className="section-title">مدة الاشتراك والمبلغ</h3>
-              <p className="section-sub">اكتب المدة بالأيام كما يريد العميل، حتى لو يوماً واحداً. والسعر تكتبه أنت، أو يُقترح من السعر الذي سجله المدير على الحساب.</p>
+              <h3 className="section-title">المدة والمبلغ</h3>
+              <p className="section-sub">حدد مدة الاشتراك بالأيام وسعر العملية بالريال اليمني.</p>
             </div>
           </div>
         </div>
 
         <div className="grid gap-4 p-6 sm:grid-cols-2">
           <div>
-            <label className="label">⏳ مدة الاشتراك</label>
+            <label className="label">⏳ مدة الاشتراك (أيام)</label>
             {isLifetime ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم — بدون مدة انتهاء</div>
+              <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم</div>
             ) : (
-              <>
-                <input className="field" inputMode="numeric" min={1} placeholder="مثال: 1 أو 15 أو 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-                <p className="mt-1 text-[11px] font-semibold text-slate-500">من يوم واحد فما فوق. الموظف يختار العدد يدوياً.</p>
-              </>
+              <input className="field" inputMode="numeric" min={1} placeholder="مثال: 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
             )}
           </div>
           <div>
-            <label className="label">💵 السعر (ر.ي)</label>
-            <input className="field" inputMode="numeric" placeholder="اكتب السعر" value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ""))} />
-            <p className="mt-1 text-[11px] font-semibold text-slate-500">يُكتب يدوياً، أو يُعبأ من سعر الحساب الذي سجله المدير.</p>
+            <label className="label">💵 السعر (ريال يمني)</label>
+            <input className="field" inputMode="numeric" placeholder="المبلغ" value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ""))} />
           </div>
         </div>
       </section>
 
-      {/* Step 4: payment */}
+      {/* Step 4: Payment Method (Receipt vs Wallet) */}
       <section className="card card-hover overflow-hidden border-[#2f7bff]/25">
         <div className="border-b border-[#2f7bff]/30 bg-[#2f7bff]/10 px-6 py-5">
           <div className="section-head">
             <span className="step-num step-num-dark">٤</span>
             <div>
-              <h3 className="section-title flex items-center gap-2">
-                الدفع والسند <span className="pill pill-red text-[11px]">إلزامي</span>
-              </h3>
-              <p className="section-sub">لا يُسحب أي اشتراك بدون سند. السند المكرر (نفس البنك والرقم أو نفس الصورة) يُرفض تلقائياً.</p>
+              <h3 className="section-title">طريقة الدفع والتأكيد</h3>
+              <p className="section-sub">اختر الخصم المباشر من المحفظة أو إرفاق سند بنكي للمدير.</p>
             </div>
           </div>
         </div>
 
         <div className="space-y-5 p-6">
-          <div>
-            <label className="label"><Landmark size={14} className="ml-1 inline text-[#1e5eff]" /> البنك / وسيلة الدفع</label>
-            <div className="flex flex-wrap gap-2">
-              {meta.paymentMethods.map((b: any) => {
-                const active = bankId === b.id;
-                return (
-                  <button key={b.id} type="button" onClick={() => setBankId(b.id)}
-                    className={`rounded-xl border-2 px-4 py-2.5 text-[13px] font-extrabold transition active:scale-[.98] ${
-                      active ? "border-[#63a8ff] bg-[#2f7bff] text-white shadow-lg shadow-[#2f7bff]/30" : "border-white/10 bg-white/[.04] text-slate-300 hover:border-[#63a8ff]/50 hover:text-white"
-                    }`}>{b.name}</button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="label"><Wallet size={14} className="ml-1 inline text-[#1e5eff]" /> رقم الحوالة / العملية</label>
-              <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="مثال: KRM-884120" value={ref} onChange={(e) => setRef(e.target.value)} />
-            </div>
-
-            <div>
-              <label className="label">📸 صورة السند (كاميرا أو ألبوم)</label>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
-              {receipt ? (
-                <div className="group relative overflow-hidden rounded-xl border-2 border-[#26c281]">
-                  <img src={receipt} alt="السند" className="h-[110px] w-full object-cover" />
-                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-8">
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[#26c281] px-2.5 py-1 text-[11px] font-black text-white">
-                      {scan === "reading" ? "جارٍ القراءة…" : "تم إرفاق السند ✓"}
-                    </span>
-                  </div>
-                  <button type="button" onClick={() => { setReceipt(""); setScan("idle"); setScanNote(""); }}
-                    className="absolute left-2 top-2 rounded-full bg-red-500 p-1.5 text-white shadow-lg transition hover:scale-110">
-                    <Trash2 size={15} />
-                  </button>
-                  <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-1 text-[10px] font-bold text-white">
-                    <ScanLine size={12} /> AI
-                  </span>
+          {/* تبديل طريقة الدفع */}
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setPaymentType("RECEIPT")}
+              className={`choice ${paymentType === "RECEIPT" ? "choice-selected-blue" : ""}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Camera size={20} className={paymentType === "RECEIPT" ? "text-white" : "text-[#5ba2ff]"} />
+                <div className="text-right">
+                  <div className="text-[13px] font-black">سند بنكي / تحويل</div>
+                  <div className="text-[11px] text-slate-400">إرفاق صورة السند ورقم الحوالة</div>
                 </div>
-              ) : (
-                <button type="button" onClick={() => fileRef.current?.click()}
-                  className="flex h-[110px] w-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-[#b9c8e2] bg-gradient-to-b from-white/[.03] to-[#2f7bff]/10 text-[#174ea6] transition hover:border-[#1e5eff] hover:from-[#2f7bff]/15 active:scale-[.99]">
-                  <div className="flex items-center gap-1.5">
-                    <Camera size={20} />
-                    <ImagePlus size={16} className="opacity-60" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setPaymentType("WALLET")}
+              className={`choice ${paymentType === "WALLET" ? "choice-selected" : ""}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Wallet size={20} className={paymentType === "WALLET" ? "text-white" : "text-amber-400"} />
+                <div className="text-right">
+                  <div className="text-[13px] font-black">خصم من المحفظة</div>
+                  <div className="text-[11px] text-amber-300 font-mono">
+                    المتاح: {Number(me?.walletBalance || 0).toLocaleString()} ر.ي
                   </div>
-                  <div className="text-[12px] font-extrabold">تصوير / رفع صورة السند</div>
-                  <div className="text-[10px] font-semibold text-slate-400">سيُقرأ تلقائياً بالذكاء الاصطناعي</div>
-                </button>
-              )}
-            </div>
+                </div>
+              </div>
+            </button>
           </div>
 
-          {scan !== "idle" && (
-            <div className={`pop-in rounded-xl border px-4 py-3 text-xs font-bold ${
-              scan === "reading" ? "border-[#b9d7ff] bg-[#eaf3ff] text-[#174ea6]"
-              : scan === "ok" ? "border-[#bfe7d0] bg-[#e6f8ee] text-[#0f7a4e]"
-              : "border-[#ffe1b0] bg-[#fff2dc] text-[#a76400]"
-            }`}>
-              <div className="flex items-start gap-2">
-                {scan === "reading" && <Loader2 size={14} className="mt-0.5 animate-spin" />}
-                {scan === "ok" && <CheckCircle2 size={14} className="mt-0.5" />}
-                {scan === "fail" && <XCircle size={14} className="mt-0.5" />}
-                <span>{scanNote}</span>
+          {paymentType === "WALLET" ? (
+            <div className="pop-in rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-black text-amber-300">الدفع عبر رصيد المحفظة المسبق</div>
+                  <div className="text-xs text-slate-300 mt-0.5">سيتم خصم {Number(amount || 0).toLocaleString()} ر.ي فوراً واعتماد الحساب تلقائياً.</div>
+                </div>
+                <Coins size={28} className="text-amber-400" />
               </div>
             </div>
+          ) : (
+            <>
+              <div>
+                <label className="label"><Landmark size={14} className="ml-1 inline text-[#1e5eff]" /> البنك / وسيلة الدفع</label>
+                <div className="flex flex-wrap gap-2">
+                  {meta.paymentMethods.map((b: any) => {
+                    const active = bankId === b.id;
+                    return (
+                      <button key={b.id} type="button" onClick={() => setBankId(b.id)}
+                        className={`rounded-xl border-2 px-4 py-2.5 text-[13px] font-extrabold transition active:scale-[.98] ${
+                          active ? "border-[#63a8ff] bg-[#2f7bff] text-white shadow-lg shadow-[#2f7bff]/30" : "border-white/10 bg-white/[.04] text-slate-300 hover:border-[#63a8ff]/50 hover:text-white"
+                        }`}>{b.name}</button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="label"><Wallet size={14} className="ml-1 inline text-[#1e5eff]" /> رقم الحوالة / العملية</label>
+                  <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="مثال: KRM-884120" value={ref} onChange={(e) => setRef(e.target.value)} />
+                </div>
+
+                <div>
+                  <label className="label">📸 صورة السند (كاميرا أو ألبوم)</label>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
+                  {receipt ? (
+                    <div className="group relative overflow-hidden rounded-xl border-2 border-[#26c281]">
+                      <img src={receipt} alt="السند" className="h-[110px] w-full object-cover" />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-8">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[#26c281] px-2.5 py-1 text-[11px] font-black text-white">
+                          {scan === "reading" ? "جارٍ القراءة…" : "تم إرفاق السند ✓"}
+                        </span>
+                      </div>
+                      <button type="button" onClick={() => { setReceipt(""); setScan("idle"); setScanNote(""); }}
+                        className="absolute left-2 top-2 rounded-full bg-red-500 p-1.5 text-white shadow-lg transition hover:scale-110">
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => fileRef.current?.click()}
+                      className="flex h-[110px] w-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-[#b9c8e2] bg-gradient-to-b from-white/[.03] to-[#2f7bff]/10 text-[#174ea6] transition hover:border-[#1e5eff] hover:from-[#2f7bff]/15 active:scale-[.99]">
+                      <div className="flex items-center gap-1.5">
+                        <Camera size={20} />
+                        <ImagePlus size={16} className="opacity-60" />
+                      </div>
+                      <div className="text-[12px] font-extrabold">تصوير / رفع صورة السند</div>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {scan !== "idle" && (
+                <div className={`pop-in rounded-xl border px-4 py-3 text-xs font-bold ${
+                  scan === "reading" ? "border-[#b9d7ff] bg-[#eaf3ff] text-[#174ea6]"
+                  : scan === "ok" ? "border-[#bfe7d0] bg-[#e6f8ee] text-[#0f7a4e]"
+                  : "border-[#ffe1b0] bg-[#fff2dc] text-[#a76400]"
+                }`}>
+                  <div className="flex items-start gap-2">
+                    {scan === "reading" && <Loader2 size={14} className="mt-0.5 animate-spin" />}
+                    {scan === "ok" && <CheckCircle2 size={14} className="mt-0.5" />}
+                    {scan === "fail" && <XCircle size={14} className="mt-0.5" />}
+                    <span>{scanNote}</span>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </section>
 
-      {/* Error */}
+      {/* Error display */}
       {err && (
         <div className="pop-in flex items-start gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-5 py-4">
           <XCircle size={20} className="mt-0.5 shrink-0 text-[#c11231]" />
@@ -667,24 +692,17 @@ export default function SaleForm() {
         </div>
       )}
 
-      {/* Submit */}
+      {/* Submit button */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-l from-[#0a1224] via-[#050914] to-[#0b1226] p-2">
-        <div className="pointer-events-none absolute inset-0 opacity-70">
-          <div className="absolute -right-16 -top-16 h-40 w-40 rounded-full bg-[#1e5eff]/25 blur-3xl" />
-          <div className="absolute -bottom-16 -left-16 h-40 w-40 rounded-full bg-[#ff4055]/15 blur-3xl" />
-        </div>
         <button onClick={submit} disabled={busy}
           className="relative flex w-full items-center justify-center gap-3 rounded-[14px] bg-gradient-to-l from-[#63a8ff] to-[#2f7bff] px-6 py-5 text-lg font-black text-white shadow-[0_8px_28px_rgba(255,255,255,.15)] transition hover:bg-[#f2f6ff] active:scale-[.99] disabled:opacity-60">
           {busy ? <Loader2 size={22} className="animate-spin text-[#1e5eff]" /> : <ShoppingCart size={22} className="text-[#1e5eff]" />}
-          <span>{renewable && !effectiveForceNew ? "إرسال طلب التجديد والسند للمدير" : "إرسال الطلب والسند للمدير"}</span>
+          <span>
+            {paymentType === "WALLET" ? "خصم من المحفظة وتأكيد الطلب فوراً" : (renewable && !effectiveForceNew ? "إرسال طلب التجديد والسند للمدير" : "إرسال الطلب والسند للمدير")}
+          </span>
           <ChevronLeft size={22} className="text-[#1e5eff]" />
         </button>
       </div>
-
-      <p className="px-4 pb-4 text-center text-[11.5px] font-semibold leading-relaxed text-slate-400">
-        يُحجز الحساب مؤقتاً باسم العملية، لكن بياناته تبقى مقفلة ولا تُسلَّم للعميل حتى يؤكد المدير السند.{" "}
-        <Link href="/renewals" className="link-brand">عرض التجديدات المستحقة</Link>
-      </p>
     </div>
   );
 }
