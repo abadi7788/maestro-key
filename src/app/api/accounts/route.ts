@@ -58,7 +58,7 @@ export async function POST(req: Request) {
     const b = await req.json().catch(() => ({}));
     const platformId = Number(b.platformId);
     if (!platformId) return jsonError("اختر المنصة أولاً");
-    // صيغة التسليم تحدد الحقول المطلوبة — وكل حقل تفصيلي اختياري بحد ذاته
+
     const deliveryKind = normalizeAccountDelivery(b.deliveryKind);
     const email = String(b.email || "").trim() || null;
     const password = String(b.password || "");
@@ -66,7 +66,6 @@ export async function POST(req: Request) {
     const licenseKey = String(b.licenseKey || "").trim();
     const maxUsesRaw = b.maxUses === "" || b.maxUses === null || b.maxUses === undefined ? null : Number(b.maxUses);
     const maxUses = maxUsesRaw === null ? null : (Number.isFinite(maxUsesRaw) && maxUsesRaw > 0 ? Math.floor(maxUsesRaw) : null);
-    const pin = String(b.pin || "").trim() || null;
     const notes = String(b.notes || "").trim() || null;
     const salePrice = b.salePrice ? Number(b.salePrice) : null;
     const expiryRaw = String(b.expiryDate || "").trim();
@@ -82,27 +81,54 @@ export async function POST(req: Request) {
     }
 
     const type = deliveryKind === "CREDENTIALS" && b.type === "PROFILE" ? "PROFILE" : "FULL";
+
+    // إذا كان حساب كامل يتم إلغاء الـ PIN نهائياً
+    const pin = type === "FULL" ? null : (String(b.pin || "").trim() || null);
+
+    // حساب عدد البروفايلات بناءً على القائمة المرسلة إن وجدت
+    const customProfiles: Array<{ name: string; pin: string }> = Array.isArray(b.profilesList) && b.profilesList.length > 0 ? b.profilesList : [];
+    
     const maxProfiles = type === "PROFILE"
-      ? (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(10, Math.max(1, Number(b.maxProfiles))))
+      ? (customProfiles.length > 0 ? customProfiles.length : (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(10, Math.max(1, Number(b.maxProfiles)))))
       : 1;
+
     const [acc] = await db.insert(accounts).values({
-      platformId, type, maxProfiles,
+      platformId, 
+      type, 
+      maxProfiles,
       deliveryKind,
-      email, passwordEncrypted: password ? encryptText(password) : null,
+      email, 
+      passwordEncrypted: password ? encryptText(password) : null,
       inviteLink: deliveryKind === "INVITE_LINK" ? inviteLink : (inviteLink || null),
       licenseKeyEncrypted: licenseKey ? encryptText(licenseKey) : null,
       maxUses: deliveryKind === "INVITE_LINK" ? maxUses : null,
       usedCount: 0,
       pin: deliveryKind === "CREDENTIALS" ? pin : null,
-      expiryDate, notes,
+      expiryDate, 
+      notes,
       salePrice: salePrice && Number.isFinite(salePrice) ? salePrice : null,
       status: "AVAILABLE",
     }).returning();
+
+    // إدراج البروفايلات ديناميكياً مع أسماء و PIN محدد لكل بروفايل
     if (type === "PROFILE") {
-      await db.insert(profiles).values(Array.from({ length: maxProfiles }, (_, i) => ({
-        accountId: acc.id, profileNo: i + 1, profileName: `بروفايل ${i + 1}`, pin: `${1000 + i + 1}`,
-      })));
+      if (customProfiles.length > 0) {
+        await db.insert(profiles).values(customProfiles.map((p, i) => ({
+          accountId: acc.id,
+          profileNo: i + 1,
+          profileName: String(p.name || `بروفايل ${i + 1}`).trim(),
+          pin: String(p.pin || "").trim() || null,
+        })));
+      } else {
+        await db.insert(profiles).values(Array.from({ length: maxProfiles }, (_, i) => ({
+          accountId: acc.id, 
+          profileNo: i + 1, 
+          profileName: `بروفايل ${i + 1}`, 
+          pin: null,
+        })));
+      }
     }
+
     const [plat] = await db.select({ name: platforms.name }).from(platforms).where(eq(platforms.id, platformId)).limit(1);
     await notifyAdmin({
       title: "إضافة حساب",
@@ -136,7 +162,7 @@ export async function PUT(req: Request) {
     }
     if (b.usedCount !== undefined) patch.usedCount = Math.max(0, Number(b.usedCount) || 0);
     if (b.deliveryKind) patch.deliveryKind = normalizeAccountDelivery(b.deliveryKind);
-    if (b.pin !== undefined) patch.pin = String(b.pin || "") || null;
+    if (b.pin !== undefined) patch.pin = acc.type === "FULL" ? null : (String(b.pin || "").trim() || null);
     if (b.expiryDate !== undefined) patch.expiryDate = b.expiryDate ? new Date(String(b.expiryDate)) : null;
     if (b.notes !== undefined) patch.notes = String(b.notes || "") || null;
     if (b.salePrice !== undefined) patch.salePrice = b.salePrice ? Number(b.salePrice) : null;
