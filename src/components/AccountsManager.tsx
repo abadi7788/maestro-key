@@ -424,4 +424,4 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
       </Modal>
     </div>
   );
-}
+}    
