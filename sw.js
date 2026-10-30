@@ -1,82 +1,27 @@
-// maestro-sw-v6
+// maestro-sw-v9 (النسخة المنظفة والمصلحة نهائياً)
+const STATIC_CACHE = "maestro-static-v9";
+const OFFLINE_URL = "/offline.html";
+
+const PRECACHE_URLS = [
+  OFFLINE_URL,
+  "/offline",
+  "/logo.png",
+  "/manifest.json",
+  "/icons/icon-192x192.png",
+  "/icons/icon-512x512.png",
+  "/icons/badge-72x72.png"
+];
+
 let after = 0;
-let timer = null;
 
-var OFFLINE_URL = "/offline.html";
-var PRECACHE_URLS = [OFFLINE_URL, "/icons/icon-192x192.png", "/icons/icon-512x512.png", "/icons/badge-72x72.png", "/logo.png"];
-
-// ---------- Precache the offline page + key assets on install ----------
-self.addEventListener("install", function (e) {
-  e.waitUntil(
-    caches.open("mk-offline-v1").then(function (cache) {
-      return cache.addAll(PRECACHE_URLS).catch(function () {});
-    }).then(function () { return self.skipWaiting(); })
-  );
-});
-
-self.addEventListener("activate", function (e) {
-  e.waitUntil(
-    caches.keys().then(function (keys) {
-      return Promise.all(keys.filter(function (k) { return k !== "mk-offline-v1"; }).map(function (k) { return caches.delete(k); }));
-    }).then(function () { return self.clients.claim(); })
-  );
-});
-
-// ---------- Fetch handler: Network-first for pages, fallback to offline ----------
-self.addEventListener("fetch", function (event) {
-  var req = event.request;
-
-  // Navigation requests (page loads) → network first, offline fallback
-  if (req.mode === "navigate") {
-    event.respondWith(
-      fetch(req).then(function (res) {
-        // cache a fresh copy of same-origin pages for offline resilience
-        try {
-          if (res && res.ok && new URL(req.url).origin === self.location.origin) {
-            var copy = res.clone();
-            caches.open("mk-offline-v1").then(function (c) { c.put(req, copy); }).catch(function () {});
-          }
-        } catch (e) {}
-        return res;
-      }).catch(function () {
-        // Offline → serve cached page if available, else the offline page
-        return caches.match(req).then(function (cached) {
-          return cached || caches.match(OFFLINE_URL);
-        });
-      })
-    );
-    return;
-  }
-
-  // Same-origin GET assets → cache-first (fast + works offline)
-  if (req.method === "GET" && new URL(req.url).origin === self.location.origin) {
-    event.respondWith(
-      caches.match(req).then(function (cached) {
-        if (cached) return cached;
-        return fetch(req).then(function (res) {
-          if (res && res.ok) {
-            var copy = res.clone();
-            caches.open("mk-offline-v1").then(function (c) { c.put(req, copy); }).catch(function () {});
-          }
-          return res;
-        }).catch(function () {
-          return caches.match(OFFLINE_URL);
-        });
-      })
-    );
-  }
-});
-
-// ---------- Alerts polling (only when no window is open) ----------
 async function poll() {
-  var open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   if (open.length) return;
   try {
-    var res = await fetch("/api/alerts?after=" + after, { credentials: "include", cache: "no-store" });
+    const res = await fetch("/api/alerts?after=" + after, { credentials: "include", cache: "no-store" });
     if (!res.ok) return;
-    var data = await res.json();
-    for (var i = 0; i < (data.alerts || []).length; i++) {
-      var a = data.alerts[i];
+    const data = await res.json();
+    for (const a of data.alerts || []) {
       if (a.id > after) after = a.id;
       await self.registration.showNotification("مايسترو كي", {
         body: a.title + " — " + a.body,
@@ -88,21 +33,91 @@ async function poll() {
       });
     }
     if (data.latestId > after) after = data.latestId;
-  } catch (e) {}
+  } catch {}
 }
 
-self.addEventListener("message", function (e) {
-  if (e.data && e.data.type === "watch") {
-    after = Number(e.data.after || after || 0);
-    if (!timer) timer = setInterval(poll, 8000);
-    poll();
+self.addEventListener("install", (e) => {
+  e.waitUntil(
+    caches.open(STATIC_CACHE).then((cache) =>
+      Promise.allSettled(PRECACHE_URLS.map((u) => cache.add(new Request(u, { cache: "reload" })))),
+    ).then(() => self.skipWaiting()),
+  );
+});
+
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k.startsWith("maestro-") && k !== STATIC_CACHE).map((k) => caches.delete(k))),
+    ).then(() => self.clients.claim()),
+  );
+});
+
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+
+  if (url.pathname.startsWith("/api/")) return;
+
+  if (req.mode === "navigate") {
+    event.respondWith(
+      fetch(req).then((res) => {
+        if (res && res.ok && url.origin === self.location.origin) {
+          const copy = res.clone();
+          caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
+        }
+        return res;
+      }).catch(async () => {
+        const cache = await caches.open(STATIC_CACHE);
+        const cached = await cache.match(req);
+        if (cached) return cached;
+
+        // البحث عن صفحة الأوفلاين بصيغتيها لضمان إيجادها
+        const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline") || await cache.match("/offline.html");
+        if (offlineFallback) return offlineFallback;
+
+        // إرجاع صفحة HTML مع status: 200 لمنع شاشة Chrome الافتراضية "This page couldn't load"
+        return new Response(
+          `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر الاتصال — مايسترو كي</title><style>body{background:#070b14;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box}h2{font-size:22px;margin:0 0 8px;font-weight:900}p{color:#94a3b8;font-size:14px;margin:0 0 24px;line-height:1.6}button{background:#2f7bff;color:#fff;border:none;padding:12px 28px;border-radius:14px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 8px 20px rgba(47,123,255,.3)}</style></head><body><h2>تعذر تحميل الصفحة مؤقتاً</h2><p>يرجى التحقق من اتصال الشبكة ثم إعادة المحاولة.</p><button onclick="location.reload()">إعادة المحاولة</button></body></html>`,
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }
+        );
+      }),
+    );
+    return;
+  }
+
+  if (
+    url.origin === self.location.origin &&
+    ["image", "style", "script", "font"].includes(req.destination)
+  ) {
+    event.respondWith(
+      caches.match(req).then((hit) => {
+        const network = fetch(req).then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
+          }
+          return res;
+        }).catch(() => hit);
+        return hit || network;
+      }),
+    );
   }
 });
 
-// ---------- Web Push notifications ----------
-self.addEventListener("push", function (event) {
-  var data = { title: "مايسترو كي", body: "إشعار جديد", href: "/inbox", tag: "mk" };
-  try { data = Object.assign({}, data, event.data ? event.data.json() : {}); } catch (e) {}
+self.addEventListener("message", (e) => {
+  if (e.data?.type === "watch") {
+    after = Number(e.data.after || after || 0);
+  }
+  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
+});
+
+self.addEventListener("push", (event) => {
+  let data = { title: "مايسترو كي", body: "إشعار جديد", href: "/inbox", tag: "mk" };
+  try { data = { ...data, ...(event.data ? event.data.json() : {}) }; } catch {}
   event.waitUntil(self.registration.showNotification("مايسترو كي", {
     body: (data.title ? data.title + " — " : "") + (data.body || "إشعار جديد"),
     icon: "/icons/icon-192x192.png",
@@ -113,25 +128,26 @@ self.addEventListener("push", function (event) {
   }));
 });
 
-// ---------- Clear badge when a notification is opened ----------
 async function clearAll() {
-  var all = await self.registration.getNotifications();
-  all.forEach(function (n) { n.close(); });
-  var list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  list.forEach(function (c) { c.postMessage({ type: "clear-badge" }); });
+  const all = await self.registration.getNotifications();
+  all.forEach((n) => n.close());
+  const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  list.forEach((c) => c.postMessage({ type: "clear-badge" }));
 }
-self.addEventListener("notificationclick", function (e) {
+
+self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  var href = (e.notification.data && e.notification.data.href) || "/inbox";
-  e.waitUntil((async function () {
+  const href = e.notification.data?.href || "/inbox";
+  e.waitUntil((async () => {
     await clearAll();
-    var list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    for (var i = 0; i < list.length; i++) {
-      if ("focus" in list[i]) { await list[i].focus(); return; }
+    const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const c of list) {
+      if ("focus" in c) { await c.focus(); return; }
     }
     await self.clients.openWindow(href);
   })());
 });
-self.addEventListener("message", function (e) {
-  if (e.data && e.data.type === "clear-now") e.waitUntil(clearAll());
+
+self.addEventListener("message", (e) => {
+  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
 });
