@@ -29,6 +29,9 @@ export async function GET(req: Request) {
       startDate: rentals.startDate, endDate: rentals.endDate, durationDays: rentals.durationDays,
       isLifetime: rentals.isLifetime,
       deliverySource: rentals.deliverySource,
+      deliveryMode: platforms.deliveryMode,
+      activatedLink: rentals.activatedLink,
+      activatedNote: rentals.activatedNote,
       status: rentals.status, whatsappAlertSent: rentals.whatsappAlertSent, whatsappAlertSentAt: rentals.whatsappAlertSentAt,
       customerEmail: rentals.customerEmail, customerExtra: rentals.customerExtra,
       activationStatus: rentals.activationStatus, activatedAt: rentals.activatedAt,
@@ -36,7 +39,6 @@ export async function GET(req: Request) {
       createdAt: rentals.createdAt,
       customerName: customers.name, customerPhone: customers.phone,
       platformName: platforms.name, platformColor: platforms.color, platformImage: platforms.imageUrl,
-      deliveryMode: platforms.deliveryMode,
       sellerName: users.displayName, accountEmail: accounts.email, accountType: accounts.type,
       accountDeliveryKind: accounts.deliveryKind,
     }).from(rentals)

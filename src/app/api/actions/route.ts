@@ -62,7 +62,7 @@ export async function POST(req: Request) {
       "restoreProfile",
     ]);
 
-    if (action === "activateRental") {
+    if (action === "activateRental" || action === "cancelAndRefundToWallet") {
       if (!hasPermission(user, "CONFIRM_LINK_ACTIVATION")) {
         return jsonError("ليست لديك صلاحية تأكيد طلبات التفعيل", 403);
       }
@@ -170,7 +170,7 @@ export async function POST(req: Request) {
     }
 
     // ---------- Cancel order & refund wallet explicitly ----------
-    if (action === "refundRental") {
+    if (action === "refundRental" || action === "cancelAndRefundToWallet") {
       const rentalId = Number(b.rentalId);
       const reason = String(b.reason || "إلغاء الطلب وإرجاع الرصيد").trim();
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
@@ -311,7 +311,7 @@ export async function POST(req: Request) {
       if (mode === "LINK_ONLY") {
         credentials = `🔗 رابط التفعيل: ${aLink}${aNote ? `\n📝 ${aNote}` : ""}`;
       } else if (mode === "ON_DEMAND_EMAIL") {
-        credentials = `تم التفعيل على إيميلك بنجاح ✓${aNote ? `\n📝 ${aNote}` : ""}`;
+        credentials = `تم التفعيل على إيميلك بنجاح ✓${aLink ? `\n🔗 رابط التفعيل: ${aLink}` : ""}${aNote ? `\n📝 ${aNote}` : ""}`;
       } else {
         credentials = [
           aEmail && `📧 الإيميل: ${aEmail}`,

@@ -520,7 +520,7 @@ export async function POST(req: Request) {
         href: paymentType === "WALLET" ? "/rentals" : "/inbox",
       });
 
-      void checkLowStockAlert(platform);
+      await checkLowStockAlert(platform);
 
       await audit(user, "SALE", "rentals", rental.id, `بيع ${platform.name} للعميل ${customer.name} — ${paymentType}`);
       return respondWithAccount(rental.id, claimedAcc, claimedProfile, neededEnd, false);
