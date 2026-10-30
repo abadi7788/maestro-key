@@ -5,8 +5,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   LayoutDashboard, ShoppingCart, BellRing, Boxes, ReceiptText, Users, Trash2,
   Settings, ScrollText, LogOut, History, Menu, X, ShieldCheck, RefreshCcw, Wallet,
-  KeyRound, Download
+  KeyRound
 } from "lucide-react";
+
 
 import { api, fetchMe, type Me } from "@/lib/client";
 import { isAdminRole } from "@/lib/roles";
@@ -164,13 +165,6 @@ export default function Shell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="mt-4 flex flex-col gap-1.5">
-          <a
-            href="/api/download"
-            download="maestro-key-fixes.zip"
-            className="flex items-center gap-2 rounded-xl bg-gradient-to-l from-[#2f7bff] to-[#ff3b5c] px-3 py-2 text-xs font-black text-white shadow transition hover:brightness-110"
-          >
-            <Download size={15} /> تحميل ملفات الإصلاح ZIP
-          </a>
           <button onClick={() => setPwOpen(true)} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-300 transition hover:bg-white/10 hover:text-white">
             <KeyRound size={16} /> تغيير كلمة المرور
           </button>
@@ -179,6 +173,7 @@ export default function Shell({ children }: { children: ReactNode }) {
           </button>
         </div>
       </aside>
+
 
 
       {/* مودال تغيير كلمة المرور */}
@@ -283,15 +278,8 @@ export default function Shell({ children }: { children: ReactNode }) {
                   </Link>
                 ))}
               </nav>
-              <a
-                href="/api/download"
+              <button onClick={logout} className="mt-6 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400"><LogOut size={20} /> تسجيل الخروج</button>
 
-                download="maestro-key-fixes.zip"
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-[#2f7bff] to-[#ff3b5c] px-3.5 py-3 text-xs font-black text-white shadow"
-              >
-                <Download size={16} /> تحميل ملفات الإصلاح ZIP
-              </a>
-              <button onClick={logout} className="mt-3 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400"><LogOut size={20} /> تسجيل الخروج</button>
 
             </div>
           </div>
