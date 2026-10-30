@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, ArrowUpRight, CheckCircle2, ShieldCheck, KeyRound, Sparkles, UserCheck } from "lucide-react";
+import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, ArrowUpRight, CheckCircle2, ShieldCheck, KeyRound, Sparkles, UserCheck, Download } from "lucide-react";
 import { api, fetchMe, fileToDataUrl, fmtDateTime } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner } from "@/components/ui";
 import { isAdminRole } from "@/lib/roles";
@@ -10,6 +10,7 @@ const TABS = [
   { id: "platforms", label: "المنصات", icon: <MonitorPlay size={18} /> },
   { id: "banks", label: "البنوك والدفع", icon: <Building2 size={18} /> },
   { id: "users", label: "المستخدمون والصلاحيات", icon: <Users size={18} /> },
+  { id: "updates", label: "تنزيل التحديثات ZIP", icon: <Download size={18} /> },
 ];
 
 export default function SettingsPage() {
@@ -686,6 +687,65 @@ export default function SettingsPage() {
           )}
 
           <p className="text-sm font-semibold text-slate-500">المستخدمون من نوع «مستخدم/عميل» أو «موظف» لا يرون المخزون ولا المحذوفات ولا التدقيق. يتم الشحن والخصم من المحفظة بمعاملات مسجلة وموثقة في سجل التدقيق.</p>
+        </div>
+      )}
+
+      {tab === "updates" && (
+        <div className="space-y-4">
+          <div className="card p-5 border border-[#2f7bff]/30 bg-gradient-to-br from-[#2f7bff]/10 to-transparent">
+            <div className="flex items-center gap-3 mb-3">
+              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#2f7bff]/20 text-[#5ba2ff]">
+                <Download size={24} />
+              </span>
+              <div>
+                <h2 className="text-lg font-black text-white">تنزيل حزمة كود الإصلاحات والتحديثات</h2>
+                <p className="text-xs font-semibold text-slate-300">تحتوي الحزمة على جميع ملفات التحديثات الأخيرة جاهزة لفك الضغط في مشروعك مباشرة.</p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const res = await fetch("/api/download");
+                    if (!res.ok) throw new Error("فشل تحميل الملف");
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "maestro-key-fixes.zip";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(url);
+                  } catch (e: any) {
+                    alert(e.message || "حدث خطأ أثناء التنزيل");
+                  }
+                }}
+                className="btn-gold flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-black shadow-xl"
+              >
+                <Download size={18} /> تحميل الحزمة مباشرة الآن (ZIP)
+              </button>
+
+              <a
+                href="https://litter.catbox.moe/9i4fej.zip"
+                target="_blank"
+                rel="noreferrer"
+                className="btn-primary flex items-center justify-center gap-2 px-5 py-3.5 text-xs font-bold"
+              >
+                رابط تنزيل مباشر عام (Catbox)
+              </a>
+            </div>
+          </div>
+
+          <div className="card p-5 space-y-3">
+            <h3 className="font-extrabold text-white text-sm">أمر التحديث عبر الطرفية (Terminal) بسطر واحد:</h3>
+            <p className="text-xs text-slate-400">إذا كنت تستخدم Terminal أو سطر الأوامر في مشروعك، الصق هذا الأمر وشغّله في مجلد المشروع لتحديث كافة الملفات وبنائها فوراً:</p>
+            <div dir="ltr" className="rounded-xl bg-black/60 p-3.5 font-mono text-xs text-emerald-300 border border-white/10 select-all break-all">
+              curl -sL https://litter.catbox.moe/9i4fej.zip -o fixes.zip && unzip -o fixes.zip && rm fixes.zip && npm run build
+            </div>
+          </div>
         </div>
       )}
 

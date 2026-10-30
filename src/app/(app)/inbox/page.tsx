@@ -40,13 +40,14 @@ export default function InboxPage() {
       setMsg("⚠️ ضع رابط الاشتراك / الدعوة أولاً ثم أكّد الإرسال");
       return;
     }
-    setActivating(r.id);
+    setBusy(true);
+    setMsg("");
     try {
       const d = await api("/api/actions", {
         method: "POST",
         body: JSON.stringify({ action: "activateRental", rentalId: r.id, ...actForm }),
       });
-      setMsg(modeOf(r) === "LINK_ONLY"
+      setMsg(modeOf(r) === "LINK_ONLY" || actForm.link.trim()
         ? `✓ تم إرسال رابط اشتراك ${r.customerName} — وصله إشعار واتساب بالرابط، وأُشعر الموظف.`
         : `✓ تم تفعيل اشتراك ${r.customerName} — وصل إشعار واتساب، وأُشعر الموظف.`);
       setLastActivation({ customerPhone: d.customerPhone, whatsappMessage: d.whatsappMessage });
@@ -55,7 +56,8 @@ export default function InboxPage() {
       await load();
     } catch (e: any) {
       setMsg("⚠️ " + e.message);
-      setActivating(null);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -139,21 +141,25 @@ export default function InboxPage() {
                           <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} />
                         </div>
                         <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
-                          <Check size={17} /> تأكيد الإرسال — إشعار العميل
+                          <Check size={17} /> {busy ? "جارِ الإرسال والإشعار..." : "تأكيد الإرسال — إشعار العميل"}
                         </button>
                       </>
                     ) : modeOf(r) === "ON_DEMAND_EMAIL" ? (
                       <>
                         <p className="text-[12.5px] font-bold text-slate-400">
                           فعّل الاشتراك خارجياً على إيميل العميل {r.customerEmail && <b className="text-white" dir="ltr">{r.customerEmail}</b>}،
-                          ثم اضغط تأكيد — سيصل العميل إشعار «تم التفعيل على إيميلك بنجاح» <b className="text-white">بدون أي كلمات مرور</b>.
+                          أو الصق رابط التفعيل / الدعوة إن وُجد ثم اضغط تأكيد — سيصل العميل إشعار بالبيانات كاملة.
                         </p>
+                        <div>
+                          <label className="label">🔗 رابط الاشتراك / التفعيل (اختياري)</label>
+                          <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="https://…" value={actForm.link} onChange={(e) => setActForm({ ...actForm, link: e.target.value })} />
+                        </div>
                         <div>
                           <label className="label">📝 ملاحظة تصل للعميل (اختياري)</label>
                           <input className="field" value={actForm.note} onChange={(e) => setActForm({ ...actForm, note: e.target.value })} placeholder="مثال: تحقق من صندوق الوارد والرسائل المزعجة" />
                         </div>
                         <button disabled={busy} onClick={() => doActivate(r)} className="btn-gold w-full sm:w-auto sm:min-w-[280px]">
-                          <Check size={17} /> تأكيد التفعيل — إشعار العميل
+                          <Check size={17} /> {busy ? "جارِ التفعيل والإشعار..." : "تأكيد التفعيل — إشعار العميل"}
                         </button>
                       </>
                     ) : (

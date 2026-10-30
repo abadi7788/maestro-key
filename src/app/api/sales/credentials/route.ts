@@ -90,16 +90,17 @@ export async function GET(req: Request) {
       }
       if (mode === "ON_DEMAND_EMAIL") {
         const tpl = await getSetting("whatsapp_activation_template", "");
+        const activeLink = rental.activatedLink || rental.manualLink || "";
         const message = renderTemplate(tpl, {
           name: cust?.name || "", platform: plat?.name || "",
-          email: rental.customerEmail || "", password: "", link: "", note: rental.activatedNote || "",
-          credentials: `تم التفعيل على إيميلك بنجاح ✓${rental.activatedNote ? `\n📝 ${rental.activatedNote}` : ""}`,
+          email: rental.customerEmail || "", password: "", link: activeLink, note: rental.activatedNote || "",
+          credentials: `تم التفعيل على إيميلك بنجاح ✓${activeLink ? `\n🔗 رابط التفعيل: ${activeLink}` : ""}${rental.activatedNote ? `\n📝 ${rental.activatedNote}` : ""}`,
           end_date: endLabel,
         });
         await audit(user, "ACTIVATION_REVEALED", "rentals", rental.id, `عرض تأكيد التفعيل على الإيميل — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
         return Response.json({
           ok: true, onDemand: true, deliveryMode: mode, isLifetime: !!rental.isLifetime,
-          email: "", password: "", profileLabel: "", pin: "", link: "",
+          email: "", password: "", profileLabel: "", pin: "", link: activeLink,
           note: rental.activatedNote || "", accountType: "ON_DEMAND_EMAIL",
           activatedOnEmail: rental.customerEmail || "",
           customerName: cust?.name || "", customerPhone: cust?.phone || "",

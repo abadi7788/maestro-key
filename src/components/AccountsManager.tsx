@@ -177,19 +177,45 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
             const kind = kindOf(a);
             const title = kind === "INVITE_LINK" ? (a.inviteLink || "رابط دعوة") : kind === "LICENSE_KEY" ? "🎟️ كود ترخيص" : (a.email || "بدون إيميل");
             return (
-              <article key={a.id} className={`card p-4.5 p-4 ${a.status === "NEEDS_PASSWORD_CHANGE" && !trash ? "border-red-300 bg-red-500/10/40" : ""}`}>
-                <div className="flex items-start gap-3">
-                  <PlatformLogo src={a.platformImage} name={a.platformName} color={a.platformColor} size={48} />
-                  <div className="min-w-0 flex-1">
-                    <div dir="ltr" className="truncate text-right font-mono text-[15px] font-bold">{title}</div>
-                    <div className="mt-1 flex flex-wrap gap-1.5">
-                      {kind === "INVITE_LINK" ? <Badge tone="blue">🔗 رابط دعوة</Badge> : kind === "LICENSE_KEY" ? <Badge tone="gold">🎟️ كود ترخيص</Badge> : <Badge>📧 بيانات حساب</Badge>}
-                      {kind !== "CREDENTIALS" && <Badge tone={a.maxUses != null && (a.usedCount ?? 0) >= a.maxUses ? "red" : "slate"}>الاستخدام: {a.usedCount ?? 0}{a.maxUses != null ? `/${a.maxUses}` : " (بلا حد)"}</Badge>}
+              <article key={a.id} className={`card overflow-hidden w-full max-w-full min-w-0 p-4 ${a.status === "NEEDS_PASSWORD_CHANGE" && !trash ? "border-red-400 bg-red-500/10" : ""}`}>
+                {/* رأس البطاقة: المنصة وشارة الحالة */}
+                <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2.5 mb-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <PlatformLogo src={a.platformImage} name={a.platformName} color={a.platformColor} size={36} />
+                    <div className="min-w-0">
+                      <span className="font-extrabold text-sm text-white truncate block">{a.platformName}</span>
+                      <span className="text-[11px] font-semibold text-slate-400">
+                        {kind === "CREDENTIALS" ? (a.type === "FULL" ? "حساب كامل (عميل واحد)" : `بروفايلات: ${used}/${a.maxProfiles} مشغول`) : "تسليم مباشر"}
+                      </span>
                     </div>
-                    <div className="mt-0.5 text-xs font-semibold text-slate-500">{a.platformName} • {kind === "CREDENTIALS" ? (a.type === "FULL" ? "حساب كامل (عميل واحد)" : `بروفايلات: ${used}/${a.maxProfiles} مشغول`) : "تسليم مباشر"} • {a.expiryDate ? <>حتى {fmtDate(a.expiryDate)} {expDays !== null && expDays < 0 ? <Badge tone="red">منتهي الصلاحية!</Badge> : expDays !== null && expDays <= 30 ? <Badge tone="amber">بقي {expDays} يوم</Badge> : <span className="text-slate-400">({expDays} يوم)</span>}</> : <Badge tone="gold">♾️ بدون انتهاء</Badge>}</div>
                   </div>
-                  {trash ? <Badge tone="red">محذوف</Badge> : accountBadge(a.status)}
+                  <div className="shrink-0">
+                    {trash ? <Badge tone="red">محذوف</Badge> : accountBadge(a.status)}
+                  </div>
                 </div>
+
+                {/* حقل الإيميل / الرابط بكامل عرض البطاقة مع كسر الكلمات وعدم تمدد الشاشة */}
+                <div className="w-full min-w-0 overflow-hidden rounded-xl bg-white/[.04] p-2.5 border border-white/5">
+                  <div className="flex items-center justify-between gap-1 text-[10px] font-bold text-slate-400 mb-1">
+                    <span>{kind === "INVITE_LINK" ? "🔗 رابط الدعوة / التفعيل" : kind === "LICENSE_KEY" ? "🎟️ كود الترخيص" : "📧 إيميل الحساب"}</span>
+                    <CopyBtn text={title} label="نسخ" />
+                  </div>
+                  <div dir="ltr" className="font-mono text-xs sm:text-sm font-black text-white break-all select-all leading-relaxed">
+                    {title}
+                  </div>
+                </div>
+
+                {/* الشارات الإضافية والصلاحية */}
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  {kind === "INVITE_LINK" ? <Badge tone="blue">🔗 رابط دعوة</Badge> : kind === "LICENSE_KEY" ? <Badge tone="gold">🎟️ كود ترخيص</Badge> : <Badge>📧 بيانات حساب</Badge>}
+                  {kind !== "CREDENTIALS" && <Badge tone={a.maxUses != null && (a.usedCount ?? 0) >= a.maxUses ? "red" : "slate"}>الاستخدام: {a.usedCount ?? 0}{a.maxUses != null ? `/${a.maxUses}` : " (بلا حد)"}</Badge>}
+                  {a.expiryDate ? (
+                    expDays !== null && expDays < 0 ? <Badge tone="red">منتهي الصلاحية ({fmtDate(a.expiryDate)})</Badge> :
+                    expDays !== null && expDays <= 30 ? <Badge tone="amber">بقي {expDays} يوم ({fmtDate(a.expiryDate)})</Badge> :
+                    <span className="text-xs text-slate-400 font-semibold">حتى {fmtDate(a.expiryDate)} ({expDays} يوم)</span>
+                  ) : <Badge tone="gold">♾️ بدون انتهاء</Badge>}
+                </div>
+
 
                 {a.type === "PROFILE" && a.profiles?.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">

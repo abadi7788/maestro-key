@@ -115,6 +115,11 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
                 {r.payments.some((p: any) => p.status === "PENDING") && r.activationStatus !== "ACTIVATED" && (
                   <span className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-700"><Lock size={13} /> {r.accountType ? "البيانات مقفلة — بانتظار تأكيد المدير" : "بانتظار تفعيل المدير"}</span>
                 )}
+                {isAdmin && r.activationStatus === "PENDING" && (
+                  <Link href="/inbox" className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/20 px-3.5 py-2 text-xs font-black text-amber-300 transition hover:bg-amber-500/30">
+                    <Check size={14} /> تفعيل الطلب في التنبيهات
+                  </Link>
+                )}
                 <a className="btn-ghost py-2 text-xs" target="_blank" rel="noreferrer" href={waLink(r.customerPhone, `مرحباً ${r.customerName}، معك متجر مايسترو كي بخصوص اشتراك ${r.platformName}.`)}><MessageCircle size={15} className="text-[#1fa855]" /> مراسلة العميل</a>
                 {!r.isLifetime && (r.status === "ACTIVE" || r.status === "ENDED") && (
                   <Link href={`/sale?phone=${encodeURIComponent(r.customerPhone)}&platformId=${r.platformId}`} className="btn-ghost py-2 text-xs">↻ تسجيل تجديد لهذا العميل</Link>
@@ -164,9 +169,23 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
                     <Check size={26} className="text-emerald-300" />
                   </div>
                   <p className="mt-3 text-sm font-black text-white">تم التفعيل على إيميلك بنجاح ✓</p>
-                  <p className="mt-1 text-[12px] font-bold text-slate-300" dir="ltr">{credData.activatedOnEmail}</p>
+                  {credData.activatedOnEmail && <p className="mt-1 text-[12px] font-bold text-slate-300" dir="ltr">{credData.activatedOnEmail}</p>}
+                  {credData.link && (
+                    <div className="mt-3 rounded-xl border border-blue-500/30 bg-blue-500/10 p-3 text-right">
+                      <div className="text-[11px] font-bold text-blue-300 mb-1">🔗 رابط التفعيل:</div>
+                      <p className="break-all font-mono text-[12px] text-white" dir="ltr">{credData.link}</p>
+                    </div>
+                  )}
                   {credData.note && <p className="mt-2 text-[12px] font-bold text-slate-300">📝 {credData.note}</p>}
                 </div>
+                {credData.link && (
+                  <>
+                    <a href={credData.link} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#0e1526] px-5 py-3 font-extrabold text-white transition hover:bg-[#182238]">
+                      <ExternalLink size={18} /> فتح رابط التفعيل
+                    </a>
+                    <CopyBtn text={credData.link} label="نسخ الرابط" />
+                  </>
+                )}
               </>
             ) : (
               <>

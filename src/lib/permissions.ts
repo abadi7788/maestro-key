@@ -7,6 +7,7 @@
  *  - EMPLOYEE: فقط sales_direct = true (البيع المباشر)
  */
 import type { CurrentUser } from "@/lib/auth";
+import { isAdminRole } from "@/lib/roles";
 
 export const PERMISSIONS = {
   CONFIRM_LINK_ACTIVATION: "CONFIRM_LINK_ACTIVATION", // تأكيد طلبات الروابط
@@ -54,7 +55,7 @@ function parsePermissions(raw: unknown): Record<string, boolean> {
  */
 export function hasPermission(user: CurrentUser | null | undefined, key: PermissionKey): boolean {
   if (!user) return false;
-  if (user.role === "ADMIN") return true;
+  if (isAdminRole(user.role)) return true;
   const stored = parsePermissions(user.permissions);
   // إذا تم تمرير صلاحية محددة في القاعدة، نستخدمها
   if (key in stored) return stored[key] === true;

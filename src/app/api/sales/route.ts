@@ -417,6 +417,41 @@ export async function POST(req: Request) {
       const claimedKind = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
       if (claimedAcc.type === "FULL" && claimedKind === "CREDENTIALS") await db.update(accounts).set({ status: "RENTED" }).where(eq(accounts.id, claimedAcc.id));
 
+      // Low Stock Alert
+      try {
+        const threshold = platform.lowStockThreshold || 3;
+        const availableProfiles = await db.execute(sql`
+          SELECT count(*)::int as count
+          FROM profiles p
+          JOIN accounts a ON p.account_id = a.id
+          WHERE a.platform_id = ${platformId}
+            AND a.is_deleted = false
+            AND a.status != 'NEEDS_PASSWORD_CHANGE'
+            AND p.status = 'AVAILABLE'
+        `);
+        const availableFull = await db.execute(sql`
+          SELECT count(*)::int as count
+          FROM accounts a
+          WHERE a.platform_id = ${platformId}
+            AND a.type = 'FULL'
+            AND a.is_deleted = false
+            AND a.status = 'AVAILABLE'
+        `);
+        const profCount = Number((availableProfiles.rows[0] as any)?.count || 0);
+        const fullCount = Number((availableFull.rows[0] as any)?.count || 0);
+        const totalRemaining = profCount + fullCount;
+        if (totalRemaining <= threshold) {
+          await notifyAdmin({
+            title: "⚠️ تنبيه انخفاض المخزون",
+            body: `انخفض عدد الحسابات/البروفايلات المتاحة لمنصة ${platform.name} إلى ${totalRemaining} فقط (الحد الأدنى: ${threshold})`,
+            kind: "LOW_STOCK",
+            href: "/accounts",
+          });
+        }
+      } catch (stockErr) {
+        console.error("Low stock check error:", stockErr);
+      }
+
       await notifyAdmin({
         title: paymentType === "WALLET" ? "طلب جديد مدفوع بالمحفظة" : "طلب جديد",
         body: `${customer.name} / ${platform.name} — ${paymentType === "WALLET" ? "تم الاعتماد الفوري" : "بانتظار تأكيد السند"}`,

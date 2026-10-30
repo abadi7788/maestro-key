@@ -48,12 +48,66 @@ export async function getWallet(userId: number): Promise<WalletBalance> {
  * شحن محفظة المستخدم (يدوي من المدير فقط).
  * يضمن عدم النزول تحت الصفر حتى مع القيم السالبة.
  */
-export async function topUpWallet(input: {
+export type WalletInput = {
   userId: number;
   amount: number;
+  rentalId?: number | null;
+  note?: string;
+  createdBy?: number;
+};
+
+function normalizeWalletInput(
+  inputOrUserId: number | WalletInput,
+  maybeAmount?: number,
+  maybeNoteOrRentalId?: string | number | null,
+  maybeCreatedBy?: number
+): {
+  userId: number;
+  amount: number;
+  rentalId?: number | null;
   note?: string;
   createdBy: number;
-}): Promise<{ balanceAfter: number }> {
+} {
+  if (typeof inputOrUserId === "number") {
+    const note = typeof maybeNoteOrRentalId === "string" ? maybeNoteOrRentalId : undefined;
+    const rentalId = typeof maybeNoteOrRentalId === "number" ? maybeNoteOrRentalId : undefined;
+    return {
+      userId: inputOrUserId,
+      amount: maybeAmount ?? 0,
+      rentalId: rentalId ?? null,
+      note,
+      createdBy: maybeCreatedBy ?? inputOrUserId,
+    };
+  }
+  return {
+    userId: inputOrUserId.userId,
+    amount: inputOrUserId.amount,
+    rentalId: inputOrUserId.rentalId ?? null,
+    note: inputOrUserId.note,
+    createdBy: inputOrUserId.createdBy ?? inputOrUserId.userId,
+  };
+}
+
+/**
+ * شحن محفظة المستخدم (يدوي من المدير فقط).
+ * يضمن عدم النزول تحت الصفر حتى مع القيم السالبة.
+ */
+export async function topUpWallet(
+  input: WalletInput
+): Promise<{ balanceAfter: number }>;
+export async function topUpWallet(
+  userId: number,
+  amount: number,
+  note?: string,
+  createdBy?: number
+): Promise<{ balanceAfter: number }>;
+export async function topUpWallet(
+  inputOrUserId: number | WalletInput,
+  maybeAmount?: number,
+  maybeNote?: string,
+  maybeCreatedBy?: number
+): Promise<{ balanceAfter: number }> {
+  const input = normalizeWalletInput(inputOrUserId, maybeAmount, maybeNote, maybeCreatedBy);
   const amount = Math.floor(input.amount);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("المبلغ يجب أن يكون أكبر من صفر");
@@ -91,13 +145,22 @@ export async function topUpWallet(input: {
  * خصم مبلغ من المحفظة (للشراء). يرفض إذا كان الرصيد غير كافٍ.
  * المبلغ موجب دائماً (نخصم المبلغ بالسالب على خلفية المخزن).
  */
-export async function deductFromWallet(input: {
-  userId: number;
-  amount: number;
-  rentalId?: number | null;
-  note?: string;
-  createdBy: number;
-}): Promise<{ balanceAfter: number }> {
+export async function deductFromWallet(
+  input: WalletInput
+): Promise<{ balanceAfter: number }>;
+export async function deductFromWallet(
+  userId: number,
+  amount: number,
+  note?: string,
+  createdBy?: number
+): Promise<{ balanceAfter: number }>;
+export async function deductFromWallet(
+  inputOrUserId: number | WalletInput,
+  maybeAmount?: number,
+  maybeNote?: string,
+  maybeCreatedBy?: number
+): Promise<{ balanceAfter: number }> {
+  const input = normalizeWalletInput(inputOrUserId, maybeAmount, maybeNote, maybeCreatedBy);
   const amount = Math.floor(input.amount);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("المبلغ يجب أن يكون أكبر من صفر");
@@ -135,13 +198,22 @@ export async function deductFromWallet(input: {
 /**
  * إرجاع رصيد للمحفظة عند إلغاء طلب (مثلاً عدم توفر رابط التفعيل).
  */
-export async function refundToWallet(input: {
-  userId: number;
-  amount: number;
-  rentalId?: number | null;
-  note?: string;
-  createdBy: number;
-}): Promise<{ balanceAfter: number }> {
+export async function refundToWallet(
+  input: WalletInput
+): Promise<{ balanceAfter: number }>;
+export async function refundToWallet(
+  userId: number,
+  amount: number,
+  note?: string,
+  createdBy?: number
+): Promise<{ balanceAfter: number }>;
+export async function refundToWallet(
+  inputOrUserId: number | WalletInput,
+  maybeAmount?: number,
+  maybeNote?: string,
+  maybeCreatedBy?: number
+): Promise<{ balanceAfter: number }> {
+  const input = normalizeWalletInput(inputOrUserId, maybeAmount, maybeNote, maybeCreatedBy);
   const amount = Math.floor(input.amount);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("المبلغ يجب أن يكون أكبر من صفر");
