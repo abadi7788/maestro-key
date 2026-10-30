@@ -35,6 +35,7 @@ export async function GET(req: Request) {
       status: rentals.status, whatsappAlertSent: rentals.whatsappAlertSent, whatsappAlertSentAt: rentals.whatsappAlertSentAt,
       customerEmail: rentals.customerEmail, customerExtra: rentals.customerExtra,
       activationStatus: rentals.activationStatus, activatedAt: rentals.activatedAt,
+      refundedAt: rentals.refundedAt, refundReason: rentals.refundReason,
       createdAt: rentals.createdAt,
       customerName: customers.name, customerPhone: customers.phone,
       platformName: platforms.name, platformColor: platforms.color, platformImage: platforms.imageUrl,
@@ -50,23 +51,46 @@ export async function GET(req: Request) {
 
     const rentalIds = rows.map((r) => r.id);
     const pays = rentalIds.length ? await db.select({
-      id: payments.id, rentalId: payments.rentalId, transactionRef: payments.transactionRef, amount: payments.amount,
-      status: payments.status, isExtension: payments.isExtension, createdAt: payments.createdAt,
-      rejectionReason: payments.rejectionReason, bankName: paymentMethods.name,
+      id: payments.id,
+      rentalId: payments.rentalId,
+      paymentMethodId: payments.paymentMethodId,
+      transactionRef: payments.transactionRef,
+      amount: payments.amount,
+      status: payments.status,
+      isExtension: payments.isExtension,
+      createdAt: payments.createdAt,
+      rejectionReason: payments.rejectionReason,
+      bankName: paymentMethods.name,
       hasReceipt: payments.receiptImageData,
-    }).from(payments).innerJoin(paymentMethods, eq(payments.paymentMethodId, paymentMethods.id))
-      .where(inArray(payments.rentalId, rentalIds)).orderBy(desc(payments.createdAt)) : [];
+    }).from(payments)
+      .leftJoin(paymentMethods, eq(payments.paymentMethodId, paymentMethods.id))
+      .where(inArray(payments.rentalId, rentalIds))
+      .orderBy(desc(payments.createdAt)) : [];
 
-    const profs = await db.select().from(profiles);
+    const profileIds = Array.from(new Set(rows.map((r) => r.profileId).filter((id): id is number => typeof id === "number")));
+    const profs = profileIds.length
+      ? await db.select().from(profiles).where(inArray(profiles.id, profileIds))
+      : [];
     const profMap = new Map(profs.map((p) => [p.id, p]));
 
-    const enriched = rows.map((r) => ({
-      ...r,
-      // Employees never see account emails in lists (only at moment of sale)
-      accountEmail: isAdminRole(user.role) ? r.accountEmail : null,
-      profileNo: r.profileId ? profMap.get(r.profileId)?.profileNo ?? null : null,
-      payments: pays.filter((p) => p.rentalId === r.id).map((p) => ({ ...p, hasReceipt: !!p.hasReceipt })),
-    })).filter((r) => !paymentStatus || r.payments.some((p) => p.status === paymentStatus));
+    const enriched = rows.map((r) => {
+      const prof = r.profileId ? profMap.get(r.profileId) : undefined;
+      return {
+        ...r,
+        // Employees never see account emails in lists
+        accountEmail: isAdminRole(user.role) ? r.accountEmail : null,
+        profileNo: prof?.profileNo ?? null,
+        profileName: prof?.profileName ?? null,
+        payments: pays
+          .filter((p) => p.rentalId === r.id)
+          .map((p) => ({
+            ...p,
+            bankName: p.bankName || "محفظة مايسترو كي",
+            isWallet: !p.paymentMethodId,
+            hasReceipt: !!p.hasReceipt,
+          })),
+      };
+    }).filter((r) => !paymentStatus || r.payments.some((p) => p.status === paymentStatus));
 
     if (view === "due") {
       const now = Date.now();

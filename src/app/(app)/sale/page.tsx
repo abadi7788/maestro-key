@@ -26,9 +26,9 @@ export default function SalePage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.06] px-3 py-2">
-                <ShieldCheck size={14} className="text-[#5ba2ff]" />
-                <span className="text-[11px] font-bold text-slate-200">سند إلزامي</span>
+              <div className="flex items-center gap-2 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2">
+                <ShieldCheck size={14} className="text-amber-300" />
+                <span className="text-[11px] font-bold text-amber-200">محفظة فورية أو سند بنكي</span>
               </div>
               <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.06] px-3 py-2">
                 <ScanLine size={14} className="text-[#5ba2ff]" />

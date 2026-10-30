@@ -1,18 +1,47 @@
 import { db } from "@/db";
 import { accounts, profiles, rentals, payments, customers, platforms, whatsappLogs } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { requireUser, audit, jsonError } from "@/lib/auth";
+import { isAdminRole } from "@/lib/roles";
+import { hasPermission } from "@/lib/permissions";
 import { ensureSeeded } from "@/lib/seed";
 import { decryptText, encryptText } from "@/lib/crypto";
 import { formatDate, renderTemplate } from "@/lib/constants";
 import { getSetting, refreshAccountStatus, runDailyJob } from "@/lib/engine";
-import { normalizeDeliveryMode, lifetimeEndDate } from "@/lib/delivery";
+import { normalizeDeliveryMode } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
-import { hasPermission } from "@/lib/permissions";
 import { refundToWallet } from "@/lib/wallet";
-import { isAdminRole } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
+
+async function releaseRentalInventory(rental: typeof rentals.$inferSelect, isExtension: boolean, now: Date) {
+  if (!isExtension && rental.profileId) {
+    await db
+      .update(profiles)
+      .set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null })
+      .where(eq(profiles.id, rental.profileId));
+  }
+  if (rental.accountId) {
+    const [rejAcc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+    if (rejAcc && (rejAcc.deliveryKind === "INVITE_LINK" || rejAcc.deliveryKind === "LICENSE_KEY")) {
+      await db
+        .update(accounts)
+        .set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, status: "AVAILABLE", updatedAt: now })
+        .where(eq(accounts.id, rental.accountId));
+    }
+    await refreshAccountStatus(rental.accountId);
+    if (!isExtension) {
+      const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+      if (acc?.type === "FULL" && acc.deliveryKind !== "INVITE_LINK" && acc.deliveryKind !== "LICENSE_KEY") {
+        const active = await db
+          .select({ id: rentals.id })
+          .from(rentals)
+          .where(and(eq(rentals.accountId, acc.id), eq(rentals.status, "ACTIVE")));
+        if (!active.length) await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, acc.id));
+      }
+    }
+  }
+}
 
 export async function POST(req: Request) {
   try {
@@ -20,16 +49,29 @@ export async function POST(req: Request) {
     const user = await requireUser();
     const b = await req.json().catch(() => ({}));
     const action = String(b.action || "");
-    const canManageInventory = isAdminRole(user.role) || hasPermission(user, "INVENTORY_MANAGE");
-    const canConfirmOrders = isAdminRole(user.role) || hasPermission(user, "CONFIRM_LINK_ACTIVATION");
     const now = new Date();
 
-    if (["revealPassword", "receipt", "moveToTrash", "restore", "permanentDelete", "deleteExpired", "emptyTrash", "restoreProfile", "confirmPasswordChange", "freeProfile"].includes(action)) {
-      if (!canManageInventory) return jsonError("هذه الصلاحية لإدارة المخزون فقط", 403);
-    }
+    const inventoryActions = new Set([
+      "revealPassword",
+      "confirmPasswordChange",
+      "moveToTrash",
+      "restore",
+      "permanentDelete",
+      "deleteExpired",
+      "emptyTrash",
+      "restoreProfile",
+    ]);
 
-    if (["confirmPayment", "rejectPayment", "activateRental", "cancelAndRefundToWallet"].includes(action)) {
-      if (!canConfirmOrders) return jsonError("لا تملك صلاحية مراجعة وتأكيد طلبات التفعيل", 403);
+    if (action === "activateRental" || action === "cancelAndRefundToWallet") {
+      if (!hasPermission(user, "CONFIRM_LINK_ACTIVATION")) {
+        return jsonError("ليست لديك صلاحية تأكيد طلبات التفعيل", 403);
+      }
+    } else if (inventoryActions.has(action)) {
+      if (!hasPermission(user, "INVENTORY_MANAGE")) {
+        return jsonError("هذه الصلاحية لإدارة المخزون فقط", 403);
+      }
+    } else if (!isAdminRole(user.role)) {
+      return jsonError("هذه الصلاحية للمدير فقط", 403);
     }
 
     // ---------- Reveal password / license (audited) ----------
@@ -54,8 +96,6 @@ export async function POST(req: Request) {
       if (!pay) return jsonError("سند غير موجود", 404);
       await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null }).where(eq(payments.id, pay.id));
 
-      // المدة تبدأ من لحظة تأكيد المدير (لا من لحظة سحب السند من الموظف)
-      // الاشتراك الدائم: تُحفظ تواريخه كما هي دون إعادة حساب
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, pay.rentalId)).limit(1);
       if (rental && rental.isLifetime) {
         await db.update(rentals).set({
@@ -84,51 +124,101 @@ export async function POST(req: Request) {
       return Response.json({ ok: true });
     }
 
-    // ---------- Reject payment: rollback rental ----------
+    // ---------- Reject payment: rollback rental & refund wallet if applicable ----------
     if (action === "rejectPayment") {
       const reason = String(b.reason || "سند غير مقبول");
       const [pay] = await db.select().from(payments).where(eq(payments.id, Number(b.paymentId))).limit(1);
       if (!pay) return jsonError("سند غير موجود", 404);
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, pay.rentalId)).limit(1);
       await db.update(payments).set({ status: "REJECTED", reviewedBy: user.id, reviewedAt: now, rejectionReason: reason }).where(eq(payments.id, pay.id));
+
+      let refundedAmount = 0;
       if (rental) {
         if (pay.isExtension && pay.previousEndDate) {
           const prevStatus = pay.previousRentalStatus || "ACTIVE";
           await db.update(rentals).set({ endDate: pay.previousEndDate, status: prevStatus === "ENDED" ? "ENDED" : "ACTIVE", updatedAt: now }).where(eq(rentals.id, rental.id));
         } else {
           await db.update(rentals).set({ status: "REJECTED", updatedAt: now }).where(eq(rentals.id, rental.id));
-          if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, rental.profileId));
         }
-        if (rental.accountId) {
-          // روابط الدعوة والأكواد: إرجاع مرة الاستخدام المستهلكة
-          const [rejAcc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
-          if (rejAcc && (rejAcc.deliveryKind === "INVITE_LINK" || rejAcc.deliveryKind === "LICENSE_KEY")) {
-            const { sql } = await import("drizzle-orm");
-            await db.update(accounts)
-              .set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, status: "AVAILABLE", updatedAt: now })
-              .where(eq(accounts.id, rental.accountId));
-          }
-          await refreshAccountStatus(rental.accountId);
-          if (!pay.isExtension) {
-            const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
-            if (acc?.type === "FULL" && acc.deliveryKind !== "INVITE_LINK" && acc.deliveryKind !== "LICENSE_KEY") {
-              const active = await db.select({ id: rentals.id }).from(rentals).where(and(eq(rentals.accountId, acc.id), eq(rentals.status, "ACTIVE")));
-              if (!active.length) await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, acc.id));
-            }
-          }
+        await releaseRentalInventory(rental, !!pay.isExtension, now);
+
+        // إذا كانت الدفعة من المحفظة ولم يُسترد المبلغ سابقاً، أعد الرصيد للموظف تلقائياً
+        if (!pay.paymentMethodId && pay.amount > 0 && !rental.refundedAt) {
+          await refundToWallet({
+            userId: rental.createdBy,
+            amount: pay.amount,
+            rentalId: rental.id,
+            note: `استرداد تلقائي لإلغاء الطلب #${rental.id} — ${reason}`,
+            createdBy: user.id,
+          });
+          await db.update(rentals).set({ refundedAt: now, refundReason: reason, updatedAt: now }).where(eq(rentals.id, rental.id));
+          refundedAmount = pay.amount;
         }
-      }
-      if (rental) {
+
         await notifyAdmin({
-          title: "تم رفض الطلب",
-          body: `رفض المدير الطلب. السبب: ${reason}`,
+          title: refundedAmount > 0 ? "تم إلغاء الطلب وإرجاع الرصيد للمحفظة" : "تم رفض الطلب",
+          body: refundedAmount > 0
+            ? `أُلغي الطلب وأُعيد مبلغ ${refundedAmount.toLocaleString("ar-YE")} ر.ي إلى محفظتك. السبب: ${reason}`
+            : `رفض المدير الطلب. السبب: ${reason}`,
           kind: "REJECTED",
           href: "/my-sales",
           forUserId: rental.createdBy,
         });
       }
-      await audit(user, "PAYMENT_REJECTED", "payments", pay.id, `رفض سند ${pay.transactionRef} — ${reason} — تم إلغاء/تراجع الاشتراك`);
-      return Response.json({ ok: true });
+      await audit(user, "PAYMENT_REJECTED", "payments", pay.id, `رفض/إلغاء ${pay.transactionRef} — ${reason}${refundedAmount ? ` (استرداد ${refundedAmount} ر.ي للمحفظة)` : ""}`);
+      return Response.json({ ok: true, refundedAmount });
+    }
+
+    // ---------- Cancel order & refund wallet explicitly ----------
+    if (action === "refundRental" || action === "cancelAndRefundToWallet") {
+      const rentalId = Number(b.rentalId);
+      const reason = String(b.reason || "إلغاء الطلب وإرجاع الرصيد").trim();
+      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
+      if (!rental) return jsonError("الطلب غير موجود", 404);
+      if (rental.refundedAt) return jsonError("تم استرداد هذا الطلب مسبقاً", 409);
+
+      const rentalPays = await db.select().from(payments).where(eq(payments.rentalId, rental.id));
+      const walletPay = rentalPays.find((p) => !p.paymentMethodId && p.status !== "REJECTED" && p.amount > 0);
+
+      for (const p of rentalPays) {
+        if (p.status !== "REJECTED") {
+          await db.update(payments).set({ status: "REJECTED", reviewedBy: user.id, reviewedAt: now, rejectionReason: reason }).where(eq(payments.id, p.id));
+        }
+      }
+
+      await db.update(rentals).set({
+        status: "REJECTED",
+        refundedAt: walletPay ? now : rental.refundedAt,
+        refundReason: reason,
+        updatedAt: now,
+      }).where(eq(rentals.id, rental.id));
+
+      await releaseRentalInventory(rental, false, now);
+
+      let refundedAmount = 0;
+      if (walletPay) {
+        await refundToWallet({
+          userId: rental.createdBy,
+          amount: walletPay.amount,
+          rentalId: rental.id,
+          note: `استرداد طلب ملغي #${rental.id} — ${reason}`,
+          createdBy: user.id,
+        });
+        refundedAmount = walletPay.amount;
+      }
+
+      await notifyAdmin({
+        title: refundedAmount > 0 ? "💳 تم إرجاع مبلغ الطلب لمحفظتك" : "تم إلغاء الطلب",
+        body: refundedAmount > 0
+          ? `أُلغي الطلب #${rental.id} وأُعيد ${refundedAmount.toLocaleString("ar-YE")} ر.ي إلى محفظتك. السبب: ${reason}`
+          : `أُلغي الطلب #${rental.id}. السبب: ${reason}`,
+        kind: "REFUND",
+        href: "/my-sales",
+        forUserId: rental.createdBy,
+      });
+
+      await audit(user, "RENTAL_REFUNDED", "rentals", rental.id, `إلغاء الطلب #${rental.id} — ${reason}${refundedAmount ? ` — استرداد ${refundedAmount} ر.ي` : ""}`);
+      return Response.json({ ok: true, refundedAmount });
     }
 
     // ---------- Free a profile (admin removed customer manually on platform) ----------
@@ -138,7 +228,6 @@ export async function POST(req: Request) {
       await db.update(rentals).set({ status: "CLOSED", updatedAt: now }).where(eq(rentals.id, rental.id));
       if (rental.profileId) await db.update(profiles).set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null }).where(eq(profiles.id, rental.profileId));
       if (rental.accountId) {
-        // If no active/ended rentals remain on a PROFILE account -> require password change before resale
         const remaining = await db.select({ id: rentals.id }).from(rentals)
           .where(and(eq(rentals.accountId, rental.accountId), eq(rentals.status, "ACTIVE")));
         const endedLeft = await db.select({ id: rentals.id }).from(rentals)
@@ -185,16 +274,13 @@ export async function POST(req: Request) {
 
       const aLink = String(b.link || "").trim();
       const aNote = String(b.note || "").trim();
-      // LINK_ONLY يتطلب الرابط فقط — لا إيميل ولا باسورد ولا PIN
       if (mode === "LINK_ONLY" && !aLink) {
         return jsonError("ضع رابط الاشتراك / الدعوة أولاً ثم أكّد الإرسال");
       }
-      // بيانات اختيارية للأنماط الأخرى (تُحفظ فقط إن أُدخلت)
       const aEmail = mode === "LINK_ONLY" ? "" : String(b.email || "").trim();
       const aPass = mode === "LINK_ONLY" ? "" : String(b.password || "").trim();
       const aPin = mode === "LINK_ONLY" ? "" : String(b.pin || "").trim();
 
-      // المدة تبدأ من لحظة التفعيل (الدائم يُحفظ كما هو)
       const patch: Record<string, unknown> = {
         activationStatus: "ACTIVATED",
         activatedEmail: aEmail || null,
@@ -214,14 +300,12 @@ export async function POST(req: Request) {
       }
       await db.update(rentals).set(patch).where(eq(rentals.id, rental.id));
 
-      // التفعيل اعتماد ضمني: أكّد أي سندات معلقة على نفس الطلب
       await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null })
         .where(and(eq(payments.rentalId, rental.id), eq(payments.status, "PENDING")));
 
       const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
       const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
 
-      // رسالة الواتساب حسب النمط
       const endLabel = rental.isLifetime ? "دائم ♾️" : formatDate(patch.endDate ? new Date(String(patch.endDate)) : new Date(rental.endDate));
       let credentials: string;
       if (mode === "LINK_ONLY") {
@@ -251,7 +335,6 @@ export async function POST(req: Request) {
         message, kind: "ACTIVATION", status: hasMeta ? "QUEUED" : "SIMULATED",
       });
 
-      // إشعار الموظف الذي سجّل الطلب
       await notifyAdmin({
         title: mode === "LINK_ONLY" ? "تم إرسال رابط التفعيل" : "تم تفعيل الطلب",
         body: mode === "LINK_ONLY"
@@ -263,7 +346,7 @@ export async function POST(req: Request) {
       });
 
       await audit(user, "RENTAL_ACTIVATED", "rentals", rental.id, `تفعيل طلب ${plat?.name || ""} (${mode}) للعميل ${cust?.name || ""}`);
-      return Response.json({ ok: true, rentalId: rental.id, link: aLink, customerPhone: cust?.phone || "", whatsappMessage: message, deliveryMode: mode });
+      return Response.json({ ok: true, customerPhone: cust?.phone || "", whatsappMessage: message, deliveryMode: mode });
     }
 
     // ---------- Trash ----------
@@ -288,124 +371,53 @@ export async function POST(req: Request) {
       const accountId = Number(b.accountId);
       const hasRentals = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.accountId, accountId)).limit(1);
       if (hasRentals.length) return jsonError("لا يمكن الحذف النهائي لحساب له سجل إيجارات — يبقى في المحذوفات حفاظاً على السجل المالي", 409);
+      await db.delete(profiles).where(eq(profiles.accountId, accountId));
       await db.delete(accounts).where(eq(accounts.id, accountId));
       await audit(user, "PERMANENT_DELETE", "accounts", accountId, "حذف نهائي من قاعدة البيانات");
       return Response.json({ ok: true });
     }
+
     if (action === "emptyTrash") {
-      const trashed = await db.select({ id: accounts.id, email: accounts.email }).from(accounts).where(eq(accounts.isDeleted, true));
-      let deletedCount = 0;
-      let keptCount = 0;
-      for (const t of trashed) {
-        const hasRentals = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.accountId, t.id)).limit(1);
-        if (hasRentals.length) {
-          keptCount++;
-        } else {
-          await db.delete(profiles).where(eq(profiles.accountId, t.id));
-          await db.delete(accounts).where(eq(accounts.id, t.id));
-          deletedCount++;
+      const trashed = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.isDeleted, true));
+      let deleted = 0;
+      for (const acc of trashed) {
+        const hasRentals = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.accountId, acc.id)).limit(1);
+        if (!hasRentals.length) {
+          await db.delete(profiles).where(eq(profiles.accountId, acc.id));
+          await db.delete(accounts).where(eq(accounts.id, acc.id));
+          deleted++;
         }
       }
-      await audit(user, "TRASH_EMPTIED", "accounts", null, `إفراغ السلة: مسح ${deletedCount} حساب نهائياً، وتم الإبقاء على ${keptCount} حساب لوجود سجل مالي`);
-      return Response.json({
-        ok: true,
-        deletedCount,
-        keptCount,
-        message: keptCount > 0
-          ? `تم حذف ${deletedCount} حساب نهائياً. تم الإبقاء على ${keptCount} حساب لوجود سجلات إيجار مالية سابقة لها.`
-          : `تم إفراغ سلة المحذوفات بالكامل (حُذف ${deletedCount} حساب نهائياً).`
-      });
+      await audit(user, "TRASH_EMPTIED", "accounts", null, `إفراغ سلة المحذوفات (تم مسح ${deleted} حساب بدون سجل مالي)`);
+      return Response.json({ ok: true, deleted });
     }
+
     if (action === "restoreProfile") {
       const profileId = Number(b.profileId);
       const [prof] = await db.select().from(profiles).where(eq(profiles.id, profileId)).limit(1);
-      if (!prof) return jsonError("البروفايل غير موجود", 404);
-      await db.update(profiles).set({
-        status: "AVAILABLE",
-        isOccupied: false,
-        soldAt: null,
-        soldBy: null,
-        currentRentalId: null,
-      }).where(eq(profiles.id, profileId));
+      if (!prof) return jsonError("بروفايل غير موجود", 404);
+      if (prof.currentRentalId) {
+        await db.update(rentals).set({ status: "CLOSED", updatedAt: now }).where(eq(rentals.id, prof.currentRentalId));
+      }
+      await db
+        .update(profiles)
+        .set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null })
+        .where(eq(profiles.id, profileId));
       await refreshAccountStatus(prof.accountId);
-      await audit(user, "PROFILE_RESTORED", "profiles", profileId, `استرجاع بروفايل #${prof.profileNo} (${prof.profileName || ""}) يدوياً للبيع`);
+      await audit(user, "PROFILE_FREED", "profiles", profileId, `استرجاع يدوي للبروفايل ${prof.profileName || prof.profileNo} للبيع مجدداً`);
       return Response.json({ ok: true });
     }
-    if (action === "cancelAndRefundToWallet") {
-      const rentalId = Number(b.rentalId);
-      const reason = String(b.reason || "تعذر توفير الرابط — تم إلغاء الطلب وإرجاع المبلغ للمحفظة");
-      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
-      if (!rental) return jsonError("طلب غير موجود", 404);
-      if (rental.status === "REJECTED" || rental.refundedAt) {
-        return jsonError("تم إلغاء هذا الطلب أو إرجاعه مسبقاً", 400);
-      }
-      const [pay] = await db.select().from(payments).where(eq(payments.rentalId, rental.id)).limit(1);
-      const refundAmount = pay?.amount ?? 0;
-      const targetUserId = rental.createdBy;
 
-      if (refundAmount > 0) {
-        await refundToWallet({
-          userId: targetUserId,
-          amount: refundAmount,
-          rentalId: rental.id,
-          note: `استرجاع رصيد لإلغاء طلب رقم #${rental.id} (${reason})`,
-          createdBy: user.id,
-        });
-      }
-
-      await db.update(rentals).set({
-        status: "REJECTED",
-        refundedAt: now,
-        refundReason: reason,
-        updatedAt: now,
-      }).where(eq(rentals.id, rental.id));
-
-      if (pay) {
-        await db.update(payments).set({
-          status: "REJECTED",
-          reviewedBy: user.id,
-          reviewedAt: now,
-          rejectionReason: reason,
-        }).where(eq(payments.id, pay.id));
-      }
-
-      if (rental.profileId) {
-        await db.update(profiles).set({
-          status: "AVAILABLE",
-          isOccupied: false,
-          currentRentalId: null,
-          soldAt: null,
-          soldBy: null,
-        }).where(eq(profiles.id, rental.profileId));
-      }
-      if (rental.accountId) {
-        await refreshAccountStatus(rental.accountId);
-      }
-
-      const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
-      await notifyAdmin({
-        title: "إلغاء طلب وإرجاع الرصيد",
-        body: `تم إلغاء طلب ${cust?.name || ""} وإرجاع ${refundAmount.toLocaleString()} ر.ي إلى محفظة الموظف.`,
-        kind: "REFUND",
-        href: "/inbox",
-        forUserId: targetUserId,
-      });
-
-      await audit(user, "ORDER_CANCELLED_REFUNDED", "rentals", rental.id, `إلغاء الطلب #${rental.id} وإرجاع ${refundAmount} ر.ي للمحفظة — السبب: ${reason}`);
-      return Response.json({ ok: true, refundAmount });
-    }
-
-    // ---------- Delete an EXPIRED account directly (expired master validity) ----------
+    // ---------- Delete an EXPIRED account directly ----------
     if (action === "deleteExpired") {
       const accountId = Number(b.accountId);
       const [acc] = await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1);
       if (!acc) return jsonError("حساب غير موجود", 404);
       if (!acc.expiryDate || new Date(acc.expiryDate) >= new Date()) return jsonError("هذا الحساب لم ينتهِ بعد — لا يمكن حذفه كمُنتهٍ", 409);
       const active = await db.select({ id: rentals.id }).from(rentals).where(and(eq(rentals.accountId, accountId), eq(rentals.status, "ACTIVE")));
-      if (active.length) return jsonError("لا يمكن حذف حساب عليه اشتراكات نشطة — انتهِ أول", 409);
+      if (active.length) return jsonError("لا يمكن حذف حساب عليه اشتراكات نشطة — انتهِ أولاً", 409);
       const hasRentals = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.accountId, accountId)).limit(1);
       if (hasRentals.length) {
-        // Keep financial history: move to trash (soft delete)
         await db.update(accounts).set({ isDeleted: true, deletedAt: new Date(), deletedReason: "حساب منتهي الصلاحية — حذفه المدير" }).where(eq(accounts.id, accountId));
         await audit(user, "EXPIRED_TO_TRASH", "accounts", accountId, `نقل حساب منتهي (${acc.email}) للمحذوفات للحفاظ على سجله المالي`);
         return Response.json({ ok: true, movedToTrash: true });
@@ -423,7 +435,7 @@ export async function POST(req: Request) {
       return Response.json({ ok: true, ...result });
     }
 
-    // ---------- Send expiry warning now for a rental (creates log + returns wa message) ----------
+    // ---------- Send expiry warning now for a rental ----------
     if (action === "sendWhatsapp") {
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, Number(b.rentalId))).limit(1);
       if (!rental) return jsonError("اشتراك غير موجود", 404);

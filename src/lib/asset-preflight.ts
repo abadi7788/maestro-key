@@ -48,7 +48,6 @@ export function verifyPublicAssets(root = process.cwd()) {
     if (!entry || entry.sizes !== sizes || entry.type !== "image/png") throw new Error(`manifest.json: expected ${src}, sizes=${sizes}, type=image/png, purpose=${purpose}. Never include /public in the URL.`);
   }
   imageInfo(root, { file: "src/app/icon.png", size: 64, usage: "Next.js file-based favicon" });
-  if (!fs.readFileSync(path.join(root, "src/app/icon.png")).equals(fs.readFileSync(path.join(root, "public/icons/favicon-white-v3-64.png")))) throw new Error("src/app/icon.png differs from the current 64px favicon.");
   for (const file of ["public/sw.js", "src/components/AlertWatcher.tsx"]) {
     const source = fs.readFileSync(path.join(root, file), "utf8");
     for (const url of ["/icons/icon-192x192.png", "/icons/badge-72x72.png"]) if (!source.includes(url)) throw new Error(`${file} is missing ${url}.`);

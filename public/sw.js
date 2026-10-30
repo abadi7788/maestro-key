@@ -13,29 +13,6 @@ const PRECACHE_URLS = [
 ];
 
 let after = 0;
-let timer = null;
-
-async function poll() {
-  const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (open.length) return;
-  try {
-    const res = await fetch("/api/alerts?after=" + after, { credentials: "include", cache: "no-store" });
-    if (!res.ok) return;
-    const data = await res.json();
-    for (const a of data.alerts || []) {
-      if (a.id > after) after = a.id;
-      await self.registration.showNotification("مايسترو كي", {
-        body: a.title + " — " + a.body,
-        icon: "/icons/icon-192x192.png",
-        badge: "/icons/badge-72x72.png",
-        tag: "maestro-key",
-        silent: false,
-        data: { href: a.href || "/inbox" },
-      });
-    }
-    if (data.latestId > after) after = data.latestId;
-  } catch {}
-}
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -73,17 +50,15 @@ self.addEventListener("fetch", (event) => {
         const cached = await cache.match(req);
         if (cached) return cached;
 
-        // البحث عن صفحة الأوفلاين بصيغتيها لضمان إيجادها
         const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline") || await cache.match("/offline.html");
         if (offlineFallback) return offlineFallback;
 
-        // إرجاع صفحة HTML مع status: 200 لمنع شاشة Chrome الافتراضية "This page couldn't load"
         return new Response(
           `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر الاتصال — مايسترو كي</title><style>body{background:#070b14;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box}h2{font-size:22px;margin:0 0 8px;font-weight:900}p{color:#94a3b8;font-size:14px;margin:0 0 24px;line-height:1.6}button{background:#2f7bff;color:#fff;border:none;padding:12px 28px;border-radius:14px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 8px 20px rgba(47,123,255,.3)}</style></head><body><h2>تعذر تحميل الصفحة مؤقتاً</h2><p>يرجى التحقق من اتصال الشبكة ثم إعادة المحاولة.</p><button onclick="location.reload()">إعادة المحاولة</button></body></html>`,
           {
             status: 200,
             headers: { "content-type": "text/html; charset=utf-8" },
-          }
+          },
         );
       }),
     );
@@ -116,7 +91,6 @@ self.addEventListener("message", (e) => {
   if (e.data?.type === "clear-now") e.waitUntil(clearAll());
 });
 
-
 self.addEventListener("push", (event) => {
   let data = { title: "مايسترو كي", body: "إشعار جديد", href: "/inbox", tag: "mk" };
   try { data = { ...data, ...(event.data ? event.data.json() : {}) }; } catch {}
@@ -148,8 +122,4 @@ self.addEventListener("notificationclick", (e) => {
     }
     await self.clients.openWindow(href);
   })());
-});
-
-self.addEventListener("message", (e) => {
-  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
 });

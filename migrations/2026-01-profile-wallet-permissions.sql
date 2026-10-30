@@ -27,8 +27,14 @@ UPDATE profiles SET status = 'AVAILABLE' WHERE is_occupied = false;
 CREATE INDEX IF NOT EXISTS profiles_available_idx ON profiles(account_id, status, id);
 
 -- ============================================================
--- 2) محفظة مايسترو كي (RYE / YER)
+-- 2) محفظة مايسترو كي للموظفين والموزعين (RYE / YER)
 -- ============================================================
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS wallet_balance INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE payments
+  ALTER COLUMN payment_method_id DROP NOT NULL;
+
 CREATE TABLE IF NOT EXISTS wallet_balances (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
@@ -38,17 +44,18 @@ CREATE TABLE IF NOT EXISTS wallet_balances (
 CREATE TABLE IF NOT EXISTS wallet_transactions (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type VARCHAR(20) NOT NULL, -- TOPUP | PURCHASE | REFUND
+  type VARCHAR(20) NOT NULL, -- TOPUP | PURCHASE | REFUND | DEDUCT
   amount INTEGER NOT NULL CHECK (amount > 0),
   balance_before INTEGER NOT NULL,
   balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
   rental_id INTEGER REFERENCES rentals(id),
   note TEXT,
   created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMP NOT NULL NOT NULL DEFAULT now(),
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
   CONSTRAINT wallet_transactions_balance_check CHECK (balance_after >= 0)
 );
 
+CREATE INDEX IF NOT EXISTS wallet_balances_user_idx ON wallet_balances(user_id);
 CREATE INDEX IF NOT EXISTS wallet_transactions_user_idx ON wallet_transactions(user_id, created_at);
 CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions(rental_id);
 
@@ -58,7 +65,7 @@ CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions
 ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}';
 
 -- ============================================================
--- 4) حقل الإرجاع (لإلغاء طلبات الروابط وإرجاع الرصيد)
+-- 4) حقل الإرجاع (لإلغاء الطلبات وإرجاع الرصيد للمحفظة)
 -- ============================================================
 ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP;
 ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refund_reason TEXT;

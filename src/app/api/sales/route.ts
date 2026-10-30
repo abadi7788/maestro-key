@@ -1,16 +1,60 @@
 import { db } from "@/db";
 import { accounts, profiles, customers, rentals, payments, platforms } from "@/db/schema";
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
-import { deductFromWallet, refundToWallet } from "@/lib/wallet";
+import { attachRentalToWalletTx, deductFromWallet, refundToWallet } from "@/lib/wallet";
 import { requireUser, audit, jsonError } from "@/lib/auth";
+import { hasPermission } from "@/lib/permissions";
 import { ensureSeeded } from "@/lib/seed";
 import { encryptText, hashText } from "@/lib/crypto";
-import { ALLOWED_DURATIONS, addDays, cleanPhone, formatDate, renderTemplate } from "@/lib/constants";
+import { addDays, cleanPhone, formatDate, renderTemplate } from "@/lib/constants";
 import { getSetting, refreshAccountStatus, runDailyJob } from "@/lib/engine";
 import { normalizeDeliveryMode, lifetimeEndDate, type DeliveryMode } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
 
 export const dynamic = "force-dynamic";
+
+async function checkLowStockAlert(platform: typeof platforms.$inferSelect) {
+  try {
+    const threshold = platform.lowStockThreshold ?? 3;
+    if (threshold <= 0) return;
+    const accs = await db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.platformId, platform.id), eq(accounts.isDeleted, false)));
+    const now = new Date();
+    let totalSlots = 0;
+    const profileAccIds: number[] = [];
+    for (const a of accs) {
+      if (a.status === "NEEDS_PASSWORD_CHANGE") continue;
+      if (a.expiryDate && new Date(a.expiryDate) <= now) continue;
+      if (a.maxUses != null && (a.usedCount ?? 0) >= a.maxUses) continue;
+      if (a.type === "FULL") {
+        if (a.status === "AVAILABLE") totalSlots += 1;
+      } else {
+        profileAccIds.push(a.id);
+      }
+    }
+    if (profileAccIds.length > 0) {
+      const availProfs = await db
+        .select({ id: profiles.id })
+        .from(profiles)
+        .where(and(sql`${profiles.accountId} = ANY(${profileAccIds})`, eq(profiles.status, "AVAILABLE")));
+      totalSlots += availProfs.length;
+    }
+    if (totalSlots <= threshold) {
+      await notifyAdmin({
+        title: totalSlots === 0 ? `🚨 نفاد مخزون ${platform.name}` : `⚠️ انخفاض مخزون ${platform.name}`,
+        body: totalSlots === 0
+          ? `نفد المخزون المتاح لمنصة ${platform.name} بالكامل. أضف حسابات جديدة حتى لا تتوقف المبيعات.`
+          : `تبقّى ${totalSlots} مكان فقط في مخزون ${platform.name} (الحد التنبيهي: ${threshold}).`,
+        kind: "LOW_STOCK",
+        href: "/accounts",
+      });
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
 
 /** Customer lookup by phone (employee-safe: no account credentials). */
 export async function GET(req: Request) {
@@ -35,10 +79,34 @@ export async function POST(req: Request) {
   let walletDeducted = false;
   let chargedUserId: number | null = null;
   let chargedAmount = 0;
+  let walletTxId: number | null = null;
+  let walletBalanceAfter: number | undefined;
+  let actorId = 0;
+
+  async function safeRefund(reasonNote: string) {
+    if (!walletDeducted || !chargedUserId || chargedAmount <= 0) return;
+    walletDeducted = false;
+    try {
+      await refundToWallet({
+        userId: chargedUserId,
+        amount: chargedAmount,
+        note: reasonNote,
+        createdBy: actorId || chargedUserId,
+      });
+    } catch (re) {
+      console.error("[sales] wallet auto-refund failed:", re);
+    }
+  }
 
   try {
     await ensureSeeded();
     const user = await requireUser();
+    actorId = user.id;
+
+    if (!hasPermission(user, "SALES_DIRECT")) {
+      return jsonError("ليست لديك صلاحية البيع المباشر حالياً — تواصل مع المدير", 403);
+    }
+
     await runDailyJob({ sendAlerts: false });
     const b = await req.json().catch(() => ({}));
     const platformId = Number(b.platformId);
@@ -46,7 +114,7 @@ export async function POST(req: Request) {
     const paymentType = b.paymentType === "WALLET" ? "WALLET" : "RECEIPT";
     const paymentMethodId = paymentType === "WALLET" ? null : Number(b.paymentMethodId);
     const transactionRef = paymentType === "WALLET" ? (b.transactionRef || `WALLET-${Date.now().toString().slice(-6)}`) : String(b.transactionRef || "").trim();
-    const amount = Number(b.amount || 0);
+    const amount = Math.floor(Number(b.amount || 0));
     const receipt: string = paymentType === "WALLET" ? "" : String(b.receiptImageData || "");
     const customerName = String(b.customerName || "").trim();
     const customerPhone = cleanPhone(String(b.customerPhone || ""));
@@ -67,12 +135,46 @@ export async function POST(req: Request) {
     if (!Number.isFinite(amount) || amount <= 0) return jsonError("أدخل سعر الاشتراك يدوياً");
     if (customerPhone.length < 7) return jsonError("أدخل رقم واتساب العميل بشكل صحيح");
 
+    // التحقق من المنصة والمدخلات قبل الخصم من المحفظة لتفادي خصم واسترجاع غير ضروري
+    const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
+    if (!platform) return jsonError("منصة غير موجودة");
+
+    const mode: DeliveryMode = normalizeDeliveryMode(platform.deliveryMode);
+    const lifetime = !!platform.isLifetime;
+    const days = lifetime ? 0 : durationDays;
+    if (!lifetime && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+      return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
+    }
+
+    const customerEmail = String(b.customerEmail || "").trim();
+    const customerExtra = String(b.customerExtra || "").trim();
+    const emailRequired = mode === "ON_DEMAND_EMAIL" || (mode === "INSTANT_INVENTORY" && platform.requiresCustomerEmail);
+    if (emailRequired && !customerEmail) {
+      return jsonError("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله أولاً");
+    }
+
+    if (deliverySource === "MANUAL" && !manualEmail && !manualPassword && !manualLink && !manualCode) {
+      return jsonError("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود)");
+    }
+
+    let [customer] = await db.select().from(customers).where(eq(customers.phone, customerPhone)).limit(1);
+    if (!customer && !customerName) {
+      return jsonError("أدخل اسم العميل الجديد");
+    }
+
     if (paymentType === "WALLET") {
       try {
-        await deductFromWallet(user.id, amount, "شراء اشتراك عبر المحفظة");
+        const wRes = await deductFromWallet({
+          userId: user.id,
+          amount,
+          note: `شراء اشتراك ${platform.name} — ${customerName || customer?.name || customerPhone}`,
+          createdBy: user.id,
+        });
         walletDeducted = true;
         chargedUserId = user.id;
         chargedAmount = amount;
+        walletTxId = wRes.txId;
+        walletBalanceAfter = wRes.balanceAfter;
       } catch (err: any) {
         return jsonError(err.message || "رصيد المحفظة غير كافٍ لإتمام العملية", 400);
       }
@@ -89,34 +191,7 @@ export async function POST(req: Request) {
       if (dupImg.length) return jsonError("صورة السند هذه مُستخدمة سابقاً في عملية أخرى", 409);
     }
 
-    const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
-    if (!platform) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: منصة غير موجودة");
-      return jsonError("منصة غير موجودة");
-    }
-
-    const mode: DeliveryMode = normalizeDeliveryMode(platform.deliveryMode);
-    const lifetime = !!platform.isLifetime;
-    const days = lifetime ? 0 : durationDays;
-    if (!lifetime && (!Number.isInteger(days) || days < 1 || days > 3650)) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: مدة اشتراك غير صالحة");
-      return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
-    }
-
-    const customerEmail = String(b.customerEmail || "").trim();
-    const customerExtra = String(b.customerExtra || "").trim();
-    const emailRequired = mode === "ON_DEMAND_EMAIL" || (mode === "INSTANT_INVENTORY" && platform.requiresCustomerEmail);
-    if (emailRequired && !customerEmail) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: مطلوب إيميل العميل");
-      return jsonError("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله أولاً");
-    }
-
-    let [customer] = await db.select().from(customers).where(eq(customers.phone, customerPhone)).limit(1);
     if (!customer) {
-      if (!customerName) {
-        if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: اسم العميل مفقود");
-        return jsonError("أدخل اسم العميل الجديد");
-      }
       [customer] = await db.insert(customers).values({ name: customerName, phone: customerPhone }).returning();
     }
 
@@ -125,10 +200,6 @@ export async function POST(req: Request) {
 
     // ---------- مسار التسليم اليدوي الفوري ----------
     if (deliverySource === "MANUAL") {
-      if (!manualEmail && !manualPassword && !manualLink && !manualCode) {
-        if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: لم يتم إدخال بيانات تسليم");
-        return jsonError("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود)");
-      }
       const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
       const [rental] = await db.insert(rentals).values({
@@ -144,17 +215,21 @@ export async function POST(req: Request) {
         manualNote: manualNote || null,
       }).returning();
 
+      if (walletTxId) {
+        await attachRentalToWalletTx(walletTxId, rental.id, `تسليم يدوي ${platform.name} — العميل ${customer.name}`);
+      }
+
       await db.insert(payments).values({
-        rentalId: rental.id, 
-        paymentMethodId: paymentMethodId ?? null, 
-        transactionRef, 
-        amount, 
-        receiptImageData: receipt || null, 
+        rentalId: rental.id,
+        paymentMethodId: paymentMethodId ?? null,
+        transactionRef,
+        amount,
+        receiptImageData: receipt || null,
         receiptHash: receipt ? hashText(receipt) : null,
-        status: paymentStatus, 
+        status: paymentStatus,
         reviewedBy: paymentType === "WALLET" ? user.id : null,
         reviewedAt: paymentType === "WALLET" ? now : null,
-        durationDays: days, 
+        durationDays: days,
         createdBy: user.id,
       });
 
@@ -194,6 +269,7 @@ export async function POST(req: Request) {
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name, durationDays: days,
         endDate: neededEnd.toISOString(), paymentStatus,
+        walletBalanceAfter,
         delivered: { email: manualEmail, password: manualPassword, profileName: manualProfileName, pin: manualPin, link: manualLink, code: manualCode, note: manualNote },
         whatsappMessage: message,
       });
@@ -210,21 +286,27 @@ export async function POST(req: Request) {
         customerEmail: customerEmail || null, customerExtra: customerExtra || null,
       }).returning();
 
+      if (walletTxId) {
+        await attachRentalToWalletTx(walletTxId, rental.id, `طلب ${platform.name} — العميل ${customer.name}`);
+      }
+
       await db.insert(payments).values({
-        rentalId: rental.id, 
-        paymentMethodId: paymentMethodId ?? null, 
-        transactionRef, 
-        amount, 
-        receiptImageData: receipt || null, 
+        rentalId: rental.id,
+        paymentMethodId: paymentMethodId ?? null,
+        transactionRef,
+        amount,
+        receiptImageData: receipt || null,
         receiptHash: receipt ? hashText(receipt) : null,
-        status: paymentStatus, 
-        durationDays: days, 
+        status: paymentStatus,
+        reviewedBy: paymentType === "WALLET" ? user.id : null,
+        reviewedAt: paymentType === "WALLET" ? now : null,
+        durationDays: days,
         createdBy: user.id,
       });
 
       await notifyAdmin({
         title: mode === "LINK_ONLY" ? "طلب رابط — بانتظار الإرسال" : "طلب جديد — بانتظار التفعيل",
-        body: `${customer.name} (${platform.name}) — ${paymentType === "WALLET" ? "تم الدفع بالمحفظة" : "بانتظار السند"}`,
+        body: `${customer.name} (${platform.name}) — ${paymentType === "WALLET" ? "تم الدفع بالمحفظة ✓" : "بانتظار السند"}`,
         kind: "ACTIVATION",
         href: "/inbox",
       });
@@ -232,21 +314,22 @@ export async function POST(req: Request) {
       return Response.json({
         ok: true, rentalId: rental.id, onDemand: true, pendingActivation: true,
         deliveryMode: mode, isLifetime: lifetime,
-        message: paymentType === "WALLET" ? "تم استلام الطلب وخصم المبلغ من المحفظة بنجاح، بانتظار التفعيل." : "تم استلام الطلب والسند وإرساله للمدير.",
+        message: paymentType === "WALLET" ? "تم استلام الطلب وخصم المبلغ من المحفظة بنجاح، بانتظار تفعيل المدير." : "تم استلام الطلب والسند وإرساله للمدير.",
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name, durationDays: days,
         endDate: neededEnd.toISOString(), paymentStatus,
+        walletBalanceAfter,
       });
     }
 
     async function respondWithAccount(rentalId: number, acc: typeof accounts.$inferSelect, prof: typeof profiles.$inferSelect | null, endDate: Date, isRenewal: boolean) {
       const accKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
-      const profileLabel = accKind === "INVITE_LINK" ? "🔗 رابط دعوة" : accKind === "LICENSE_KEY" ? "🎟️ كود ترخيص" : (prof ? `بروفايل ${prof.profileNo}` : (acc.type === "FULL" ? "حساب كامل" : "بروفايل"));
-      
+      const profileLabel = accKind === "INVITE_LINK" ? "🔗 رابط دعوة" : accKind === "LICENSE_KEY" ? "🎟️ كود ترخيص" : (prof ? (prof.profileName || `بروفايل ${prof.profileNo}`) : (acc.type === "FULL" ? "حساب كامل" : "بروفايل"));
+
       return Response.json({
         ok: true, rentalId, isRenewal,
-        message: paymentType === "WALLET" 
-          ? "تم الخصم من المحفظة واعتماد الاشتراك فوراً بنجاح!" 
+        message: paymentType === "WALLET"
+          ? "تم الخصم من المحفظة واعتماد الاشتراك فوراً بنجاح!"
           : (isRenewal ? "تم استلام طلب التجديد والسند — بانتظار مراجعة المدير." : "تم استلام طلب الاشتراك والسند — بانتظار مراجعة المدير."),
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name,
@@ -257,6 +340,7 @@ export async function POST(req: Request) {
         accountLabel: profileLabel,
         endDate: endDate.toISOString(),
         paymentStatus,
+        walletBalanceAfter,
       });
     }
 
@@ -282,7 +366,7 @@ export async function POST(req: Request) {
         if (acc && stillHeld) {
           const newEnd = lifetime ? lifetimeEndDate() : (renewable.status === "ACTIVE" ? addDays(new Date(renewable.endDate), days) : addDays(now, days));
           if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < newEnd) {
-            if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: الحساب ينتهي قبل مدة التجديد");
+            await safeRefund("استرجاع: الحساب ينتهي قبل مدة التجديد");
             return jsonError("الحساب الحالي للعميل ينتهي قبل نهاية مدة التجديد. اختر «بيع جديد» لسحب حساب آخر يغطي المدة.", 409);
           }
           await db.update(rentals).set({
@@ -291,24 +375,31 @@ export async function POST(req: Request) {
             whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
           }).where(eq(rentals.id, renewable.id));
 
+          if (walletTxId) {
+            await attachRentalToWalletTx(walletTxId, renewable.id, `تجديد ${platform.name} — العميل ${customer.name}`);
+          }
+
           await db.insert(payments).values({
-            rentalId: renewable.id, 
-            paymentMethodId: paymentMethodId ?? null, 
-            transactionRef, 
-            amount, 
-            receiptImageData: receipt || null, 
+            rentalId: renewable.id,
+            paymentMethodId: paymentMethodId ?? null,
+            transactionRef,
+            amount,
+            receiptImageData: receipt || null,
             receiptHash: receipt ? hashText(receipt) : null,
-            status: paymentStatus, 
-            isExtension: true, 
-            durationDays: days, 
+            status: paymentStatus,
+            reviewedBy: paymentType === "WALLET" ? user.id : null,
+            reviewedAt: paymentType === "WALLET" ? now : null,
+            isExtension: true,
+            durationDays: days,
             previousEndDate: renewable.endDate,
-            previousRentalStatus: renewable.status, 
+            previousRentalStatus: renewable.status,
             createdBy: user.id,
           });
 
           await refreshAccountStatus(acc.id);
           const renKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
           if (acc.type === "FULL" && renKind === "CREDENTIALS") await db.update(accounts).set({ status: "RENTED" }).where(eq(accounts.id, acc.id));
+          await audit(user, "RENEWAL", "rentals", renewable.id, `تجديد ${platform.name} للعميل ${customer.name} — ${paymentType}`);
           return respondWithAccount(renewable.id, acc, prof, newEnd, true);
         }
       }
@@ -382,7 +473,8 @@ export async function POST(req: Request) {
     }
 
     if (!claimedAcc) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: لا يوجد مخزون كافٍ");
+      await safeRefund("استرجاع: لا يوجد مخزون متاح");
+      await audit(user, "NO_STOCK", "platforms", platformId, `محاولة بيع ${platform.name} بدون مخزون كافٍ`);
       const typeLabel = saleType === "FULL" ? "حساب كامل" : saleType === "PROFILE" ? "ملف/بروفايل" : "حساب متاح";
       return jsonError(`عفواً، لا يوجد «${typeLabel}» متاح حالياً لهذه المنصة يغطي المدة المطلوبة.`, 409);
     }
@@ -399,17 +491,21 @@ export async function POST(req: Request) {
 
       if (claimedProfile) await db.update(profiles).set({ currentRentalId: rental.id }).where(eq(profiles.id, claimedProfile.id));
 
+      if (walletTxId) {
+        await attachRentalToWalletTx(walletTxId, rental.id, `شراء ${platform.name} — العميل ${customer.name}`);
+      }
+
       await db.insert(payments).values({
-        rentalId: rental.id, 
-        paymentMethodId: paymentMethodId ?? null, 
-        transactionRef, 
-        amount, 
-        receiptImageData: receipt || null, 
+        rentalId: rental.id,
+        paymentMethodId: paymentMethodId ?? null,
+        transactionRef,
+        amount,
+        receiptImageData: receipt || null,
         receiptHash: receipt ? hashText(receipt) : null,
-        status: paymentStatus, 
+        status: paymentStatus,
         reviewedBy: paymentType === "WALLET" ? user.id : null,
         reviewedAt: paymentType === "WALLET" ? now : null,
-        durationDays: days, 
+        durationDays: days,
         createdBy: user.id,
       });
 
@@ -417,63 +513,36 @@ export async function POST(req: Request) {
       const claimedKind = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
       if (claimedAcc.type === "FULL" && claimedKind === "CREDENTIALS") await db.update(accounts).set({ status: "RENTED" }).where(eq(accounts.id, claimedAcc.id));
 
-      // Low Stock Alert
-      try {
-        const threshold = platform.lowStockThreshold || 3;
-        const availableProfiles = await db.execute(sql`
-          SELECT count(*)::int as count
-          FROM profiles p
-          JOIN accounts a ON p.account_id = a.id
-          WHERE a.platform_id = ${platformId}
-            AND a.is_deleted = false
-            AND a.status != 'NEEDS_PASSWORD_CHANGE'
-            AND p.status = 'AVAILABLE'
-        `);
-        const availableFull = await db.execute(sql`
-          SELECT count(*)::int as count
-          FROM accounts a
-          WHERE a.platform_id = ${platformId}
-            AND a.type = 'FULL'
-            AND a.is_deleted = false
-            AND a.status = 'AVAILABLE'
-        `);
-        const profCount = Number((availableProfiles.rows[0] as any)?.count || 0);
-        const fullCount = Number((availableFull.rows[0] as any)?.count || 0);
-        const totalRemaining = profCount + fullCount;
-        if (totalRemaining <= threshold) {
-          await notifyAdmin({
-            title: "⚠️ تنبيه انخفاض المخزون",
-            body: `انخفض عدد الحسابات/البروفايلات المتاحة لمنصة ${platform.name} إلى ${totalRemaining} فقط (الحد الأدنى: ${threshold})`,
-            kind: "LOW_STOCK",
-            href: "/accounts",
-          });
-        }
-      } catch (stockErr) {
-        console.error("Low stock check error:", stockErr);
-      }
-
       await notifyAdmin({
         title: paymentType === "WALLET" ? "طلب جديد مدفوع بالمحفظة" : "طلب جديد",
-        body: `${customer.name} / ${platform.name} — ${paymentType === "WALLET" ? "تم الاعتماد الفوري" : "بانتظار تأكيد السند"}`,
+        body: `${customer.name} / ${platform.name} — ${paymentType === "WALLET" ? "تم الاعتماد الفوري ✓" : "بانتظار تأكيد السند"}`,
         kind: "REQUEST",
-        href: "/inbox",
+        href: paymentType === "WALLET" ? "/rentals" : "/inbox",
       });
+
+      await checkLowStockAlert(platform);
 
       await audit(user, "SALE", "rentals", rental.id, `بيع ${platform.name} للعميل ${customer.name} — ${paymentType}`);
       return respondWithAccount(rental.id, claimedAcc, claimedProfile, neededEnd, false);
     } catch (err) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: فشل حفظ سجل البيع");
-      if (claimedProfile) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, claimedProfile.id));
+      await safeRefund("استرجاع: فشل حفظ سجل البيع");
+      if (claimedProfile) {
+        await db.update(profiles)
+          .set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null })
+          .where(eq(profiles.id, claimedProfile.id));
+      }
       const ck = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
       if (ck !== "CREDENTIALS") {
         await db.update(accounts).set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, updatedAt: now }).where(eq(accounts.id, claimedAcc.id));
       } else if (claimedAcc.type === "FULL") {
         await db.update(accounts).set({ status: "AVAILABLE" }).where(eq(accounts.id, claimedAcc.id));
       }
+      await refreshAccountStatus(claimedAcc.id);
       throw err;
     }
   } catch (e) {
     if (e instanceof Response) return e;
+    await safeRefund("استرجاع: خطأ غير متوقع أثناء العملية");
     console.error(e);
     return jsonError("حدث خطأ أثناء حفظ العملية — حاول مرة أخرى", 500);
   }

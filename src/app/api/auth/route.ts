@@ -7,18 +7,38 @@ import { Resend } from "resend";
 import { decryptText, signSession } from "@/lib/crypto";
 import { getCurrentUser, audit } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
+import { getWallet } from "@/lib/wallet";
+import { getEffectivePermissions } from "@/lib/permissions";
 import { notifyAdmin } from "@/lib/notify";
 
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
-function sessionResponse(user: { id: number; username: string; displayName: string; role: string }) {
+async function buildUserPayload(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null; walletBalance?: string | null }) {
+  let walletBalance = 0;
+  try {
+    const w = await getWallet(user.id);
+    walletBalance = w.balance;
+  } catch {
+    walletBalance = Math.max(0, Math.floor(Number(user.walletBalance || 0)));
+  }
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role,
+    walletBalance,
+    permissions: getEffectivePermissions(user),
+  };
+}
+
+async function sessionResponse(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null; walletBalance?: string | null }) {
   const token = signSession({ userId: user.id, role: user.role, username: user.username });
-  return new Response(JSON.stringify({ user }), {
+  const payload = await buildUserPayload(user);
+  return new Response(JSON.stringify({ user: payload }), {
     headers: { "content-type": "application/json", "Set-Cookie": `maestro_session=${token}; Path=/; HttpOnly; Max-Age=${12 * 3600}; SameSite=Lax` },
   });
 }
 
-// Option B: بيانات بريد الجيميل مثبتة داخل الكود حتى لا تُفقد عند تحديث .env
 const FALLBACK_SMTP = {
   host: "smtp.gmail.com",
   port: 587,
@@ -27,14 +47,9 @@ const FALLBACK_SMTP = {
   from: "almaystrwbady@gmail.com",
 };
 
-/**
- * إرسال كود الدخول (OTP).
- * الأولوية: Resend (الإنتاج — لا يُحظر مثل Gmail) ثم SMTP/Gmail (التطوير المحلي).
- */
 async function sendLoginCode(email: string, code: string) {
   const body = `كود الدخول الخاص بك هو: ${code}\nصالح لمدة 10 دقائق.\nمتجر مايسترو كي — Maestro Key`;
 
-  // 1) Resend — الطريقة الأساسية في الإنتاج (Vercel)
   const apiKey = process.env.RESEND_API_KEY;
   if (apiKey) {
     try {
@@ -57,7 +72,6 @@ async function sendLoginCode(email: string, code: string) {
     }
   }
 
-  // 2) SMTP/Gmail — احتياطي لبيئة التطوير حيث لا يكون RESEND_API_KEY مضبوطاً
   const rows = await db.select().from(settings);
   const map: Record<string, string> = {};
   rows.forEach((r) => { map[r.key] = r.value; });
@@ -87,20 +101,8 @@ export async function GET() {
   await ensureSeeded();
   const user = await getCurrentUser();
   if (!user) return Response.json({ user: null }, { status: 401 });
-  const { walletBalances } = await import("@/db/schema");
-  const [w] = await db.select().from(walletBalances).where(eq(walletBalances.userId, user.id)).limit(1);
-  return Response.json({
-    user: {
-      id: user.id,
-      username: user.username,
-      displayName: user.displayName,
-      role: user.role,
-      permissions: user.permissions,
-      walletBalance: w ? w.balance : Number(user.walletBalance || 0),
-    },
-  });
+  return Response.json({ user: await buildUserPayload(user) });
 }
-
 
 export async function POST(req: Request) {
   await ensureSeeded();
@@ -138,7 +140,7 @@ export async function POST(req: Request) {
     if (!adminUser) return Response.json({ error: "لا يوجد حساب مدير" }, { status: 404 });
     await db.update(users).set({ email, passwordHash: await bcrypt.hash(newPassword, 10), failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, adminUser.id));
     await audit(adminUser, "PASSWORD_SET", "users", adminUser.id, "تعيين كلمة مرور المدير بعد كود البريد");
-    return sessionResponse({ id: adminUser.id, username: adminUser.username, displayName: adminUser.displayName, role: adminUser.role });
+    return await sessionResponse(adminUser);
   }
 
   if (body.action === "change-password") {
@@ -186,8 +188,5 @@ export async function POST(req: Request) {
   }
   await db.update(users).set({ failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, user.id));
   await audit(user, "LOGIN", "users", user.id, "تسجيل دخول ناجح");
-  const token = signSession({ userId: user.id, role: user.role, username: user.username });
-  return new Response(JSON.stringify({ user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role } }), {
-    headers: { "content-type": "application/json", "Set-Cookie": `maestro_session=${token}; Path=/; HttpOnly; Max-Age=${12 * 3600}; SameSite=Lax` },
-  });
+  return await sessionResponse(user);
 }

@@ -292,8 +292,9 @@ const STATEMENTS: string[] = [
   `UPDATE profiles SET status = 'SOLD', sold_at = created_at WHERE is_occupied = true AND status = 'AVAILABLE'`,
   `UPDATE profiles SET status = 'AVAILABLE' WHERE is_occupied = false AND status = 'SOLD'`,
 
-  // 2026-01: الصلاحيات اليدوية
+  // 2026-01: الصلاحيات اليدوية + رصيد المحفظة المرجعي على المستخدم
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12,2) DEFAULT 0.00`,
 
   // 2026-01: إرجاع الرصيد
   `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP`,
@@ -320,10 +321,15 @@ const STATEMENTS: string[] = [
     created_by INTEGER REFERENCES users(id),
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
+  `CREATE INDEX IF NOT EXISTS wallet_balances_user_idx ON wallet_balances(user_id)`,
   `CREATE INDEX IF NOT EXISTS wallet_transactions_user_idx ON wallet_transactions(user_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions(rental_id)`,
+  `CREATE INDEX IF NOT EXISTS rentals_created_by_idx ON rentals(created_by, created_at)`,
+  `CREATE INDEX IF NOT EXISTS payments_status_idx ON payments(status)`,
+  `CREATE INDEX IF NOT EXISTS alerts_user_id_idx ON alerts(for_user_id, id)`,
 
   // ---------- 3) ترخية قيود قديمة + ضمان الافتراضيات + توحيد القيم ----------
+  `ALTER TABLE payments ALTER COLUMN payment_method_id DROP NOT NULL`,
   `ALTER TABLE accounts ALTER COLUMN expiry_date DROP NOT NULL`,
   `ALTER TABLE accounts ALTER COLUMN email DROP NOT NULL`,
   `ALTER TABLE accounts ALTER COLUMN password_encrypted DROP NOT NULL`,
@@ -353,7 +359,7 @@ export async function ensureSchema(): Promise<void> {
     // 1) فحص سريع جداً: إذا كانت قاعدة البيانات محدثة مسبقاً نخرج فوراً بعد استعلام واحد فقط (10ms بدلاً من 115 استعلام)
     try {
       const check = await pool.query(
-        "SELECT version FROM _schema_meta WHERE version = 1 LIMIT 1"
+        "SELECT version FROM _schema_meta WHERE version = 2 LIMIT 1"
       );
       if (check.rows?.length) {
         globalForSchema.__maestroSchemaEnsured = true;
@@ -377,7 +383,7 @@ export async function ensureSchema(): Promise<void> {
         "CREATE TABLE IF NOT EXISTS _schema_meta (version INT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT NOW())"
       );
       await pool.query(
-        "INSERT INTO _schema_meta (version) VALUES (1) ON CONFLICT (version) DO NOTHING"
+        "INSERT INTO _schema_meta (version) VALUES (2) ON CONFLICT (version) DO NOTHING"
       );
     } catch {}
 

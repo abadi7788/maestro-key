@@ -1,12 +1,14 @@
 import { db } from "@/db";
-import { platforms, paymentMethods, users, settings, customers, rentals, payments, auditLogs, pushSubscriptions, alerts, accounts } from "@/db/schema";
+import { platforms, paymentMethods, users, settings, customers, rentals, payments, auditLogs, pushSubscriptions, alerts, accounts, profiles, walletTransactions, walletBalances } from "@/db/schema";
 import { and, eq, ne } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAdmin, audit, jsonError } from "@/lib/auth";
 import { normalizeRole, isAdminRole } from "@/lib/roles";
+import { sanitizePermissionsInput } from "@/lib/permissions";
 import { encryptText } from "@/lib/crypto";
 import { ensureSeeded } from "@/lib/seed";
 import { notifyAdmin } from "@/lib/notify";
+import { topUpWallet } from "@/lib/wallet";
 
 export const dynamic = "force-dynamic";
 
@@ -32,11 +34,14 @@ export async function POST(req: Request) {
         shortName: String(b.shortName || name.slice(0, 1) || "▶").slice(0, 4),
         isActive: b.isActive !== false,
         deliveryMode,
-        // نمط الإيميل يفرض طلب الإيميل دائماً — نمط الرابط لا يطلبه أبداً
         requiresCustomerEmail: deliveryMode === "LINK_ONLY" ? false : (deliveryMode === "ON_DEMAND_EMAIL" ? true : b.requiresCustomerEmail === true),
         extraFieldLabel: typeof b.extraFieldLabel === "string" ? b.extraFieldLabel.trim() || null : undefined,
         isLifetime: b.isLifetime === true,
       };
+      if (b.lowStockThreshold !== undefined) {
+        const th = Number(b.lowStockThreshold);
+        if (Number.isFinite(th) && th >= 0) patch.lowStockThreshold = Math.floor(th);
+      }
       if (imageUrl !== undefined) patch.imageUrl = imageUrl || null;
       if (b.id) await db.update(platforms).set(patch).where(eq(platforms.id, Number(b.id)));
       else {
@@ -60,10 +65,10 @@ export async function POST(req: Request) {
       if (!username || password.length < 6) return jsonError("اسم مستخدم وكلمة مرور (6 أحرف على الأقل) مطلوبة");
       const exists = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
       if (exists.length) return jsonError("اسم المستخدم موجود مسبقاً", 409);
-      
-      const permissionsStr = b.permissions ? (typeof b.permissions === "string" ? b.permissions : JSON.stringify(b.permissions)) : null;
+
       const role = normalizeRole(b.role);
-      const openWallet = !!b.openWallet;
+      const permissions = b.permissions ? sanitizePermissionsInput(b.permissions) : null;
+      const openWallet = b.openWallet !== false;
       const initialBalance = Math.max(0, Math.floor(Number(b.initialBalance || 0)));
 
       const [newUser] = await db.insert(users).values({
@@ -72,12 +77,11 @@ export async function POST(req: Request) {
         passwordHash: await bcrypt.hash(password, 10),
         displayName: String(b.displayName || username),
         role,
-        permissions: permissionsStr,
+        permissions,
         walletBalance: String(initialBalance),
       }).returning();
 
       if (openWallet || initialBalance > 0) {
-        const { walletBalances, walletTransactions } = await import("@/db/schema");
         await db.insert(walletBalances).values({
           userId: newUser.id,
           balance: initialBalance,
@@ -102,12 +106,12 @@ export async function POST(req: Request) {
       const roleLabel = role === "ADMIN" ? "المدير" : role === "EMPLOYEE" ? "الموظف" : "المستخدم";
       await notifyAdmin({
         title: `إضافة ${roleLabel}`,
-        body: `تم إضافة ${roleLabel} ${String(b.displayName || username)}${openWallet ? ` مع فتح محفظة (رصيد: ${initialBalance} ر.ي)` : ""}`,
+        body: `تم إضافة ${roleLabel} ${String(b.displayName || username)}${initialBalance > 0 ? ` مع رصيد افتتاحي (${initialBalance.toLocaleString("ar-YE")} ر.ي)` : ""}`,
         kind: "ADDITION",
         href: "/settings",
       });
       await audit(admin, "USER_CREATED", "users", newUser.id, username);
-      return Response.json({ ok: true, user: newUser });
+      return Response.json({ ok: true, id: newUser.id, user: newUser });
     }
     if (action === "updateUser") {
       const id = Number(b.id);
@@ -116,9 +120,6 @@ export async function POST(req: Request) {
       const patch: Partial<typeof users.$inferInsert> = {};
       if (b.displayName) patch.displayName = String(b.displayName);
       if (b.email !== undefined) patch.email = b.email ? String(b.email).trim().toLowerCase() : null;
-      if (b.permissions !== undefined) {
-        patch.permissions = typeof b.permissions === "string" ? b.permissions : JSON.stringify(b.permissions);
-      }
       if (b.role) {
         const nextRole = normalizeRole(b.role);
         if (id === admin.id && nextRole !== "ADMIN") return jsonError("لا يمكنك تخفيض صلاحيات حسابك وأنت داخل النظام");
@@ -136,7 +137,13 @@ export async function POST(req: Request) {
         }
         patch.isActive = !!b.isActive;
       }
-      if (b.password) patch.passwordHash = await bcrypt.hash(String(b.password), 10);
+      if (b.permissions !== undefined) {
+        patch.permissions = sanitizePermissionsInput(b.permissions);
+      }
+      if (b.password) {
+        if (String(b.password).length < 6) return jsonError("كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل");
+        patch.passwordHash = await bcrypt.hash(String(b.password), 10);
+      }
       if (b.unlock) { patch.failedAttempts = 0; patch.lockedUntil = null; }
       await db.update(users).set(patch).where(eq(users.id, id));
       await audit(admin, "USER_UPDATED", "users", id, JSON.stringify(Object.keys(patch)));
@@ -144,31 +151,27 @@ export async function POST(req: Request) {
     }
     if (action === "topUpWallet") {
       const targetUserId = Number(b.userId);
-      const amount = Number(b.amount);
-      const note = String(b.note || "شحن يدوي من الإدارة");
+      const amount = Math.floor(Number(b.amount));
+      const note = String(b.note || "شحن يدوي من الإدارة").trim();
       if (!targetUserId || !amount || amount <= 0) {
         return jsonError("يرجى اختيار المستخدم وتحديد مبلغ شحن صحيح أكبر من الصفر");
       }
-      const { topUpWallet } = await import("@/lib/wallet");
       const res = await topUpWallet({
         userId: targetUserId,
         amount,
         note,
         createdBy: admin.id,
       });
-      // مزامنة حقل users.walletBalance لضمان تناسق البيانات
-      await db.update(users).set({ walletBalance: String(res.balanceAfter) }).where(eq(users.id, targetUserId));
       await notifyAdmin({
-        title: "شحن محفظة",
-        body: `تم شحن ${amount.toLocaleString()} ر.ي لمحفظة المستخدم بواسطة الإدارة. الرصيد الحالي: ${res.balanceAfter.toLocaleString()} ر.ي`,
+        title: "💳 تم شحن محفظتك",
+        body: `تم شحن ${amount.toLocaleString("ar-YE")} ر.ي لمحفظتك بواسطة الإدارة. الرصيد الحالي: ${res.balanceAfter.toLocaleString("ar-YE")} ر.ي`,
         kind: "WALLET_TOPUP",
-        href: "/settings",
+        href: "/sale",
         forUserId: targetUserId,
       });
       await audit(admin, "WALLET_TOPUP", "users", targetUserId, `شحن ${amount} ر.ي لمحفظة المستخدم — ${note}`);
       return Response.json({ ok: true, balanceAfter: res.balanceAfter });
     }
-
     if (action === "upsertCustomer") {
       const name = String(b.name || "").trim(); const phone = String(b.phone || "").replace(/\s/g, "").trim();
       if (!name || !phone) return jsonError("اسم العميل ورقم هاتفه مطلوبان");
@@ -196,12 +199,13 @@ export async function POST(req: Request) {
         if (all.filter((u) => isAdminRole(u.role)).length <= 1) return jsonError("لا يمكن حذف آخر مدير في النظام");
       }
       try {
-        // نقل كل ارتباطات المستخدم (7 علاقات) للحفاظ على السجلات ثم حذف الحساب
         await db.update(rentals).set({ createdBy: admin.id }).where(eq(rentals.createdBy, id));
         await db.update(rentals).set({ activatedBy: admin.id }).where(eq(rentals.activatedBy, id));
         await db.update(payments).set({ createdBy: admin.id }).where(eq(payments.createdBy, id));
         await db.update(payments).set({ reviewedBy: admin.id }).where(eq(payments.reviewedBy, id));
         await db.update(auditLogs).set({ userId: admin.id }).where(eq(auditLogs.userId, id));
+        await db.update(profiles).set({ soldBy: admin.id }).where(eq(profiles.soldBy, id));
+        await db.update(walletTransactions).set({ createdBy: admin.id }).where(eq(walletTransactions.createdBy, id));
         await db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, id));
         await db.delete(alerts).where(eq(alerts.forUserId, id));
         await db.delete(users).where(eq(users.id, id));
