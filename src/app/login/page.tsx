@@ -4,6 +4,9 @@ import { Eye, EyeOff, KeyRound, Loader2, LockKeyhole, Mail, User } from "lucide-
 import { api } from "@/lib/client";
 import { homeForRole, isAdminOnlyPath, isAdminRole, safeNextPath } from "@/lib/roles";
 
+export const dynamic = "force-dynamic";
+
+
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
 export default function LoginPage() {
@@ -150,8 +153,21 @@ export default function LoginPage() {
               <button type="button" onClick={() => setMode("choose")} className="w-full py-2 text-sm font-bold text-slate-400">رجوع</button>
             </form>
           )}
+
+          <div className="mt-6 border-t border-white/10 pt-4 text-center">
+
+            <div className="text-xs font-bold text-slate-400">ملفات الإصلاح الكاملة لـ GitHub و Vercel:</div>
+            <a
+              href="/api/download"
+              download="maestro-key-fixes.zip"
+              className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-[#2f7bff] to-[#ff3b5c] py-3 text-xs font-black text-white shadow-lg transition hover:brightness-110 active:scale-95"
+            >
+              📥 اضغط هنا لتحميل maestro-key-fixes.zip مباشرة
+            </a>
+          </div>
         </div>
       </div>
     </main>
+
   );
 }

@@ -52,7 +52,8 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
   }, [trash]);
 
   useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 8000);
+  useAutoRefresh(load, 25000);
+
 
   async function act(body: any, okMsg: string, retryForce = false): Promise<boolean> {
     setBusy(true); setMsg("");
@@ -142,7 +143,7 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
         <select className="field sm:w-52" value={platFilter} onChange={(e) => setPlatFilter(e.target.value)}>
           <option value="">كل المنصات</option>{meta?.platforms?.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        {!trash && (
+        {!trash ? (
           <button 
             onClick={() => { 
               setEditing(null); 
@@ -152,6 +153,18 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
             className="btn-gold"
           >
             <Plus size={18} /> إضافة حساب
+          </button>
+        ) : (
+          <button
+            disabled={busy || (rows || []).length === 0}
+            onClick={() => {
+              if (confirm("⚠️ هل تريد إفراغ سلة المحذوفات بالكامل؟ سيتم مسح الحسابات التي ليس لها سجلات إيجار نهائياً من قاعدة البيانات.")) {
+                act({ action: "emptyTrash" }, "تم تنفيذ أمر إفراغ السلة");
+              }
+            }}
+            className="btn-danger"
+          >
+            <Trash2 size={16} /> إفراغ السلة بالكامل
           </button>
         )}
       </div>
@@ -182,8 +195,19 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {a.profiles.map((p: any) => (
                       <span key={p.id} title={p.rental ? `${p.rental.customerName} حتى ${fmtDate(p.rental.endDate)}` : "فارغ"}
-                        className={`rounded-lg px-2.5 py-1.5 text-[11px] font-extrabold ${p.isOccupied ? (p.rental?.status === "ENDED" ? "bg-red-100 text-red-300" : "bg-sky-100 text-sky-800") : "bg-emerald-100 text-emerald-300"}`}>
-                        {p.isOccupied ? "👤" : "○"} {p.name || `بروفايل ${p.profileNo}`}{p.pin ? ` (PIN: ${p.pin})` : ""}{p.rental ? `: ${p.rental.customerName.split(" ")[0]}${p.rental.status === "ENDED" ? " (انتهى)" : ""}` : " فارغ"}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-extrabold ${p.isOccupied ? (p.rental?.status === "ENDED" ? "bg-red-100 text-red-300" : "bg-sky-100 text-sky-800") : "bg-emerald-100 text-emerald-300"}`}>
+                        <span>{p.isOccupied ? "👤" : "○"} {p.name || `بروفايل ${p.profileNo}`}{p.pin ? ` (PIN: ${p.pin})` : ""}{p.rental ? `: ${p.rental.customerName.split(" ")[0]}${p.rental.status === "ENDED" ? " (انتهى)" : ""}` : " فارغ"}</span>
+                        {p.isOccupied && !trash && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => act({ action: "restoreProfile", profileId: p.id }, `تم استرجاع ${p.name || `بروفايل ${p.profileNo}`} للبيع مجدداً`)}
+                            className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] text-amber-200 transition hover:bg-black/50"
+                            title="استرجاع يدوي لهذا البروفايل ليكون متاحاً للبيع مجدداً"
+                          >
+                            ↺ استرجاع
+                          </button>
+                        )}
                       </span>
                     ))}
                   </div>

@@ -25,7 +25,9 @@ const READ_KEY = "mk_alerts_read";
 const MAX_TOASTS = 3;
 const MAX_HISTORY = 20;
 const TOAST_MS = 6000;
-const POLL_MS = 7000;
+const POLL_MS = 25000;
+
+
 
 export default function AlertWatcher() {
   const [toasts, setToasts] = useState<AlertItem[]>([]);
@@ -88,7 +90,9 @@ export default function AlertWatcher() {
   }, []);
 
   const historyRef = useRef<AlertItem[]>([]);
-  historyRef.current = history;
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
 
   async function enable() {
     if (enabling) return;
@@ -186,8 +190,10 @@ export default function AlertWatcher() {
     };
 
     const tick = async () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       try {
         const data = await api(`/api/alerts?after=${after.current}`);
+
         const rows: AlertItem[] = data.alerts || [];
         if (!primed.current) {
           // أول تشغيل: اعرض السجل دون ضجيج، ولا تعتبر القديم "غير مقروء"

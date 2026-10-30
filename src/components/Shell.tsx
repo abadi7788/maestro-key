@@ -4,8 +4,10 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   LayoutDashboard, ShoppingCart, BellRing, Boxes, ReceiptText, Users, Trash2,
-  Settings, ScrollText, LogOut, History, Menu, X, ShieldCheck, RefreshCcw, Wallet
+  Settings, ScrollText, LogOut, History, Menu, X, ShieldCheck, RefreshCcw, Wallet,
+  KeyRound, Download
 } from "lucide-react";
+
 import { api, fetchMe, type Me } from "@/lib/client";
 import { isAdminRole } from "@/lib/roles";
 import BrandLogo from "@/components/BrandLogo";
@@ -31,6 +33,11 @@ export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname(); const router = useRouter();
   const [me, setMe] = useState<any>(null); const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false); const [inboxCount, setInboxCount] = useState(0);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState("");
 
   useEffect(() => {
     fetchMe().then(async (u) => {
@@ -66,9 +73,10 @@ export default function Shell({ children }: { children: ReactNode }) {
     };
     const t = setInterval(() => {
       if (typeof document === "undefined" || document.visibilityState === "visible") void tick();
-    }, 8000);
+    }, 25000);
     return () => clearInterval(t);
   }, [me]);
+
 
   if (loading) return (
     <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-[#070b14]">
@@ -155,10 +163,79 @@ export default function Shell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <button onClick={logout} className="mt-4 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400 transition hover:bg-white/10">
-          <LogOut size={20} /> تسجيل الخروج
-        </button>
+        <div className="mt-4 flex flex-col gap-1.5">
+          <a
+            href="/api/download"
+            download="maestro-key-fixes.zip"
+            className="flex items-center gap-2 rounded-xl bg-gradient-to-l from-[#2f7bff] to-[#ff3b5c] px-3 py-2 text-xs font-black text-white shadow transition hover:brightness-110"
+          >
+            <Download size={15} /> تحميل ملفات الإصلاح ZIP
+          </a>
+          <button onClick={() => setPwOpen(true)} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-300 transition hover:bg-white/10 hover:text-white">
+            <KeyRound size={16} /> تغيير كلمة المرور
+          </button>
+          <button onClick={logout} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-red-400 transition hover:bg-white/10">
+            <LogOut size={16} /> تسجيل الخروج
+          </button>
+        </div>
       </aside>
+
+
+      {/* مودال تغيير كلمة المرور */}
+      {pwOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setPwOpen(false)}>
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0c1426] p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center gap-2">
+              <KeyRound className="text-amber-400" size={20} />
+              <h3 className="text-base font-black text-white">تغيير كلمة المرور</h3>
+            </div>
+            {pwMsg && (
+              <div className={`mb-3 rounded-xl px-3 py-2 text-xs font-bold ${pwMsg.startsWith("✓") ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"}`}>
+                {pwMsg}
+              </div>
+            )}
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!currentPw || !newPw) return;
+              setPwBusy(true); setPwMsg("");
+              try {
+                const res = await api("/api/auth", {
+                  method: "POST",
+                  body: JSON.stringify({ action: "change-password", currentPassword: currentPw, newPassword: newPw }),
+                });
+                if (res.ok) {
+                  setPwMsg("✓ تم تغيير كلمة المرور بنجاح وتسجيل العملية في سجل التدقيق");
+                  setCurrentPw(""); setNewPw("");
+                  setTimeout(() => setPwOpen(false), 1500);
+                } else {
+                  setPwMsg(res.error || "⚠️ فشل تغيير كلمة المرور");
+                }
+              } catch (err: any) {
+                setPwMsg("⚠️ " + (err.message || "حدث خطأ"));
+              } finally {
+                setPwBusy(false);
+              }
+            }} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-300">كلمة المرور الحالية</label>
+                <input type="password" required className="field text-sm" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-bold text-slate-300">كلمة المرور الجديدة (6 خانات على الأقل)</label>
+                <input type="password" required minLength={6} className="field text-sm" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="submit" disabled={pwBusy} className="btn-gold flex-1 text-xs py-2.5">
+                  {pwBusy ? "جارِ الحفظ..." : "حفظ التغيير"}
+                </button>
+                <button type="button" onClick={() => setPwOpen(false)} className="btn-ghost text-xs py-2.5">
+                  إلغاء
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Main */}
       <div className="relative z-10 min-w-0 flex-1 pb-24 lg:pb-8">
@@ -169,9 +246,10 @@ export default function Shell({ children }: { children: ReactNode }) {
           <div className="flex-1 min-w-0">
             <div className="font-black leading-none text-white">مايسترو كي</div>
             <div className="truncate text-[11px] text-slate-400">
-              {me.displayName} • <span className="font-mono text-amber-300">{Number(me.walletBalance || 0).toLocaleString()} ر.ي</span>
+              {me.displayName}
             </div>
           </div>
+
           {isAdminRole(me.role) && inboxCount > 0 && (
             <Link href="/inbox" className="relative rounded-lg bg-white/10 p-2 text-white">
               <BellRing size={20} />
@@ -205,7 +283,16 @@ export default function Shell({ children }: { children: ReactNode }) {
                   </Link>
                 ))}
               </nav>
-              <button onClick={logout} className="mt-6 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400"><LogOut size={20} /> تسجيل الخروج</button>
+              <a
+                href="/api/download"
+
+                download="maestro-key-fixes.zip"
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-[#2f7bff] to-[#ff3b5c] px-3.5 py-3 text-xs font-black text-white shadow"
+              >
+                <Download size={16} /> تحميل ملفات الإصلاح ZIP
+              </a>
+              <button onClick={logout} className="mt-3 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400"><LogOut size={20} /> تسجيل الخروج</button>
+
             </div>
           </div>
         )}

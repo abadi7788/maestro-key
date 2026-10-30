@@ -7,7 +7,7 @@
  * أو أسماء بديلة (staff/employee).
  */
 
-export type AppRole = "ADMIN" | "EMPLOYEE";
+export type AppRole = "ADMIN" | "EMPLOYEE" | "USER";
 
 const ADMIN_ALIASES = new Set([
   "ADMIN",
@@ -19,10 +19,18 @@ const ADMIN_ALIASES = new Set([
   "SUPER-ADMIN",
 ]);
 
-/** تطبيع أي قيمة دور إلى ADMIN أو EMPLOYEE (أي قيمة غير معروفة = موظف = وضع آمن). */
+const EMPLOYEE_ALIASES = new Set([
+  "EMPLOYEE",
+  "STAFF",
+  "SELLER",
+]);
+
+/** تطبيع أي قيمة دور إلى ADMIN أو EMPLOYEE أو USER */
 export function normalizeRole(v: unknown): AppRole {
   const s = String(v ?? "").trim().toUpperCase();
-  return ADMIN_ALIASES.has(s) ? "ADMIN" : "EMPLOYEE";
+  if (ADMIN_ALIASES.has(s)) return "ADMIN";
+  if (EMPLOYEE_ALIASES.has(s)) return "EMPLOYEE";
+  return "USER";
 }
 
 export function isAdminRole(v: unknown): boolean {
@@ -32,6 +40,11 @@ export function isAdminRole(v: unknown): boolean {
 export function isEmployeeRole(v: unknown): boolean {
   return normalizeRole(v) === "EMPLOYEE";
 }
+
+export function isUserRole(v: unknown): boolean {
+  return normalizeRole(v) === "USER";
+}
+
 
 /** صفحات المدير فقط — الموظف يُحوَّل عنها تلقائياً. */
 export const ADMIN_ONLY_PATHS = [

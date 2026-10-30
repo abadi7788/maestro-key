@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users } from "lucide-react";
+import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, ArrowUpRight, CheckCircle2, ShieldCheck, KeyRound, Sparkles, UserCheck } from "lucide-react";
 import { api, fetchMe, fileToDataUrl, fmtDateTime } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner } from "@/components/ui";
 import { isAdminRole } from "@/lib/roles";
@@ -19,8 +19,27 @@ export default function SettingsPage() {
   const [newPlat, setNewPlat] = useState({ name: "", color: "#0f172a", shortName: "", imageUrl: "" });
   const [editPlat, setEditPlat] = useState<any>(null);
   const [newBank, setNewBank] = useState("");
-  const [newUser, setNewUser] = useState({ username: "", password: "", displayName: "", role: "EMPLOYEE" });
+  const [newUser, setNewUser] = useState({
+    username: "",
+    password: "",
+    displayName: "",
+    role: "USER",
+    openWallet: true,
+    initialBalance: "0",
+    canSell: true,
+    canRenew: true,
+    canViewPrices: true,
+  });
+  const [topUpForm, setTopUpForm] = useState({
+    userId: "",
+    amount: "",
+    note: "",
+  });
+  const [quickTopUpUser, setQuickTopUpUser] = useState<any | null>(null);
+  const [quickAmount, setQuickAmount] = useState("");
+  const [quickNote, setQuickNote] = useState("");
   const [meId, setMeId] = useState<number | null>(null);
+
 
   const load = useCallback(async () => {
     const d = await api("/api/admin-data?view=settings").catch(() => null);
@@ -214,39 +233,462 @@ export default function SettingsPage() {
       )}
 
       {tab === "users" && (
-        <div className="space-y-4">
-          <div className="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
-            <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="username" value={newUser.username} onChange={(e) => setNewUser({ ...newUser, username: e.target.value })} />
-            <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="password" value={newUser.password} onChange={(e) => setNewUser({ ...newUser, password: e.target.value })} />
-            <input className="field" placeholder="الاسم المعروض" value={newUser.displayName} onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })} />
-            <select className="field" value={newUser.role} onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}><option value="EMPLOYEE">موظف مبيعات</option><option value="ADMIN">مدير</option></select>
-            <button disabled={busy} onClick={async () => { const ok = await manage({ action: "createUser", ...newUser }, "تم إنشاء المستخدم"); if (ok) setNewUser({ username: "", password: "", displayName: "", role: "EMPLOYEE" }); }} className="btn-gold"><Plus size={17} /> إنشاء مستخدم</button>
-          </div>
-          <div className="card divide-y divide-slate-100 overflow-hidden">
-            {data.users.map((u: any) => (
-              <div key={u.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5">
-                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0e1526] font-black text-[#174ea6]">{u.displayName.slice(0, 1)}</span>
-                <div className="min-w-[160px] flex-1">
-                  <div className="font-extrabold">{u.displayName} {isAdminRole(u.role) ? <Badge tone="gold">مدير — كل الصلاحيات</Badge> : <Badge>موظف</Badge>} {!u.isActive && <Badge tone="red">معطّل</Badge>}</div>
-                  <div className="text-xs font-bold text-slate-400"><span dir="ltr">@{u.username}</span> • آخر دخول: {fmtDateTime(u.lastLoginAt)}</div>
+        <div className="space-y-6">
+          {/* قسمان متجاوران: إنشاء مستخدم بالصلاحيات + شحن المحفظة يدوياً */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* البطاقة 1: إنشاء مستخدم جديد مع فتح محفظة وتحديد الصلاحيات */}
+            <div className="card flex flex-col justify-between p-5 shadow-lg">
+              <div>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400">
+                    <UserCheck size={20} />
+                  </span>
+                  <div>
+                    <h3 className="font-black text-white">إنشاء مستخدم / عميل جديد</h3>
+                    <p className="text-xs text-slate-400">أنشئ حساب مستخدم أو موظف مع كلمة مرور، وحدد الصلاحيات وافتح له محفظة.</p>
+                  </div>
                 </div>
-                {!isAdminRole(u.role) && (
-                  <>
-                    <button onClick={() => { const pw = prompt(`كلمة مرور جديدة لـ ${u.username}:`); if (pw) manage({ action: "updateUser", id: u.id, password: pw }, "تم تغيير كلمة المرور"); }} className="btn-ghost px-3 py-2 text-xs">كلمة مرور جديدة</button>
-                    <button onClick={() => manage({ action: "updateUser", id: u.id, unlock: true }, "تم فك القفل")} className="btn-ghost px-3 py-2 text-xs">فك القفل</button>
-                    <button onClick={() => manage({ action: "updateUser", id: u.id, isActive: !u.isActive }, u.isActive ? "تم التعطيل" : "تم التفعيل")} className="btn-ghost px-3 py-2 text-xs">{u.isActive ? "تعطيل" : "تفعيل"}</button>
-                    <button onClick={() => { if (confirm(`حذف الموظف ${u.displayName} نهائياً؟ سيتم نقل سجلاته لحسابك للحفاظ على البيانات.`)) manage({ action: "deleteUser", id: u.id }, `تم حذف الموظف ${u.displayName} نهائياً`); }} className="btn-danger px-3 py-2 text-xs"><Trash2 size={14} /> حذف</button>
-                  </>
-                )}
-                {u.id !== meId && (
-                  <button onClick={() => { const toAdmin = !isAdminRole(u.role); if (confirm(isAdminRole(u.role) ? `تخفيض ${u.displayName} من مدير إلى موظف؟ سيفقد كل صلاحيات الإدارة فوراً.` : `ترقية ${u.displayName} إلى مدير بكامل الصلاحيات؟`)) manage({ action: "updateUser", id: u.id, role: toAdmin ? "ADMIN" : "EMPLOYEE" }, toAdmin ? `تمت ترقية ${u.displayName} إلى مدير` : `تم تخفيض ${u.displayName} إلى موظف`); }} className="btn-ghost px-3 py-2 text-xs">{isAdminRole(u.role) ? "⬇ تخفيض لموظف" : "⬆ ترقية لمدير"}</button>
-                )}
+
+                <div className="space-y-3">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-bold text-slate-300">اسم المستخدم (للدخول)</label>
+                      <input
+                        className="field text-sm"
+                        dir="ltr"
+                        style={{ textAlign: "left" }}
+                        placeholder="username"
+                        value={newUser.username}
+                        onChange={(e) => setNewUser({ ...newUser, username: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-bold text-slate-300">كلمة المرور (6 خانات+)</label>
+                      <input
+                        className="field text-sm"
+                        dir="ltr"
+                        style={{ textAlign: "left" }}
+                        placeholder="••••••"
+                        value={newUser.password}
+                        onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs font-bold text-slate-300">الاسم المعروض</label>
+                      <input
+                        className="field text-sm"
+                        placeholder="مثال: أحمد محمد"
+                        value={newUser.displayName}
+                        onChange={(e) => setNewUser({ ...newUser, displayName: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-bold text-slate-300">الرتبة / نوع الحساب</label>
+                      <select
+                        className="field text-sm font-bold"
+                        value={newUser.role}
+                        onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+                      >
+                        <option value="USER">👤 مستخدم / عميل عادي</option>
+                        <option value="EMPLOYEE">💼 موظف مبيعات</option>
+                        <option value="ADMIN">👑 مدير النظام بكامل الصلاحيات</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* فتح محفظة للمستخدم والرصيد الافتتاحي */}
+                  <div className="rounded-2xl border border-amber-400/25 bg-amber-400/5 p-3.5">
+                    <label className="flex cursor-pointer items-center gap-2.5 text-sm font-black text-amber-300">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-amber-500"
+                        checked={newUser.openWallet}
+                        onChange={(e) => setNewUser({ ...newUser, openWallet: e.target.checked })}
+                      />
+                      <span>فتح محفظة للمستخدم 💳</span>
+                    </label>
+
+                    {newUser.openWallet && (
+                      <div className="mt-2.5 flex items-center gap-2">
+                        <span className="text-xs font-bold text-slate-300">رصيد افتتاحي أولي:</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="100"
+                          className="field max-w-[140px] py-1.5 text-sm font-black"
+                          placeholder="0"
+                          value={newUser.initialBalance}
+                          onChange={(e) => setNewUser({ ...newUser, initialBalance: e.target.value })}
+                        />
+                        <span className="text-xs font-bold text-amber-400">ريال يمني</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* الصلاحيات المتاحة */}
+                  {newUser.role !== "ADMIN" && (
+                    <div className="rounded-2xl border border-white/10 bg-white/[.02] p-3 text-xs">
+                      <div className="mb-2 font-black text-slate-300">صلاحيات هذا المستخدم:</div>
+                      <div className="grid grid-cols-2 gap-2 text-slate-300 font-semibold">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={newUser.canSell}
+                            onChange={(e) => setNewUser({ ...newUser, canSell: e.target.checked })}
+                            className="h-3.5 w-3.5 accent-blue-500"
+                          />
+                          <span>شراء / بيع الاشتراكات</span>
+                        </label>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={newUser.canRenew}
+                            onChange={(e) => setNewUser({ ...newUser, canRenew: e.target.checked })}
+                            className="h-3.5 w-3.5 accent-blue-500"
+                          />
+                          <span>تجديد الاشتراكات</span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-            ))}
+
+              <button
+                disabled={busy || !newUser.username.trim() || newUser.password.length < 6}
+                onClick={async () => {
+                  const ok = await manage(
+                    {
+                      action: "createUser",
+                      username: newUser.username,
+                      password: newUser.password,
+                      displayName: newUser.displayName || newUser.username,
+                      role: newUser.role,
+                      openWallet: newUser.openWallet,
+                      initialBalance: Number(newUser.initialBalance || 0),
+                      permissions: { canSell: newUser.canSell, canRenew: newUser.canRenew, canViewPrices: newUser.canViewPrices },
+                    },
+                    "تم إنشاء المستخدم بنجاح"
+                  );
+                  if (ok) {
+                    setNewUser({
+                      username: "",
+                      password: "",
+                      displayName: "",
+                      role: "USER",
+                      openWallet: true,
+                      initialBalance: "0",
+                      canSell: true,
+                      canRenew: true,
+                      canViewPrices: true,
+                    });
+                  }
+                }}
+                className="btn-gold mt-4 w-full py-3 text-sm font-black shadow-lg"
+              >
+                <Plus size={18} /> إنشاء المستخدم وفتح الحساب
+              </button>
+            </div>
+
+            {/* البطاقة 2: خاصية شحن محفظة (بجانبها كما طلب المستخدم) */}
+            <div className="card flex flex-col justify-between p-5 shadow-lg border border-amber-400/20 bg-gradient-to-b from-amber-500/[.03] to-transparent">
+              <div>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-500/10 text-amber-400">
+                    <Wallet size={20} />
+                  </span>
+                  <div>
+                    <h3 className="font-black text-white">شحن محفظة يدوياً</h3>
+                    <p className="text-xs text-slate-400">اختر الشخص واكتب المبلغ يدوياً لإضافته فورياً إلى رصيد محفظته.</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-300">اختر الشخص / المستخدم</label>
+                    <select
+                      className="field text-sm font-bold"
+                      value={topUpForm.userId}
+                      onChange={(e) => setTopUpForm({ ...topUpForm, userId: e.target.value })}
+                    >
+                      <option value="">-- اختر المستخدم المراد شحن محفظته --</option>
+                      {data.users.map((u: any) => (
+                        <option key={u.id} value={u.id}>
+                          {u.displayName} (@{u.username}) — الرصيد: {Number(u.walletBalance || 0).toLocaleString()} ر.ي
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-300">مبلغ الشحن (ريال يمني)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="100"
+                      className="field text-base font-black text-amber-300 placeholder:text-slate-600"
+                      placeholder="اكتب المبلغ يدوياً (مثال: 5000)"
+                      value={topUpForm.amount}
+                      onChange={(e) => setTopUpForm({ ...topUpForm, amount: e.target.value })}
+                    />
+
+                    {/* أزرار مبالغ سريعة */}
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {[500, 1000, 2000, 5000, 10000].map((val) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => setTopUpForm({ ...topUpForm, amount: String(val) })}
+                          className="rounded-lg border border-white/10 bg-white/[.04] px-2.5 py-1 text-xs font-black text-slate-200 transition hover:bg-amber-400/20 hover:text-amber-300"
+                        >
+                          +{val.toLocaleString()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-300">بيان / ملاحظة الشحن (اختياري)</label>
+                    <input
+                      className="field text-sm"
+                      placeholder="مثال: إيداع نقدي / حوالة الكريمي رقم #12345"
+                      value={topUpForm.note}
+                      onChange={(e) => setTopUpForm({ ...topUpForm, note: e.target.value })}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <button
+                disabled={busy || !topUpForm.userId || !topUpForm.amount || Number(topUpForm.amount) <= 0}
+                onClick={async () => {
+                  const uid = Number(topUpForm.userId);
+                  const amt = Number(topUpForm.amount);
+                  const ok = await manage(
+                    {
+                      action: "topUpWallet",
+                      userId: uid,
+                      amount: amt,
+                      note: topUpForm.note || "شحن يدوي من الإدارة",
+                    },
+                    `تم شحن ${amt.toLocaleString()} ر.ي بنجاح للمحفظة`
+                  );
+                  if (ok) {
+                    setTopUpForm({ userId: "", amount: "", note: "" });
+                  }
+                }}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-l from-amber-500 to-[#1463ff] py-3 text-sm font-black text-white shadow-lg transition hover:brightness-110 disabled:opacity-50"
+              >
+                <Wallet size={18} /> شحن المحفظة بالمبلغ المحدد
+              </button>
+            </div>
           </div>
-          <p className="text-sm font-semibold text-slate-500">الموظف لا يرى المخزون ولا المحذوفات ولا التدقيق، ولا يستطيع الحذف أو تأكيد السندات — تُفرض هذه القيود من الخادم في كل طلب وليس من الواجهة فقط. بعد 5 محاولات دخول فاشلة يُقفل الحساب 15 دقيقة.</p>
+
+          {/* قائمة المستخدمين الحالية مع عرض أرصدتهم وأزرار شحن سريعة */}
+          <div className="card overflow-hidden">
+            <div className="border-b border-white/10 bg-white/[.02] px-4 py-3">
+              <h3 className="font-black text-white">المستخدمون والحسابات المسجلة ({data.users.length})</h3>
+              <p className="text-xs text-slate-400">يمكنك تعديل أي مستخدم أو شحن رصيده فورياً بضغطة زر واحدة.</p>
+            </div>
+
+            <div className="divide-y divide-white/5">
+              {data.users.map((u: any) => {
+                const bal = Number(u.walletBalance || 0);
+                return (
+                  <div key={u.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 transition hover:bg-white/[.02]">
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#0e1526] font-black text-[#57c8ff] shadow-inner">
+                        {u.displayName?.slice(0, 1) || "U"}
+                      </span>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-extrabold text-white">{u.displayName}</span>
+                          {isAdminRole(u.role) ? (
+                            <Badge tone="gold">👑 مدير النظام</Badge>
+                          ) : u.role === "EMPLOYEE" ? (
+                            <Badge tone="blue">💼 موظف مبيعات</Badge>
+                          ) : (
+                            <Badge tone="green">👤 مستخدم / عميل</Badge>
+                          )}
+                          {!u.isActive && <Badge tone="red">معطّل</Badge>}
+                        </div>
+                        <div className="mt-0.5 text-xs font-semibold text-slate-400">
+                          <span dir="ltr">@{u.username}</span> • آخر دخول: {fmtDateTime(u.lastLoginAt)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* بطاقة رصيد المحفظة مع زر شحن فوري */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-2 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-xs font-black text-amber-300">
+                        <Wallet size={15} />
+                        <span>رصيد المحفظة:</span>
+                        <span className="font-mono text-sm text-white">{bal.toLocaleString()} ر.ي</span>
+                      </div>
+
+                      <button
+                        onClick={() => {
+                          setQuickTopUpUser(u);
+                          setQuickAmount("");
+                          setQuickNote("");
+                        }}
+                        className="flex items-center gap-1.5 rounded-xl bg-amber-500/20 px-3 py-1.5 text-xs font-black text-amber-200 transition hover:bg-amber-500 hover:text-black"
+                      >
+                        <Plus size={14} /> شحن رصيد
+                      </button>
+
+                      {!isAdminRole(u.role) && (
+                        <>
+                          <button
+                            onClick={() => {
+                              const pw = prompt(`كلمة مرور جديدة لـ ${u.username}:`);
+                              if (pw) manage({ action: "updateUser", id: u.id, password: pw }, "تم تغيير كلمة المرور");
+                            }}
+                            className="btn-ghost px-2.5 py-1.5 text-xs"
+                          >
+                            <KeyRound size={13} /> كلمة جديدة
+                          </button>
+                          <button
+                            onClick={() => manage({ action: "updateUser", id: u.id, unlock: true }, "تم فك القفل")}
+                            className="btn-ghost px-2.5 py-1.5 text-xs"
+                          >
+                            فك القفل
+                          </button>
+                          <button
+                            onClick={() => manage({ action: "updateUser", id: u.id, isActive: !u.isActive }, u.isActive ? "تم التعطيل" : "تم التفعيل")}
+                            className="btn-ghost px-2.5 py-1.5 text-xs"
+                          >
+                            {u.isActive ? "تعطيل" : "تفعيل"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`حذف حساب ${u.displayName} نهائياً؟`)) {
+                                manage({ action: "deleteUser", id: u.id }, `تم حذف الحساب ${u.displayName}`);
+                              }
+                            }}
+                            className="btn-danger px-2.5 py-1.5 text-xs"
+                          >
+                            <Trash2 size={13} /> حذف
+                          </button>
+                        </>
+                      )}
+
+                      {u.id !== meId && (
+                        <select
+                          className="rounded-xl border border-white/10 bg-[#0e1526] px-2.5 py-1.5 text-xs font-bold text-slate-300 outline-none"
+                          value={u.role}
+                          onChange={(e) => {
+                            const newRole = e.target.value;
+                            if (confirm(`تغيير رتبة ${u.displayName} إلى ${newRole === "ADMIN" ? "مدير" : newRole === "EMPLOYEE" ? "موظف" : "مستخدم"}؟`)) {
+                              manage({ action: "updateUser", id: u.id, role: newRole }, "تم تغيير الرتبة بنجاح");
+                            }
+                          }}
+                        >
+                          <option value="USER">مستخدم / عميل</option>
+                          <option value="EMPLOYEE">موظف مبيعات</option>
+                          <option value="ADMIN">مدير</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* مودال الشحن السريع للمستخدم المحدد */}
+          {quickTopUpUser && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setQuickTopUpUser(null)}>
+              <div className="w-full max-w-sm rounded-3xl border border-white/10 bg-[#0c1426] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="mb-4 flex items-center gap-3">
+                  <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-500/10 text-amber-400">
+                    <Wallet size={24} />
+                  </span>
+                  <div>
+                    <h3 className="text-base font-black text-white">شحن محفظة {quickTopUpUser.displayName}</h3>
+                    <p className="text-xs text-slate-400">الرصيد الحالي: {Number(quickTopUpUser.walletBalance || 0).toLocaleString()} ر.ي</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-300">المبلغ المطلوب شحنه (ريال يمني)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="100"
+                      autoFocus
+                      className="field text-lg font-black text-amber-300"
+                      placeholder="اكتب المبلغ يدوياً"
+                      value={quickAmount}
+                      onChange={(e) => setQuickAmount(e.target.value)}
+                    />
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {[500, 1000, 2000, 5000, 10000].map((val) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => setQuickAmount(String(val))}
+                          className="rounded-lg border border-white/10 bg-white/[.04] px-2 py-1 text-xs font-black text-slate-300 transition hover:bg-amber-400/20 hover:text-amber-300"
+                        >
+                          +{val.toLocaleString()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-300">ملاحظة أو بيان الشحن (اختياري)</label>
+                    <input
+                      className="field text-sm"
+                      placeholder="مثال: إيداع نقدي / حوالة الكريمي"
+                      value={quickNote}
+                      onChange={(e) => setQuickNote(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      disabled={busy || !quickAmount || Number(quickAmount) <= 0}
+                      onClick={async () => {
+                        const amt = Number(quickAmount);
+                        const ok = await manage(
+                          {
+                            action: "topUpWallet",
+                            userId: quickTopUpUser.id,
+                            amount: amt,
+                            note: quickNote || "شحن يدوي من الإدارة",
+                          },
+                          `تم شحن ${amt.toLocaleString()} ر.ي بنجاح لـ ${quickTopUpUser.displayName}`
+                        );
+                        if (ok) {
+                          setQuickTopUpUser(null);
+                        }
+                      }}
+                      className="btn-gold flex-1 py-3 text-sm font-black shadow-lg"
+                    >
+                      تأكيد الشحن الآن
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickTopUpUser(null)}
+                      className="btn-ghost px-4 py-3 text-xs"
+                    >
+                      إلغاء
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <p className="text-sm font-semibold text-slate-500">المستخدمون من نوع «مستخدم/عميل» أو «موظف» لا يرون المخزون ولا المحذوفات ولا التدقيق. يتم الشحن والخصم من المحفظة بمعاملات مسجلة وموثقة في سجل التدقيق.</p>
         </div>
       )}
+
     </div>
   );
 }

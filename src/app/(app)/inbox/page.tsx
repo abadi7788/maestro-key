@@ -20,7 +20,8 @@ export default function InboxPage() {
     setRentals(r.rentals); setAccounts(a.accounts);
   }, []);
   useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 8000);
+  useAutoRefresh(load, 25000);
+
 
   async function act(body: any, okMsg: string) {
     setBusy(true); setMsg("");

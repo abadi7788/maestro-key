@@ -7,6 +7,7 @@ import { Resend } from "resend";
 import { decryptText, signSession } from "@/lib/crypto";
 import { getCurrentUser, audit } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
+import { notifyAdmin } from "@/lib/notify";
 
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
@@ -86,8 +87,20 @@ export async function GET() {
   await ensureSeeded();
   const user = await getCurrentUser();
   if (!user) return Response.json({ user: null }, { status: 401 });
-  return Response.json({ user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role } });
+  const { walletBalances } = await import("@/db/schema");
+  const [w] = await db.select().from(walletBalances).where(eq(walletBalances.userId, user.id)).limit(1);
+  return Response.json({
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role,
+      permissions: user.permissions,
+      walletBalance: w ? w.balance : Number(user.walletBalance || 0),
+    },
+  });
 }
+
 
 export async function POST(req: Request) {
   await ensureSeeded();
@@ -126,6 +139,32 @@ export async function POST(req: Request) {
     await db.update(users).set({ email, passwordHash: await bcrypt.hash(newPassword, 10), failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, adminUser.id));
     await audit(adminUser, "PASSWORD_SET", "users", adminUser.id, "تعيين كلمة مرور المدير بعد كود البريد");
     return sessionResponse({ id: adminUser.id, username: adminUser.username, displayName: adminUser.displayName, role: adminUser.role });
+  }
+
+  if (body.action === "change-password") {
+    const user = await getCurrentUser();
+    if (!user) return Response.json({ error: "غير مصرح — سجل الدخول أولاً" }, { status: 401 });
+    const oldPassword = String(body.oldPassword || body.currentPassword || "");
+    const newPassword = String(body.newPassword || "");
+    if (!oldPassword || newPassword.length < 6) {
+      return Response.json({ error: "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل" }, { status: 400 });
+    }
+    const match = await bcrypt.compare(oldPassword, user.passwordHash);
+    if (!match) return Response.json({ error: "كلمة المرور الحالية غير صحيحة" }, { status: 401 });
+
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "Unknown IP";
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
+
+    const logDetails = `قام المستخدم [${user.displayName || user.username}] بتغيير كلمة المرور الخاصة به (IP: ${ip})`;
+    await audit(user, "USER_PASSWORD_CHANGED", "users", user.id, logDetails);
+    await notifyAdmin({
+      title: "تغيير كلمة مرور مستخدم",
+      body: logDetails,
+      kind: "SECURITY",
+      href: "/audit",
+    });
+    return Response.json({ ok: true, message: "تم تغيير كلمة المرور بنجاح" });
   }
 
   const username = String(body.username || body.email || "").trim().toLowerCase();

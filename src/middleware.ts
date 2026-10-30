@@ -82,6 +82,7 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // استثناءات: الـ API (يحمي نفسه بنفسه) وملفات next الثابتة وأي ملف بامتداد
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|logo.png|icon.png|.*\\..*).*)"],
+  // استثناءات: الـ API والتحميل وملفات next الثابتة وأي ملف بامتداد
+  matcher: ["/((?!api|download|downloads|_next/static|_next/image|favicon.ico|logo.png|icon.png|.*\\..*).*)"],
 };
+

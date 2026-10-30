@@ -2,8 +2,8 @@
 import { useEffect, useState } from "react";
 import { RefreshCcw } from "lucide-react";
 import { api } from "@/lib/client";
-import { Empty, Spinner } from "@/components/ui";
-import { DueCard } from "../dashboard/page";
+import { Empty, Spinner, DueCard } from "@/components/ui";
+
 
 export default function RenewalsPage() {
   const [due, setDue] = useState<any[] | null>(null);

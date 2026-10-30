@@ -1,7 +1,9 @@
 "use client";
 import { useState, type ReactNode } from "react";
-import { Check, Copy, Loader2, X } from "lucide-react";
-import { api } from "@/lib/client";
+import Link from "next/link";
+import { Check, Copy, Loader2, RefreshCcw, X } from "lucide-react";
+import { api, fmtDate, daysLeft } from "@/lib/client";
+
 
 export function PlatformLogo({ src, name, color, size = 48, className = "" }: { src?: string | null; name: string; color?: string; size?: number; className?: string }) {
   if (src) {
@@ -111,3 +113,21 @@ export function StatCard({ label, value, sub, icon, tone = "text-slate-700 bg-sl
     </div>
   );
 }
+
+export function DueCard({ r }: { r: any }) {
+  const left = daysLeft(r.endDate);
+  return (
+    <div className="card p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="font-extrabold">{r.customerName}</div>
+          <div className="text-xs font-semibold text-slate-500">{r.platformName} • <span dir="ltr">{r.customerPhone}</span></div>
+        </div>
+        {r.status === "ENDED" ? <Badge tone="red">انتهى {fmtDate(r.endDate)}</Badge> : left <= 0 ? <Badge tone="red">ينتهي اليوم</Badge> : <Badge tone="amber">بقي {left} يوم</Badge>}
+      </div>
+      <div className="mt-2 flex items-center gap-2">{rentalBadge(r.status)}{r.whatsappAlertSent && <Badge tone="blue">أُرسل تنبيه واتساب ✓</Badge>}</div>
+      <Link href={`/sale?phone=${encodeURIComponent(r.customerPhone)}&platformId=${r.platformId}`} className="btn-primary mt-3.5 w-full py-2.5 text-sm"><RefreshCcw size={16} /> تسجيل تجديد — اربط السند وفعّل</Link>
+    </div>
+  );
+}
+

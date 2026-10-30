@@ -55,14 +55,59 @@ export async function POST(req: Request) {
     }
     if (action === "createUser") {
       const username = String(b.username || "").trim().toLowerCase();
+      const email = String(b.email || "").trim().toLowerCase();
       const password = String(b.password || "");
       if (!username || password.length < 6) return jsonError("اسم مستخدم وكلمة مرور (6 أحرف على الأقل) مطلوبة");
       const exists = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
       if (exists.length) return jsonError("اسم المستخدم موجود مسبقاً", 409);
-      await db.insert(users).values({ username, passwordHash: await bcrypt.hash(password, 10), displayName: String(b.displayName || username), role: normalizeRole(b.role) });
-      await notifyAdmin({ title: "إضافة موظف", body: `تم إضافة الموظف ${String(b.displayName || username)}`, kind: "ADDITION", href: "/settings" });
-      await audit(admin, "USER_CREATED", "users", null, username);
-      return Response.json({ ok: true });
+      
+      const permissionsStr = b.permissions ? (typeof b.permissions === "string" ? b.permissions : JSON.stringify(b.permissions)) : null;
+      const role = normalizeRole(b.role);
+      const openWallet = !!b.openWallet;
+      const initialBalance = Math.max(0, Math.floor(Number(b.initialBalance || 0)));
+
+      const [newUser] = await db.insert(users).values({
+        username,
+        email: email || null,
+        passwordHash: await bcrypt.hash(password, 10),
+        displayName: String(b.displayName || username),
+        role,
+        permissions: permissionsStr,
+        walletBalance: String(initialBalance),
+      }).returning();
+
+      if (openWallet || initialBalance > 0) {
+        const { walletBalances, walletTransactions } = await import("@/db/schema");
+        await db.insert(walletBalances).values({
+          userId: newUser.id,
+          balance: initialBalance,
+        }).onConflictDoUpdate({
+          target: walletBalances.userId,
+          set: { balance: initialBalance, updatedAt: new Date() },
+        });
+
+        if (initialBalance > 0) {
+          await db.insert(walletTransactions).values({
+            userId: newUser.id,
+            type: "TOPUP",
+            amount: initialBalance,
+            balanceBefore: 0,
+            balanceAfter: initialBalance,
+            note: "رصيد افتتاحي عند فتح المحفظة",
+            createdBy: admin.id,
+          });
+        }
+      }
+
+      const roleLabel = role === "ADMIN" ? "المدير" : role === "EMPLOYEE" ? "الموظف" : "المستخدم";
+      await notifyAdmin({
+        title: `إضافة ${roleLabel}`,
+        body: `تم إضافة ${roleLabel} ${String(b.displayName || username)}${openWallet ? ` مع فتح محفظة (رصيد: ${initialBalance} ر.ي)` : ""}`,
+        kind: "ADDITION",
+        href: "/settings",
+      });
+      await audit(admin, "USER_CREATED", "users", newUser.id, username);
+      return Response.json({ ok: true, user: newUser });
     }
     if (action === "updateUser") {
       const id = Number(b.id);
@@ -70,6 +115,10 @@ export async function POST(req: Request) {
       if (!target) return jsonError("المستخدم غير موجود", 404);
       const patch: Partial<typeof users.$inferInsert> = {};
       if (b.displayName) patch.displayName = String(b.displayName);
+      if (b.email !== undefined) patch.email = b.email ? String(b.email).trim().toLowerCase() : null;
+      if (b.permissions !== undefined) {
+        patch.permissions = typeof b.permissions === "string" ? b.permissions : JSON.stringify(b.permissions);
+      }
       if (b.role) {
         const nextRole = normalizeRole(b.role);
         if (id === admin.id && nextRole !== "ADMIN") return jsonError("لا يمكنك تخفيض صلاحيات حسابك وأنت داخل النظام");
@@ -93,6 +142,33 @@ export async function POST(req: Request) {
       await audit(admin, "USER_UPDATED", "users", id, JSON.stringify(Object.keys(patch)));
       return Response.json({ ok: true });
     }
+    if (action === "topUpWallet") {
+      const targetUserId = Number(b.userId);
+      const amount = Number(b.amount);
+      const note = String(b.note || "شحن يدوي من الإدارة");
+      if (!targetUserId || !amount || amount <= 0) {
+        return jsonError("يرجى اختيار المستخدم وتحديد مبلغ شحن صحيح أكبر من الصفر");
+      }
+      const { topUpWallet } = await import("@/lib/wallet");
+      const res = await topUpWallet({
+        userId: targetUserId,
+        amount,
+        note,
+        createdBy: admin.id,
+      });
+      // مزامنة حقل users.walletBalance لضمان تناسق البيانات
+      await db.update(users).set({ walletBalance: String(res.balanceAfter) }).where(eq(users.id, targetUserId));
+      await notifyAdmin({
+        title: "شحن محفظة",
+        body: `تم شحن ${amount.toLocaleString()} ر.ي لمحفظة المستخدم بواسطة الإدارة. الرصيد الحالي: ${res.balanceAfter.toLocaleString()} ر.ي`,
+        kind: "WALLET_TOPUP",
+        href: "/settings",
+        forUserId: targetUserId,
+      });
+      await audit(admin, "WALLET_TOPUP", "users", targetUserId, `شحن ${amount} ر.ي لمحفظة المستخدم — ${note}`);
+      return Response.json({ ok: true, balanceAfter: res.balanceAfter });
+    }
+
     if (action === "upsertCustomer") {
       const name = String(b.name || "").trim(); const phone = String(b.phone || "").replace(/\s/g, "").trim();
       if (!name || !phone) return jsonError("اسم العميل ورقم هاتفه مطلوبان");

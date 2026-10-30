@@ -30,7 +30,8 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
   }, [mode, status, payStatus]);
 
   useEffect(() => { fetchMe().then(setMe); load(); }, [load]);
-  useAutoRefresh(load, 8000);
+  useAutoRefresh(load, 25000);
+
 
   async function act(body: any, okMsg: string) {
     setBusy(true); setMsg("");

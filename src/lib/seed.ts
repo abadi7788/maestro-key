@@ -52,7 +52,23 @@ async function doSeed() {
   ]);
 }
 
+const globalForSeed = globalThis as typeof globalThis & {
+  __maestroSeededDone?: boolean;
+  __maestroSeedingPromise?: Promise<void> | null;
+};
+
 export async function ensureSeeded() {
-  if (!seeding) seeding = doSeed().catch((e) => { console.error("[seed failed]", e); seeding = null; });
-  await seeding;
+  if (globalForSeed.__maestroSeededDone) return;
+  if (globalForSeed.__maestroSeedingPromise) return globalForSeed.__maestroSeedingPromise;
+
+  globalForSeed.__maestroSeedingPromise = (async () => {
+    await doSeed();
+    globalForSeed.__maestroSeededDone = true;
+  })().catch((e) => {
+    console.error("[seed failed]", e);
+    globalForSeed.__maestroSeedingPromise = null;
+  });
+
+  return globalForSeed.__maestroSeedingPromise;
 }
+

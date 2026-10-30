@@ -8,9 +8,10 @@ import {
 } from "lucide-react";
 import { api, fetchMe, fmtDate, money, daysLeft, type Me } from "@/lib/client";
 import { isAdminRole, isEmployeeRole } from "@/lib/roles";
-import { Badge, PlatformLogo, Spinner, StatCard, rentalBadge, paymentBadge } from "@/components/ui";
+import { Badge, PlatformLogo, Spinner, StatCard, DueCard, rentalBadge, paymentBadge } from "@/components/ui";
 
 export default function DashboardPage() {
+
   const [me, setMe] = useState<Me | null>(null);
   const [data, setData] = useState<any>(null); const [meta, setMeta] = useState<any>(null);
   const [rentals, setRentals] = useState<any[]>([]); const [due, setDue] = useState<any[]>([]);
@@ -27,8 +28,9 @@ export default function DashboardPage() {
     }
   }
   useEffect(() => { fetchMe().then((u) => { setMe(u); if (u) load(u); }); }, []);
-  // مزامنة تلقائية مع الطرف الآخر كل 8 ثوانٍ
-  useAutoRefresh(() => { if (me) return load(me); }, 8000);
+  // مزامنة تلقائية كل 25 ثانية لتفادي استنزاف موارد السيرفر وقاعدة البيانات
+  useAutoRefresh(() => { if (me) return load(me); }, 25000);
+
 
   async function runJob() {
     setBusy(true);
@@ -135,19 +137,3 @@ export default function DashboardPage() {
   );
 }
 
-export function DueCard({ r }: { r: any }) {
-  const left = daysLeft(r.endDate);
-  return (
-    <div className="card p-4">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="font-extrabold">{r.customerName}</div>
-          <div className="text-xs font-semibold text-slate-500">{r.platformName} • <span dir="ltr">{r.customerPhone}</span></div>
-        </div>
-        {r.status === "ENDED" ? <Badge tone="red">انتهى {fmtDate(r.endDate)}</Badge> : left <= 0 ? <Badge tone="red">ينتهي اليوم</Badge> : <Badge tone="amber">بقي {left} يوم</Badge>}
-      </div>
-      <div className="mt-2 flex items-center gap-2">{rentalBadge(r.status)}{r.whatsappAlertSent && <Badge tone="blue">أُرسل تنبيه واتساب ✓</Badge>}</div>
-      <Link href={`/sale?phone=${encodeURIComponent(r.customerPhone)}&platformId=${r.platformId}`} className="btn-primary mt-3.5 w-full py-2.5 text-sm"><RefreshCcw size={16} /> تسجيل تجديد — اربط السند وفعّل</Link>
-    </div>
-  );
-}

@@ -65,7 +65,7 @@ self.addEventListener("fetch", (event) => {
       fetch(req).then((res) => {
         if (res && res.ok && url.origin === self.location.origin) {
           const copy = res.clone();
-          caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy));
+          caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
         }
         return res;
       }).catch(async () => {
@@ -74,13 +74,17 @@ self.addEventListener("fetch", (event) => {
         if (cached) return cached;
 
         // البحث عن صفحة الأوفلاين بصيغتيها لضمان إيجادها
-        const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline");
+        const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline") || await cache.match("/offline.html");
         if (offlineFallback) return offlineFallback;
 
-        return new Response("غير متصل بالإنترنت", {
-          status: 503,
-          headers: { "content-type": "text/plain; charset=utf-8" },
-        });
+        // إرجاع صفحة HTML مع status: 200 لمنع شاشة Chrome الافتراضية "This page couldn't load"
+        return new Response(
+          `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر الاتصال — مايسترو كي</title><style>body{background:#070b14;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box}h2{font-size:22px;margin:0 0 8px;font-weight:900}p{color:#94a3b8;font-size:14px;margin:0 0 24px;line-height:1.6}button{background:#2f7bff;color:#fff;border:none;padding:12px 28px;border-radius:14px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 8px 20px rgba(47,123,255,.3)}</style></head><body><h2>تعذر تحميل الصفحة مؤقتاً</h2><p>يرجى التحقق من اتصال الشبكة ثم إعادة المحاولة.</p><button onclick="location.reload()">إعادة المحاولة</button></body></html>`,
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          }
+        );
       }),
     );
     return;
@@ -95,7 +99,7 @@ self.addEventListener("fetch", (event) => {
         const network = fetch(req).then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
-            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy));
+            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
           }
           return res;
         }).catch(() => hit);
@@ -108,10 +112,10 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("message", (e) => {
   if (e.data?.type === "watch") {
     after = Number(e.data.after || after || 0);
-    if (!timer) timer = setInterval(poll, 8000);
-    poll();
   }
+  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
 });
+
 
 self.addEventListener("push", (event) => {
   let data = { title: "مايسترو كي", body: "إشعار جديد", href: "/inbox", tag: "mk" };
