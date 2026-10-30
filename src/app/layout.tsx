@@ -1,13 +1,17 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { Cairo } from "next/font/google";
+import "@fontsource/cairo/400.css";
+import "@fontsource/cairo/500.css";
+import "@fontsource/cairo/600.css";
+import "@fontsource/cairo/700.css";
+import "@fontsource/cairo/800.css";
+import "@fontsource/cairo/900.css";
 import "./globals.css";
-
-const cairo = Cairo({ subsets: ["arabic", "latin"], weight: ["400", "500", "600", "700", "800", "900"] });
+import PwaInstall from "@/components/PwaInstall";
 
 export const metadata: Metadata = {
   title: "Maestro Key — مايسترو كي | إدارة اشتراكات المنصات الرقمية",
-  description: "نظام إدارة متجر مايسترو كي: مخزون حسابات، بيع وتجديد اشتراكات، سندات دفع، وتنبيهات واتساب.",
+  description: "نظام إدارة متجر مايسترو كي: مخزون حسابات، بيع وتجديد اشتراكات، محافظ موظفين، سندات دفع، وتنبيهات واتساب.",
   icons: {
     icon: "/icons/icon-192x192.png",
     apple: "/icons/icon-512x512.png",
@@ -18,7 +22,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ar" dir="rtl">
-      <body className={`${cairo.className} bg-[#070b14] text-slate-100 antialiased`}>{children}</body>
+      <body className="bg-[#070b14] text-slate-100 antialiased">
+        {children}
+        <PwaInstall />
+      </body>
     </html>
   );
 }

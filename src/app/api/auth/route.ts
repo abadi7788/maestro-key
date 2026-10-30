@@ -7,12 +7,33 @@ import { Resend } from "resend";
 import { decryptText, signSession } from "@/lib/crypto";
 import { getCurrentUser, audit } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
+import { getWallet } from "@/lib/wallet";
+import { getEffectivePermissions } from "@/lib/permissions";
 
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
-function sessionResponse(user: { id: number; username: string; displayName: string; role: string }) {
+async function buildUserPayload(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null }) {
+  let walletBalance = 0;
+  try {
+    const w = await getWallet(user.id);
+    walletBalance = w.balance;
+  } catch {
+    walletBalance = 0;
+  }
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role,
+    walletBalance,
+    permissions: getEffectivePermissions(user),
+  };
+}
+
+async function sessionResponse(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null }) {
   const token = signSession({ userId: user.id, role: user.role, username: user.username });
-  return new Response(JSON.stringify({ user }), {
+  const payload = await buildUserPayload(user);
+  return new Response(JSON.stringify({ user: payload }), {
     headers: { "content-type": "application/json", "Set-Cookie": `maestro_session=${token}; Path=/; HttpOnly; Max-Age=${12 * 3600}; SameSite=Lax` },
   });
 }
@@ -86,7 +107,7 @@ export async function GET() {
   await ensureSeeded();
   const user = await getCurrentUser();
   if (!user) return Response.json({ user: null }, { status: 401 });
-  return Response.json({ user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role } });
+  return Response.json({ user: await buildUserPayload(user) });
 }
 
 export async function POST(req: Request) {
@@ -125,7 +146,7 @@ export async function POST(req: Request) {
     if (!adminUser) return Response.json({ error: "لا يوجد حساب مدير" }, { status: 404 });
     await db.update(users).set({ email, passwordHash: await bcrypt.hash(newPassword, 10), failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, adminUser.id));
     await audit(adminUser, "PASSWORD_SET", "users", adminUser.id, "تعيين كلمة مرور المدير بعد كود البريد");
-    return sessionResponse({ id: adminUser.id, username: adminUser.username, displayName: adminUser.displayName, role: adminUser.role });
+    return await sessionResponse(adminUser);
   }
 
   const username = String(body.username || body.email || "").trim().toLowerCase();
@@ -147,8 +168,5 @@ export async function POST(req: Request) {
   }
   await db.update(users).set({ failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, user.id));
   await audit(user, "LOGIN", "users", user.id, "تسجيل دخول ناجح");
-  const token = signSession({ userId: user.id, role: user.role, username: user.username });
-  return new Response(JSON.stringify({ user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role } }), {
-    headers: { "content-type": "application/json", "Set-Cookie": `maestro_session=${token}; Path=/; HttpOnly; Max-Age=${12 * 3600}; SameSite=Lax` },
-  });
+  return await sessionResponse(user);
 }

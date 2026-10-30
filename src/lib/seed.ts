@@ -21,8 +21,9 @@ async function doSeed() {
   const existing = await db.select({ id: users.id }).from(users).limit(1);
   if (existing.length) return;
 
+  const initialPassword = (process.env.ADMIN_INITIAL_PASSWORD || "").trim() || "admin123";
   await db.insert(users).values([
-    { username: "admin", passwordHash: await bcrypt.hash("admin123", 10), displayName: "مدير مايسترو كي", role: "ADMIN" },
+    { username: "admin", passwordHash: await bcrypt.hash(initialPassword, 10), displayName: "مدير مايسترو كي", role: "ADMIN" },
   ]);
 
   await db.insert(platforms).values([

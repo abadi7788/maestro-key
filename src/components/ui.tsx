@@ -16,13 +16,13 @@ export function PlatformLogo({ src, name, color, size = 48, className = "" }: { 
 
 export function Badge({ tone = "slate", children }: { tone?: string; children: ReactNode }) {
   const tones: Record<string, string> = {
-    slate: "bg-[#eef2fa] text-[#465677]",
-    green: "bg-[#e6f8ee] text-[#0f7a4e] ring-1 ring-[#0f7a4e]/10",
-    red: "bg-[#ffeaee] text-[#c11231] ring-1 ring-[#c11231]/10",
-    amber: "bg-[#fff2dc] text-[#a76400] ring-1 ring-[#a76400]/10",
-    blue: "bg-[#eaf3ff] text-[#174ea6] ring-1 ring-[#174ea6]/10",
-    gold: "bg-[#eaf3ff] text-[#174ea6] ring-1 ring-[#174ea6]/10",
-    dark: "bg-[#050914] text-white",
+    slate: "bg-white/10 text-slate-200 ring-1 ring-white/10",
+    green: "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/25",
+    red: "bg-red-500/15 text-red-300 ring-1 ring-red-400/25",
+    amber: "bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/25",
+    blue: "bg-[#2f7bff]/20 text-[#8ec0ff] ring-1 ring-[#63a8ff]/30",
+    gold: "bg-amber-400/15 text-amber-200 ring-1 ring-amber-300/30",
+    dark: "bg-[#050914] text-white ring-1 ring-white/15",
   };
   return <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-extrabold ${tones[tone] || tones.slate}`}>{children}</span>;
 }
@@ -31,13 +31,13 @@ export function rentalBadge(status: string) {
   if (status === "ACTIVE") return <Badge tone="green">● نشط</Badge>;
   if (status === "ENDED") return <Badge tone="red">منتهي — بانتظار إجراء</Badge>;
   if (status === "CLOSED") return <Badge tone="slate">مغلق</Badge>;
-  if (status === "REJECTED") return <Badge tone="red">ملغي — سند مرفوض</Badge>;
+  if (status === "REJECTED") return <Badge tone="red">ملغي</Badge>;
   return <Badge>{status}</Badge>;
 }
 export function paymentBadge(status: string) {
-  if (status === "CONFIRMED") return <Badge tone="green">سند مؤكد ✓</Badge>;
-  if (status === "PENDING") return <Badge tone="amber">سند بانتظار المراجعة</Badge>;
-  return <Badge tone="red">سند مرفوض</Badge>;
+  if (status === "CONFIRMED") return <Badge tone="green">مؤكد ✓</Badge>;
+  if (status === "PENDING") return <Badge tone="amber">بانتظار المراجعة</Badge>;
+  return <Badge tone="red">مرفوض</Badge>;
 }
 export function accountBadge(status: string) {
   if (status === "AVAILABLE") return <Badge tone="green">متاح للبيع</Badge>;
@@ -51,21 +51,21 @@ export function CopyBtn({ text, label = "نسخ" }: { text: string; label?: stri
   return (
     <button type="button" onClick={async () => { try { await navigator.clipboard.writeText(text); setOk(true); setTimeout(() => setOk(false), 1500); } catch {} }}
       className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs font-bold text-slate-200 transition hover:bg-white/15 active:scale-95">
-      {ok ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />} {ok ? "تم النسخ" : label}
+      {ok ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />} {ok ? "تم النسخ" : label}
     </button>
   );
 }
 
 export function Spinner({ text = "جارٍ التحميل…" }: { text?: string }) {
-  return <div className="flex flex-col items-center justify-center gap-3 py-16 text-slate-500"><Loader2 className="animate-spin" size={28} /><p className="text-sm font-bold">{text}</p></div>;
+  return <div className="flex flex-col items-center justify-center gap-3 py-16 text-slate-400"><Loader2 className="animate-spin text-[#5ba2ff]" size={28} /><p className="text-sm font-bold">{text}</p></div>;
 }
 
 export function Empty({ icon, title, hint }: { icon: ReactNode; title: string; hint?: string }) {
   return (
     <div className="card flex flex-col items-center justify-center gap-2 border-dashed px-6 py-14 text-center">
-      <div className="text-slate-300">{icon}</div>
-      <p className="font-extrabold text-slate-700">{title}</p>
-      {hint && <p className="max-w-sm text-sm text-slate-500">{hint}</p>}
+      <div className="text-slate-500">{icon}</div>
+      <p className="font-extrabold text-slate-200">{title}</p>
+      {hint && <p className="max-w-sm text-sm text-slate-400">{hint}</p>}
     </div>
   );
 }
@@ -73,7 +73,7 @@ export function Empty({ icon, title, hint }: { icon: ReactNode; title: string; h
 export function Modal({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
       <div className={`pop-in mb-20 max-h-[88dvh] w-full overflow-y-auto rounded-t-3xl border border-white/10 bg-[#0c1426] p-6 pb-8 shadow-2xl sm:mb-0 sm:max-h-[90dvh] sm:rounded-[28px] ${wide ? "sm:max-w-2xl" : "sm:max-w-lg"}`} onClick={(e) => e.stopPropagation()}>
         <div className="mb-5 flex items-center justify-between gap-3">
           <h3 className="text-lg font-black tracking-tight text-white">{title}</h3>
@@ -89,24 +89,24 @@ export function ReceiptButton({ paymentId, refText }: { paymentId: number; refTe
   const [open, setOpen] = useState(false); const [img, setImg] = useState(""); const [loading, setLoading] = useState(false); const [err, setErr] = useState("");
   return (
     <>
-      <button type="button" className="text-xs font-extrabold text-sky-700 underline decoration-dotted underline-offset-4 hover:text-sky-900"
+      <button type="button" className="text-xs font-extrabold text-sky-400 underline decoration-dotted underline-offset-4 hover:text-sky-300"
         onClick={async () => { setOpen(true); setLoading(true); setErr(""); try { const d = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "receipt", paymentId }) }); setImg(d.image || ""); if (!d.image) setErr("لا توجد صورة مرفقة"); } catch (e: any) { setErr(e.message || "للمدير فقط"); } finally { setLoading(false); } }}>
         🧾 عرض السند {refText ? `(${refText})` : ""}
       </button>
       <Modal open={open} onClose={() => setOpen(false)} title="صورة سند الدفع" wide>
-        {loading ? <Spinner /> : err ? <p className="py-8 text-center font-bold text-red-600">{err}</p> : img ? <img src={img} alt="سند دفع" className="mx-auto max-h-[70dvh] w-auto rounded-xl border" /> : null}
+        {loading ? <Spinner /> : err ? <p className="py-8 text-center font-bold text-red-400">{err}</p> : img ? <img src={img} alt="سند دفع" className="mx-auto max-h-[70dvh] w-auto rounded-xl border border-white/10" /> : null}
         <p className="mt-3 text-center text-xs text-slate-400">صورة حساسة — تُعرض للمدير فقط عند الطلب ويُسجَّل عرضها في سجل التدقيق.</p>
       </Modal>
     </>
   );
 }
 
-export function StatCard({ label, value, sub, icon, tone = "text-slate-700 bg-slate-100" }: { label: string; value: ReactNode; sub?: string; icon: ReactNode; tone?: string }) {
+export function StatCard({ label, value, sub, icon, tone = "text-slate-200 bg-white/10" }: { label: string; value: ReactNode; sub?: string; icon: ReactNode; tone?: string }) {
   return (
-    <div className="card p-4">
+    <div className="card card-hover p-4 transition">
       <div className={`mb-3 inline-flex rounded-xl p-2.5 ${tone}`}>{icon}</div>
-      <div className="text-2xl font-black leading-none text-slate-900">{value}</div>
-      <div className="mt-1.5 text-[13px] font-bold text-slate-500">{label}</div>
+      <div className="text-2xl font-black leading-none text-white">{value}</div>
+      <div className="mt-1.5 text-[13px] font-bold text-slate-300">{label}</div>
       {sub && <div className="mt-0.5 text-xs text-slate-400">{sub}</div>}
     </div>
   );

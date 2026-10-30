@@ -1,308 +1,348 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import { Camera, CheckCircle2, Eye, History, KeyRound, Loader2, MessageCircle, Plus, RefreshCcw, Sparkles, UserCheck, Users, Wallet } from "lucide-react";
 import Link from "next/link";
-import {
-  Camera, CheckCircle2, ChevronLeft, ImagePlus, Landmark, Loader2, Lock,
-  Phone, Search, ShoppingCart, Sparkles, Trash2, User, Wallet, XCircle, RefreshCcw, Plus,
-  Crown, UserRound, ScanLine, ArrowLeft, Zap, Hand, Coins,
-} from "lucide-react";
-import { api, fileToDataUrl, fmtDate, daysLeft, waLink, fetchMe } from "@/lib/client";
-import { Badge, CopyBtn, PlatformLogo, Spinner, rentalBadge } from "@/components/ui";
-import { normalizeDeliveryMode } from "@/lib/delivery";
+import { api, compressImage, fmtDate, openWhatsapp, fetchMe, type Me } from "@/lib/client";
+import { Badge, CopyBtn, PlatformLogo, Spinner } from "@/components/ui";
 
-type Meta = any;
+const QUICK_DURATIONS = [30, 60, 90, 180, 365];
 
-export default function SaleForm() {
-  const [meta, setMeta] = useState<Meta>(null);
-  const [me, setMe] = useState<any>(null);
-  const [platformId, setPlatformId] = useState<number>(0);
-  const [phone, setPhone] = useState(""); const [name, setName] = useState("");
-  const [lookup, setLookup] = useState<any>(null); const [looking, setLooking] = useState(false);
-  const [duration, setDuration] = useState(0); const [amount, setAmount] = useState("");
-  const [accountType, setAccountType] = useState<"FULL" | "PROFILE">("PROFILE");
-  
-  // Payment Type: RECEIPT (Bank Transfer) or WALLET
-  const [paymentType, setPaymentType] = useState<"RECEIPT" | "WALLET">("RECEIPT");
-  const [bankId, setBankId] = useState<number>(0); const [ref, setRef] = useState("");
-  const [receipt, setReceipt] = useState(""); const [forceNew, setForceNew] = useState(false);
-  const [customerEmail, setCustomerEmail] = useState(""); const [customerExtra, setCustomerExtra] = useState("");
-  const [deliverySource, setDeliverySource] = useState<"AUTO" | "MANUAL">("AUTO");
-  const [manualEmail, setManualEmail] = useState(""); const [manualPassword, setManualPassword] = useState("");
-  const [manualLink, setManualLink] = useState(""); const [manualCode, setManualCode] = useState("");
-  const [manualNote, setManualNote] = useState("");
-  const [manualProfileName, setManualProfileName] = useState("");
-  const [manualPin, setManualPin] = useState("");
-  const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
+export default function SaleForm({ prefillPhone = "" }: { prefillPhone?: string }) {
+  const [meta, setMeta] = useState<any>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [platformId, setPlatformId] = useState<number | null>(null);
+  const [saleType, setSaleType] = useState<"FULL" | "PROFILE">("PROFILE");
+  const [phone, setPhone] = useState(prefillPhone);
+  const [name, setName] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [customerExtra, setCustomerExtra] = useState("");
+  const [lookup, setLookup] = useState<any>(null);
+  const [durationDays, setDurationDays] = useState(30);
+  const [durationInput, setDurationInput] = useState("30");
+
+  // الدفع
+  const [paymentType, setPaymentType] = useState<"BANK" | "WALLET">("BANK");
+  const [bankId, setBankId] = useState<number | null>(null);
+  const [txRef, setTxRef] = useState("");
+  const [amount, setAmount] = useState("");
+  const [receipt, setReceipt] = useState<{ dataUrl: string; name: string } | null>(null);
+
+  const [aiState, setAiState] = useState<"idle" | "reading" | "ok" | "fail">("idle");
+  const [aiNote, setAiNote] = useState("");
+  const [forceNew, setForceNew] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   const [result, setResult] = useState<any>(null);
-  const [scan, setScan] = useState<"idle" | "reading" | "ok" | "fail">("idle");
-  const [scanNote, setScanNote] = useState("");
+  const [instantCreds, setInstantCreds] = useState<any>(null);
+  const [credLoading, setCredLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    fetchMe().then((u) => setMe(u)).catch(() => {});
+    fetchMe().then((u) => {
+      setMe(u);
+      // إذا كان لدى الموظف رصيد في المحفظة، يمكنه الاختيار بسهولة
+    });
     api("/api/meta").then((m) => {
       setMeta(m);
-      const q = new URLSearchParams(window.location.search);
-      const qp = q.get("phone"); const qplat = Number(q.get("platformId") || 0);
-      if (qp) setPhone(qp);
-      if (qplat) setPlatformId(qplat);
-      else if (m.platforms?.[0]) setPlatformId(m.platforms[0].id);
-      if (m.paymentMethods?.[0]) setBankId(m.paymentMethods[0].id);
-    }).catch(() => {});
+      setBankId(m.paymentMethods[0]?.id ?? null);
+    });
   }, []);
 
-  useEffect(() => {
-    const onSync = async () => {
-      const [m, u] = await Promise.all([
-        api("/api/meta").catch(() => null),
-        fetchMe().catch(() => null)
-      ]);
-      if (m) setMeta(m);
-      if (u) setMe(u);
-    };
-    window.addEventListener("maestro-sync", onSync);
-    return () => window.removeEventListener("maestro-sync", onSync);
-  }, []);
+  useAutoRefresh(async () => {
+    const [m, u] = await Promise.all([
+      api("/api/meta").catch(() => null),
+      fetchMe().catch(() => null),
+    ]);
+    if (m) setMeta(m);
+    if (u) setMe(u);
+  }, 8000);
 
   useEffect(() => {
-    const clean = phone.replace(/\D/g, "");
-    if (clean.length < 7) { setLookup(null); return; }
-    setLooking(true);
-    const t = setTimeout(async () => {
-      try { const d = await api(`/api/sales?phone=${encodeURIComponent(clean)}`); setLookup(d); if (d.customer) setName(d.customer.name); }
-      catch {} finally { setLooking(false); }
-    }, 450);
-    return () => clearTimeout(t);
-  }, [phone]);
-
-  const renewable = useMemo(() => {
-    if (!lookup?.rentals || !platformId) return null;
-    return lookup.rentals.find((r: any) => r.platformId === platformId && r.status === "ACTIVE")
-      || lookup.rentals.find((r: any) => r.platformId === platformId && r.status === "ENDED") || null;
-  }, [lookup, platformId]);
-  const effectiveForceNew = deliverySource === "MANUAL" || forceNew || (!!renewable && !!renewable.accountType && renewable.accountType !== accountType);
-
-  useEffect(() => {
-    const hinted = meta?.priceByType?.[platformId]?.[accountType];
-    if (hinted) setAmount(String(hinted));
-  }, [platformId, accountType, meta]);
-
-  useEffect(() => {
-    if (!meta || !platformId) return;
-    const cur = meta.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
-    const otherType = accountType === "FULL" ? "PROFILE" : "FULL";
-    const other = meta.availabilityByType?.[platformId]?.[otherType]?.slots ?? 0;
-    if (cur === 0 && other > 0) setAccountType(otherType);
-  }, [meta, platformId, accountType]);
-
-  const plat = meta?.platforms?.find((p: any) => p.id === platformId) || null;
-  const deliveryMode = normalizeDeliveryMode(plat?.deliveryMode);
-  const isInstant = deliveryMode === "INSTANT_INVENTORY";
-  const isEmailMode = deliveryMode === "ON_DEMAND_EMAIL";
-  const isLinkMode = deliveryMode === "LINK_ONLY";
-  const isLifetime = !!plat?.isLifetime;
-  const emailRequired = isEmailMode || (isInstant && !!plat?.requiresCustomerEmail);
-
-  if (!meta) return <Spinner text="جارٍ تجهيز نقطة البيع…" />;
-
-  async function onFile(file: File | undefined) {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) { setErr("الملف يجب أن يكون صورة سند"); return; }
-    const dataUrl = await fileToDataUrl(file);
-    setReceipt(dataUrl);
-    setScan("reading"); setScanNote("جارٍ قراءة السند بالذكاء الاصطناعي…");
-    try {
-      const d = await api("/api/ai/receipt", {
-        method: "POST",
-        body: JSON.stringify({ image: dataUrl, banks: (meta?.paymentMethods || []).map((x: any) => ({ id: x.id, name: x.name })) }),
-      });
-      if (d.transactionRef) setRef(d.transactionRef);
-      if (d.amount) setAmount(String(d.amount));
-      if (d.bankId) setBankId(Number(d.bankId));
-      const parts = [d.bankName && `البنك: ${d.bankName}`, d.transactionRef && `رقم العملية: ${d.transactionRef}`, d.amount && `المبلغ: ${Number(d.amount).toLocaleString("ar-YE")} ر.ي`].filter(Boolean);
-      setScan("ok");
-      setScanNote(parts.length ? `تم استخراج: ${parts.join(" • ")} — راجع قبل التأكيد` : "قُرئت الصورة. أكمل الحقول يدوياً إن لزم.");
-    } catch (e: any) {
-      setScan("fail");
-      setScanNote(e.message || "تعذر قراءة السند — أكمل البيانات يدوياً");
+    if (prefillPhone) {
+      setPhone(prefillPhone);
+      return;
     }
+    if (typeof window !== "undefined") {
+      const qPhone = new URLSearchParams(window.location.search).get("phone");
+      if (qPhone) setPhone(qPhone);
+    }
+  }, [prefillPhone]);
+
+  useEffect(() => {
+    const clean = phone.replace(/\s/g, "");
+    if (!platformId || clean.length < 7) { setLookup(null); return; }
+    const t = setTimeout(async () => {
+      try {
+        const d = await api(`/api/sales?phone=${encodeURIComponent(clean)}&platformId=${platformId}`);
+        setLookup(d);
+        if (d.customer && !name) setName(d.customer.name);
+        setForceNew(false);
+      } catch {}
+    }, 320);
+    return () => clearTimeout(t);
+  }, [phone, platformId]);
+
+  const selectedPlat = meta?.platforms?.find((p: any) => p.id === platformId);
+  const rawMode = String(selectedPlat?.deliveryMode || "INSTANT_INVENTORY").toUpperCase();
+  const mode: "INSTANT_INVENTORY" | "ON_DEMAND_EMAIL" | "LINK_ONLY" =
+    rawMode === "LINK_ONLY" ? "LINK_ONLY" : rawMode === "ON_DEMAND_EMAIL" || rawMode === "ON_DEMAND" ? "ON_DEMAND_EMAIL" : "INSTANT_INVENTORY";
+  const isOnDemand = mode !== "INSTANT_INVENTORY";
+  const isLinkOnly = mode === "LINK_ONLY";
+  const isLifetimePlat = !!selectedPlat?.isLifetime;
+  const needsEmail = !isLinkOnly && (mode === "ON_DEMAND_EMAIL" || !!selectedPlat?.requiresCustomerEmail);
+  const extraLabel: string | null = isLinkOnly ? null : (selectedPlat?.extraFieldLabel || null);
+
+  function selectPlatform(p: any) {
+    setPlatformId(p.id);
+    const pMode = String(p.deliveryMode || "").toUpperCase();
+    if (pMode === "ON_DEMAND" || pMode === "ON_DEMAND_EMAIL" || pMode === "LINK_ONLY") {
+      setSaleType("FULL");
+      return;
+    }
+    const bt = meta.availabilityByType?.[p.id];
+    const nextType: "FULL" | "PROFILE" = (bt?.PROFILE?.slots ?? 0) > 0 ? "PROFILE" : "FULL";
+    setSaleType(nextType);
+    const suggested = meta.priceByType?.[p.id]?.[nextType];
+    if (suggested) setAmount(String(suggested));
+  }
+
+  function changeSaleType(next: "FULL" | "PROFILE") {
+    setSaleType(next);
+    if (platformId) {
+      const suggested = meta?.priceByType?.[platformId]?.[next];
+      if (suggested) setAmount(String(suggested));
+    }
+  }
+
+  async function onReceipt(file?: File) {
+    if (!file) return;
+    setErr(""); setAiState("reading"); setAiNote("الذكاء الاصطناعي يقرأ السند ويستخرج البيانات…");
+    try {
+      const dataUrl = await compressImage(file);
+      setReceipt({ dataUrl, name: file.name });
+      try {
+        const r = await api("/api/ai/receipt", { method: "POST", body: JSON.stringify({ image: dataUrl }) });
+        if (r?.available && r?.extracted) {
+          const ex = r.extracted;
+          const filled: string[] = [];
+          if (ex.transactionRef) { setTxRef(String(ex.transactionRef)); filled.push("رقم العملية"); }
+          if (ex.amount && ex.amount > 0) { setAmount(String(Math.round(ex.amount))); filled.push("المبلغ"); }
+          if (ex.matchedBankId) { setBankId(Number(ex.matchedBankId)); filled.push("البنك"); }
+          if (filled.length) {
+            setAiState("ok");
+            setAiNote(`✨ تم استخراج (${filled.join(" + ")}) تلقائياً${ex.bankName ? ` — ${ex.bankName}` : ""}. راجع الأرقام قبل التأكيد.`);
+          } else {
+            setAiState("fail");
+            setAiNote("لم يتضح نص السند تلقائياً — أدخل رقم العملية والمبلغ يدوياً.");
+          }
+        } else {
+          setAiState("idle"); setAiNote("");
+        }
+      } catch {
+        setAiState("fail"); setAiNote("تعذرت القراءة التلقائية — أدخل البيانات يدوياً.");
+      }
+    } catch (e: any) { setAiState("idle"); setAiNote(""); setErr(e.message); }
   }
 
   async function submit() {
     setErr("");
-    const numericAmount = Number(amount || 0);
-    if (!platformId) return setErr("اختر المنصة");
-    if (phone.replace(/\D/g, "").length < 7) return setErr("أدخل رقم واتساب العميل");
-    if (!lookup?.customer && !name.trim()) return setErr("أدخل اسم العميل الجديد");
+    if (!platformId) return setErr("اختر المنصة أولاً");
+    if (!name.trim() || !phone.trim()) return setErr("اسم العميل ورقم هاتفه مطلوبان");
+    if (!isLifetimePlat && (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650)) return setErr("أدخل عدد أيام صحيح (من 1 إلى 3650 يوماً)");
+    if (needsEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim())) return setErr("أدخل البريد الإلكتروني الصحيح للعميل لتفعيل الاشتراك عليه");
+    if (extraLabel && !customerExtra.trim()) return setErr(`أدخل (${extraLabel}) الخاص بالعميل`);
 
-    if (paymentType === "WALLET") {
-      const walletBal = Number(me?.walletBalance || 0);
-      if (numericAmount <= 0) return setErr("حدد مبلغ الطلب أولاً للخصم من المحفظة");
-      if (walletBal < numericAmount) return setErr(`رصيد محفظتك غير كافٍ (${walletBal.toLocaleString()} ر.ي) والمطلوب (${numericAmount.toLocaleString()} ر.ي)`);
-    } else {
-      if (!bankId || !ref.trim()) return setErr("اختر البنك وأدخل رقم العملية");
-      if (!receipt) return setErr("📸 إرفاق صورة السند إلزامي قبل سحب الاشتراك");
-    }
+    const numAmount = Number(amount || 0);
+    if (numAmount <= 0) return setErr("أدخل المبلغ المدفوع (يجب أن يكون أكبر من صفر)");
 
-    if (emailRequired && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
-    if (!isLifetime && (!duration || duration < 1)) return setErr("أدخل مدة الاشتراك بالأيام");
-    if (deliverySource === "MANUAL" && !manualEmail.trim() && !manualPassword && !manualLink.trim() && !manualCode.trim()) {
-      return setErr("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود على الأقل)");
-    }
-    if (deliverySource === "AUTO" && isInstant && (effectiveForceNew || !renewable)) {
-      const availableForType = meta?.availabilityByType?.[platformId]?.[accountType]?.slots ?? 0;
-      if (availableForType <= 0) return setErr(accountType === "PROFILE" ? "لا يوجد ملف / بروفايل متاح لهذه المنصة حالياً" : "لا يوجد حساب كامل متاح لهذه المنصة حالياً");
+    if (paymentType === "BANK") {
+      if (!bankId) return setErr("اختر وسيلة الدفع (البنك)");
+      if (!txRef.trim()) return setErr("رقم العملية مطلوب — راجعه من صورة السند");
+      if (!receipt) return setErr("صورة سند الدفع إلزامية عند الدفع عبر حوالة بنكية");
+    } else if (paymentType === "WALLET") {
+      if ((me?.walletBalance || 0) < numAmount) {
+        return setErr(`رصيد محفظتك غير كافٍ (${(me?.walletBalance || 0).toLocaleString("ar-YE")} ر.ي). اطلب من المدير شحن رصيدك أو استخدم حوالة بنكية.`);
+      }
     }
 
     setBusy(true);
     try {
-      const d = await api("/api/sales", {
+      const r = await api("/api/sales", {
         method: "POST",
         body: JSON.stringify({
-          platformId, durationDays: duration, customerName: name, customerPhone: phone,
+          platformId,
+          saleType,
+          customerName: name,
+          customerPhone: phone,
+          durationDays,
           paymentType,
-          paymentMethodId: paymentType === "WALLET" ? null : bankId, 
-          transactionRef: paymentType === "WALLET" ? `WALLET-${Date.now().toString().slice(-6)}` : ref.trim(), 
-          amount: numericAmount,
-          receiptImageData: paymentType === "WALLET" ? null : receipt, 
-          mode: effectiveForceNew ? "NEW" : "AUTO", 
-          accountType,
-          customerEmail: customerEmail.trim(), customerExtra: customerExtra.trim(),
-          deliverySource,
-          manualEmail: manualEmail.trim(), manualPassword, manualLink: manualLink.trim(),
-          manualCode: manualCode.trim(), manualNote: manualNote.trim(),
-          manualProfileName: accountType === "PROFILE" ? manualProfileName.trim() : null,
-          manualPin: accountType === "PROFILE" ? manualPin.trim() : null,
+          paymentMethodId: paymentType === "BANK" ? bankId : null,
+          transactionRef: paymentType === "BANK" ? txRef : `WALLET-${Date.now()}`,
+          amount: numAmount,
+          receiptImageData: paymentType === "BANK" ? receipt?.dataUrl : null,
+          forceNewAccount: forceNew,
+          customerEmail: customerEmail.trim() || undefined,
+          customerExtra: customerExtra.trim() || undefined,
         }),
       });
-      setResult(d); window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
-  }
-
-  function reset() {
-    setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); 
-    setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setDeliverySource("AUTO"); 
-    setManualEmail(""); setManualPassword(""); setManualLink(""); setManualCode(""); setManualNote(""); 
-    setManualProfileName(""); setManualPin("");
-    setAmount(""); setDuration(0); setErr(""); setScan("idle"); setScanNote(""); 
-  }
-
-  // ---------------- SUBMITTED VIEW ----------------
-  if (result) {
-    if (result.manual && result.delivered) {
-      const d = result.delivered;
-      const isFull = result.accountType === "FULL" || accountType === "FULL";
-      const rows = [
-        { l: "📧 الإيميل", v: d.email },
-        { l: "🔑 كلمة المرور", v: d.password },
-        (!isFull && d.profileName) ? { l: "👤 الملف / البروفايل", v: d.profileName } : null,
-        (!isFull && d.pin) ? { l: "🔒 رمز PIN", v: d.pin } : null,
-        { l: "🔗 الرابط", v: d.link },
-        { l: "🎟️ الكود", v: d.code },
-        { l: "📝 ملاحظة", v: d.note },
-      ].filter(Boolean) as { l: string; v: string }[];
-
-      return (
-        <div className="pop-in mx-auto max-w-2xl">
-          <div className="card-deep overflow-hidden">
-            <div className="relative px-7 py-10 text-center">
-              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[#26c281] to-[#0b6e4f] shadow-[0_16px_40px_rgba(38,194,129,.4)]">
-                <CheckCircle2 size={44} strokeWidth={2.2} className="text-white" />
-              </div>
-              <h2 className="mt-5 text-3xl font-black tracking-tight text-white">تم التسليم اليدوي بنجاح</h2>
-              <p className="mx-auto mt-2 max-w-md text-sm font-semibold leading-relaxed text-slate-300">{result.message}</p>
-            </div>
-            <div className="space-y-4 px-6 pb-7">
-              <div className="rounded-2xl border border-white/10 bg-white/[.04] p-4">
-                <div className="flex items-center justify-between gap-3 py-1.5">
-                  <span className="text-xs font-bold text-slate-400">العميل</span>
-                  <span className="text-sm font-extrabold text-white">{result.customer.name} • <span dir="ltr" className="font-mono">{result.customer.phone}</span></span>
-                </div>
-                <div className="my-2 h-px bg-white/10" />
-                <div className="flex items-center justify-between gap-3 py-1.5">
-                  <span className="text-xs font-bold text-slate-400">الطلب</span>
-                  <span className="text-sm font-extrabold text-white">{result.platformName} — {isFull ? "حساب كامل" : "بروفايل مستقل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {rows.map((row) => (
-                  <div key={row.l} className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
-                    <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">{row.l}</div><div dir="ltr" className="truncate text-left font-mono text-[15px] font-bold text-white">{row.v}</div></div>
-                    <CopyBtn text={row.v} />
-                  </div>
-                ))}
-              </div>
-              <a href={waLink(result.customer.phone, result.whatsappMessage)} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1fa855] px-5 py-3.5 font-extrabold text-white transition hover:bg-[#178a45]">
-                إرسال البيانات للعميل عبر واتساب
-              </a>
-              <div className="flex justify-center"><CopyBtn text={result.whatsappMessage} label="نسخ رسالة الواتساب كاملة" /></div>
-              <button onClick={reset} className="btn-primary w-full"><Plus size={18} /> عملية بيع جديدة</button>
-            </div>
-          </div>
-        </div>
-      );
+      setResult(r);
+      setInstantCreds(null);
+      if (paymentType === "WALLET") {
+        if (typeof r.walletBalanceAfter === "number") {
+          setMe((prev) => prev ? { ...prev, walletBalance: r.walletBalanceAfter } : prev);
+        } else {
+          fetchMe().then(setMe);
+        }
+        try { window.dispatchEvent(new Event("maestro-wallet-updated")); } catch {}
+      }
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
     }
+  }
+
+  async function revealSoldCredentials() {
+    if (!result?.rentalId) return;
+    setCredLoading(true);
+    setErr("");
+    try {
+      const d = await api(`/api/sales/credentials?rentalId=${result.rentalId}`);
+      setInstantCreds(d);
+    } catch (e: any) {
+      setErr(e.message || "تعذر جلب بيانات الحساب");
+    } finally {
+      setCredLoading(false);
+    }
+  }
+
+  function resetAll() {
+    setResult(null); setInstantCreds(null); setPhone(""); setName(""); setCustomerEmail(""); setCustomerExtra("");
+    setTxRef(""); setAmount(""); setReceipt(null); setLookup(null); setForceNew(false); setErr(""); setAiState("idle"); setAiNote("");
+  }
+
+  if (!meta) return <Spinner />;
+
+  // ---------- شاشة النتيجة بعد الإرسال ----------
+  if (result) {
+    const rMode = result.deliveryMode || "INSTANT_INVENTORY";
+    const onDemandRes = rMode !== "INSTANT_INVENTORY";
+    const linkOnlyRes = rMode === "LINK_ONLY";
+    const isWalletPaid = result.paymentType === "WALLET" || result.paymentStatus === "CONFIRMED";
 
     return (
-      <div className="pop-in mx-auto max-w-2xl">
-        <div className="card-deep hero-lock overflow-hidden">
-          <div className="relative px-7 py-10 text-center">
-            <div className="relative">
-              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-[#2f7bff] to-[#174ea6] shadow-[0_16px_40px_rgba(47,123,255,.4)]">
-                <CheckCircle2 size={44} strokeWidth={2.2} className="text-white" />
-              </div>
-            </div>
-            <h2 className="mt-5 text-3xl font-black tracking-tight text-white">
-              {paymentType === "WALLET" ? "تم تأكيد وسحب الطلب بنجاح" : "تم إرسال الطلب إلى المدير"}
+      <div className="pop-in mx-auto max-w-xl">
+        <div className="card overflow-hidden border-2 border-amber-400/50">
+          <div className={`${isWalletPaid && !onDemandRes ? "bg-emerald-600" : "bg-[#050914]"} p-6 text-center text-white`}>
+            <CheckCircle2 size={46} className={`mx-auto mb-2 ${isWalletPaid && !onDemandRes ? "text-white" : "text-amber-300"}`} />
+            <h2 className="text-xl font-black">
+              {isWalletPaid && !onDemandRes
+                ? "تم خصم الرصيد وتأكيد الاشتراك فوراً! ⚡"
+                : linkOnlyRes
+                  ? "تم رفع طلب الرابط للمدير"
+                  : onDemandRes
+                    ? "تم إرسال طلب التفعيل للمدير"
+                    : result.isRenewal
+                      ? "تم تسجيل التجديد بنجاح!"
+                      : "تم تسجيل الطلب وحجز الحساب!"}
             </h2>
-            <p className="mx-auto mt-2 max-w-md text-sm font-semibold leading-relaxed text-slate-300">{result.message}</p>
+            <p className="mt-1 text-xs text-white/85">
+              {result.platform}
+              {linkOnlyRes
+                ? " — سيرسل لك المدير رابط الاشتراك هنا فور تجهيزه"
+                : onDemandRes
+                  ? ` — سيتم التفعيل على ${result.customerEmail || "إيميل العميل"}`
+                  : ` — ${result.accountType === "FULL" ? "حساب كامل خاص" : `بروفايل رقم ${result.profileNo}`}`}
+            </p>
           </div>
+          <div className="space-y-3 p-6">
+            {err && <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-2.5 text-xs font-bold text-red-300">⚠️ {err}</div>}
 
-          <div className="space-y-4 px-6 pb-7">
-            <div className="rounded-2xl border border-white/10 bg-white/[.04] p-4">
-              <div className="flex items-center justify-between gap-3 py-1.5">
-                <span className="text-xs font-bold text-slate-400">العميل</span>
-                <span className="text-sm font-extrabold text-white">{result.customer.name} • <span dir="ltr" className="font-mono">{result.customer.phone}</span></span>
-              </div>
-              <div className="my-2 h-px bg-white/10" />
-              <div className="flex items-center justify-between gap-3 py-1.5">
-                <span className="text-xs font-bold text-slate-400">الطلب</span>
-                <span className="text-sm font-extrabold text-white">{result.platformName} — {result.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"} — {result.isLifetime ? "دائم ♾️" : `${result.durationDays} يوم`}</span>
-              </div>
-            </div>
-
-            <div className="relative rounded-2xl border border-white/15 bg-gradient-to-br from-white/[.06] to-white/[.02] p-6 text-center">
-              {paymentType === "WALLET" ? (
-                <>
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20 backdrop-blur">
-                    <CheckCircle2 size={28} className="text-emerald-400" />
+            {isWalletPaid ? (
+              <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-4 text-center">
+                <div className="text-sm font-black text-emerald-300">💳 تم الدفع والاعتماد عبر المحفظة بنجاح</div>
+                {typeof result.walletBalanceAfter === "number" && (
+                  <div className="mt-1 font-mono text-xs font-extrabold text-amber-300">
+                    الرصيد المتبقي في محفظتك: {Number(result.walletBalanceAfter).toLocaleString("ar-YE")} ر.ي
                   </div>
-                  <p className="mt-3 text-base font-black text-white">تم الخصم المباشر من رصيد المحفظة</p>
-                  <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    تم اعتماد العملية فوراً وسحب الاشتراك دون الحاجة لمراجعة السند البنكي. يمكنك مراجعة البيانات في <b className="text-white">«مبيعاتي»</b>.
-                  </p>
-                </>
+                )}
+                <p className="mt-1.5 text-xs font-semibold leading-relaxed text-emerald-200/80">
+                  {onDemandRes
+                    ? "تم تأكيد الدفع فوراً، وبانتظار المدير لإتمام التفعيل / إرسال الرابط."
+                    : "الاشتراك مفعل الآن فوراً دون الحاجة لانتظار مراجعة السند."}
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-center">
+                <div className="text-sm font-black text-amber-300">⏳ بانتظار موافقة المدير</div>
+                <p className="mt-1.5 text-xs font-semibold leading-relaxed text-slate-300">
+                  {linkOnlyRes
+                    ? "وصل إشعار فوري للمدير مع السند. بمجرد وضع رابط الاشتراك ستجده جاهزاً للنسخ في صفحة "
+                    : onDemandRes
+                      ? "وصل إشعار فوري للمدير مع إيميل العميل والسند. بمجرد تفعيل الاشتراك ستظهر لك البيانات في صفحة "
+                      : "تم حجز الحساب للعميل وإرسال السند للمدير. بعد الموافقة ستظهر لك بيانات الدخول في صفحة "}
+                  <b className="text-white">«مبيعاتي»</b>.
+                </p>
+              </div>
+            )}
+
+            {/* إظهار بيانات الحساب فوراً عند الشراء من المخزون بالمحفظة */}
+            {isWalletPaid && !onDemandRes && (
+              !instantCreds ? (
+                <button
+                  type="button"
+                  disabled={credLoading}
+                  onClick={revealSoldCredentials}
+                  className="btn-gold w-full py-3.5 text-sm"
+                >
+                  {credLoading ? <Loader2 size={18} className="animate-spin" /> : <KeyRound size={18} />}
+                  🔑 إظهار بيانات الحساب وإرسالها للعميل الآن
+                </button>
               ) : (
-                <>
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">
-                    <Lock size={28} className="text-[#5ba2ff]" />
+                <div className="pop-in space-y-2.5 rounded-2xl border-2 border-amber-400/40 bg-white/[.03] p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-amber-300">🔓 بيانات اشتراك العميل الجاهزة للتسليم</span>
+                    <Badge tone="green">مؤكد ✓</Badge>
                   </div>
-                  <p className="mt-3 text-base font-black text-white">بيانات الحساب مقفلة بانتظار السند</p>
-                  <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    لن تظهر البيانات قبل <b className="text-white">تأكيد المدير للسند</b>.
-                    بعد التأكيد افتح <b className="text-white">«مبيعاتي»</b> واضغط «عرض بيانات الحساب» لإرسالها للعميل.
-                  </p>
-                </>
-              )}
+                  {[
+                    instantCreds.email && { k: "📧 الإيميل", v: instantCreds.email, ltr: true },
+                    instantCreds.password && { k: "🔑 كلمة المرور", v: instantCreds.password, ltr: true },
+                    instantCreds.licenseKey && { k: "🎟️ الكود / المفتاح", v: instantCreds.licenseKey, ltr: true },
+                    instantCreds.link && { k: "🔗 رابط الدعوة / التفعيل", v: instantCreds.link, ltr: true },
+                    instantCreds.profileName && { k: "👤 البروفايل المخصص", v: instantCreds.profileName },
+                    instantCreds.pin && { k: "🔢 رمز PIN للبروفايل", v: instantCreds.pin, ltr: true },
+                    instantCreds.note && { k: "📝 ملاحظة", v: instantCreds.note },
+                  ].filter(Boolean).map((row: any) => (
+                    <div key={row.k} className="flex items-center gap-2 rounded-xl border border-white/10 bg-[#070b14] px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[10px] font-bold text-slate-400">{row.k}</div>
+                        <div dir={row.ltr ? "ltr" : "rtl"} className={`break-all font-mono text-xs font-bold text-white ${row.ltr ? "text-left" : ""}`}>{row.v}</div>
+                      </div>
+                      <CopyBtn text={String(row.v)} />
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <CopyBtn text={instantCreds.whatsappText} label="نسخ رسالة التسليم الكاملة" />
+                    <button
+                      type="button"
+                      onClick={() => openWhatsapp(instantCreds.customerPhone, instantCreds.whatsappText)}
+                      className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-extrabold text-white hover:bg-emerald-700"
+                    >
+                      <MessageCircle size={15} /> إرسال عبر واتساب للعميل
+                    </button>
+                  </div>
+                </div>
+              )
+            )}
+
+            <div className="rounded-xl bg-white/[.04] px-3.5 py-2.5 text-center text-xs font-bold text-slate-300">
+              {result.isLifetime ? "♾️ اشتراك دائم بدون تاريخ انتهاء" : <>المدة المطلوبة: <b className="text-white">{result.durationDays} يوم</b> {isWalletPaid && !onDemandRes ? `(حتى ${fmtDate(result.endDate)})` : "(تبدأ من لحظة التفعيل)"}</>}
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Link href="/my-sales" className="btn-gold flex-1">
-                متابعة حالة الطلب في مبيعاتي <ArrowLeft size={18} />
-              </Link>
-              <button onClick={reset} className="btn-primary flex-1">
-                <Plus size={18} /> عملية بيع جديدة
-              </button>
+            <div className="grid gap-2.5 pt-1 sm:grid-cols-2">
+              <Link href="/my-sales" className="btn-primary w-full"><History size={17} /> متابعة في «مبيعاتي»</Link>
+              <button onClick={resetAll} className="btn-ghost w-full"><Plus size={18} /> عملية بيع جديدة</button>
             </div>
           </div>
         </div>
@@ -310,399 +350,340 @@ export default function SaleForm() {
     );
   }
 
-  // ---------------- MAIN FORM ----------------
-  const slots = (pid: number) => meta.availability?.[pid]?.slots ?? 0;
+  // ---------- النموذج ----------
+  const bt = platformId ? meta.availabilityByType?.[platformId] : null;
+  const fullSlots = bt?.FULL?.slots ?? 0;
+  const profileSlots = bt?.PROFILE?.slots ?? 0;
+  const chosenSlots = isOnDemand ? 999 : (saleType === "FULL" ? fullSlots : profileSlots);
+  const walletSufficient = (me?.walletBalance || 0) >= Number(amount || 0) && Number(amount || 0) > 0;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 stagger">
-      {/* Step 1: platform */}
-      <section className="card card-hover overflow-hidden">
-        <div className="border-b border-white/10 bg-white/[.03] px-6 py-5">
-          <div className="section-head">
-            <span className="step-num">١</span>
-            <div>
-              <h3 className="section-title">اختر المنصة ونوع الحساب</h3>
-              <p className="section-sub">يظهر عدد الأماكن المتاحة — يتم حجب كلمة المرور حتى إتمام الدفع والتأكيد.</p>
-            </div>
-          </div>
+    <div className="mx-auto max-w-2xl space-y-5">
+      {err && <div className="rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm font-bold text-red-300">⚠️ {err}</div>}
+
+      {/* 1. المنصة */}
+      <section className="card p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-black text-white">١) اختر المنصة</h2>
+          <span className="text-xs font-semibold text-slate-400">تظهر الأعداد المتاحة فقط دون كشف الحسابات</span>
         </div>
-
-        <div className="space-y-6 p-6">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {meta.platforms.map((p: any) => {
-              const s = slots(p.id); const active = platformId === p.id;
-              const pm = normalizeDeliveryMode(p.deliveryMode);
-              return (
-                <button key={p.id} type="button" onClick={() => setPlatformId(p.id)}
-                  className={`choice ${active ? "choice-selected-blue" : ""} ${pm === "INSTANT_INVENTORY" && s === 0 ? "opacity-50" : ""}`}>
-                  <div className="flex items-start justify-between gap-2">
-                    <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={64} />
-                    {active && <CheckCircle2 size={18} className="text-white" />}
-                  </div>
-                  <div className="mt-3 text-[13px] font-extrabold leading-tight">{p.name}</div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {pm === "LINK_ONLY"
-                      ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-blue"}`}>🔗 تسليم برابط</span>
-                      : pm === "ON_DEMAND_EMAIL"
-                        ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-amber"}`}>📧 تفعيل على الإيميل</span>
-                        : s > 0
-                          ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {s} مكان</span>
-                          : <span className={`pill ${active ? "bg-white/15 text-white/70" : "pill-red"}`}>غير متاح حالياً</span>}
-                    {p.isLifetime && <span className="pill pill-gold">♾️ دائم</span>}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-
-          {isInstant && <div className="divider" />}
-
-          {isInstant && (
-          <div>
-            <h4 className="flex items-center gap-2 text-sm font-black text-white">
-              <Sparkles size={16} className="text-[#1e5eff]" />
-              اختر نوع الاشتراك
-            </h4>
-            <p className="mt-1 text-xs font-semibold text-slate-400">حدد هل الاشتراك حساب كامل بدون PIN أو ملف بروفايل مشترك بـ PIN.</p>
-
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {([
-                { type: "FULL", icon: <Crown size={22} />, title: "حساب كامل", desc: "إيميل + باسورد بدون رمز PIN للعميل الواحد" },
-                { type: "PROFILE", icon: <UserRound size={22} />, title: "ملف / بروفايل", desc: "ملف مخصص مع PIN مستقل داخل حساب مشترك" },
-              ] as const).map((opt) => {
-                const count = meta.availabilityByType?.[platformId]?.[opt.type]?.slots ?? 0;
-                const active = accountType === opt.type;
-                return (
-                  <button key={opt.type} type="button" disabled={count <= 0} onClick={() => setAccountType(opt.type)}
-                    className={`choice ${active ? "choice-selected" : ""}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${active ? "bg-white/15 text-white" : "bg-[#2f7bff]/15 text-[#63a8ff]"}`}>
-                          {opt.icon}
-                        </div>
-                        <div>
-                          <div className="text-[15px] font-black">{opt.title}</div>
-                          <p className={`mt-1 max-w-[220px] text-[12px] font-semibold leading-relaxed ${active ? "text-slate-300" : "text-slate-400"}`}>{opt.desc}</p>
-                        </div>
-                      </div>
-                      <div className="shrink-0">
-                        {count > 0
-                          ? <span className={`pill ${active ? "bg-[#5ba2ff] text-white" : "pill-green"}`}>متاح: {count}</span>
-                          : <span className="pill pill-red">غير متاح</span>}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          )}
-
-          <div className="divider" />
-
-          <div>
-            <h4 className="flex items-center gap-2 text-sm font-black text-white">
-              <Zap size={16} className="text-[#f5d67b]" />
-              طريقة الصرف
-            </h4>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button type="button" onClick={() => setDeliverySource("AUTO")}
-                className={`choice ${deliverySource === "AUTO" ? "choice-selected-blue" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${deliverySource === "AUTO" ? "bg-white/15 text-white" : "bg-[#2f7bff]/15 text-[#63a8ff]"}`}>
-                    <Zap size={22} />
-                  </div>
-                  <div>
-                    <div className="text-[15px] font-black">صرف تلقائي من المخزون</div>
-                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold text-slate-400">يسحب النظام الحساب المتاح تلقائياً.</p>
-                  </div>
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+          {meta.platforms.map((p: any) => {
+            const pMode = String(p.deliveryMode || "").toUpperCase();
+            const pLink = pMode === "LINK_ONLY";
+            const pOnDemand = pLink || pMode === "ON_DEMAND" || pMode === "ON_DEMAND_EMAIL";
+            const t = meta.availabilityByType?.[p.id];
+            const total = (t?.FULL?.slots ?? 0) + (t?.PROFILE?.slots ?? 0);
+            const active = platformId === p.id;
+            const outOfStock = !pOnDemand && total === 0 && !lookup?.renewable;
+            return (
+              <button key={p.id} type="button" disabled={outOfStock}
+                onClick={() => selectPlatform(p)}
+                className={`flex flex-col items-start gap-2 rounded-2xl border-2 p-3.5 text-right transition ${active ? "border-amber-400 bg-amber-400/10 shadow-sm" : "border-white/10 bg-white/[.03] hover:border-white/25"} disabled:opacity-40`}>
+                <div className="flex w-full items-center justify-between">
+                  <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={44} />
+                  {pLink ? <Badge tone="blue">🔗 رابط</Badge>
+                    : pOnDemand ? <Badge tone="gold">⚡ تفعيل فوري</Badge>
+                    : <Badge tone={total > 0 ? "green" : "red"}>{total > 0 ? `${total} متاح` : "نافد"}</Badge>}
                 </div>
-              </button>
-              <button type="button" onClick={() => setDeliverySource("MANUAL")}
-                className={`choice ${deliverySource === "MANUAL" ? "choice-selected" : ""}`}>
-                <div className="flex items-center gap-3">
-                  <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${deliverySource === "MANUAL" ? "bg-white/15 text-white" : "bg-[#c99327]/15 text-[#f5d67b]"}`}>
-                    <Hand size={22} />
-                  </div>
-                  <div>
-                    <div className="text-[15px] font-black">تسليم يدوي فوري</div>
-                    <p className="mt-1 max-w-[240px] text-[12px] font-semibold text-slate-400">تدخل بيانات الحساب بنفسك للعميل.</p>
-                  </div>
-                </div>
-              </button>
-            </div>
-
-            {deliverySource === "MANUAL" && (
-              <div className="pop-in mt-3 grid gap-3 rounded-2xl border border-amber-300/30 bg-amber-400/5 p-4 sm:grid-cols-2">
-                <div className="sm:col-span-2 text-[12px] font-bold text-amber-200">أدخل بيانات التسليم اليدوي:</div>
-                <div><label className="label">📧 الإيميل</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualEmail} onChange={(e) => setManualEmail(e.target.value)} /></div>
-                <div><label className="label">🔑 كلمة المرور</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualPassword} onChange={(e) => setManualPassword(e.target.value)} /></div>
-                
-                {accountType === "PROFILE" && (
-                  <>
-                    <div><label className="label">👤 اسم البروفايل</label><input className="field" placeholder="بروفايل 1" value={manualProfileName} onChange={(e) => setManualProfileName(e.target.value)} /></div>
-                    <div><label className="label">🔒 رمز PIN الخاص بالبروفايل</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="1234" value={manualPin} onChange={(e) => setManualPin(e.target.value)} /></div>
-                  </>
-                )}
-
-                <div><label className="label">🔗 الرابط (إن وجد)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="https://..." value={manualLink} onChange={(e) => setManualLink(e.target.value)} /></div>
-                <div><label className="label">🎟️ الكود (إن وجد)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} value={manualCode} onChange={(e) => setManualCode(e.target.value)} /></div>
-                <div className="sm:col-span-2"><label className="label">📝 ملاحظة (اختياري)</label><input className="field" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Step 2: customer */}
-      <section className="card card-hover overflow-hidden">
-        <div className="border-b border-white/10 bg-white/[.03] px-6 py-5">
-          <div className="section-head">
-            <span className="step-num">٢</span>
-            <div>
-              <h3 className="section-title">بيانات المشترك</h3>
-              <p className="section-sub">رقم واتساب العميل للتحقق من الاشتراكات السابقة والتجديد.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-4 p-6">
-          <div>
-            <label className="label">📱 رقم واتساب العميل</label>
-            <input className="field" dir="ltr" style={{ textAlign: "left" }} inputMode="tel" placeholder="777123456" value={phone} onChange={(e) => setPhone(e.target.value)} />
-            {looking && <p className="mt-2 text-xs font-bold text-[#63a8ff]">جارٍ البحث عن الرقم…</p>}
-          </div>
-
-          {lookup?.customer ? (
-            <div className="pop-in overflow-hidden rounded-2xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 to-transparent">
-              <div className="flex flex-wrap items-center gap-2 border-b border-emerald-500/25 px-5 py-3">
-                <span className="pill pill-green">عميل معروف ✓</span>
-                <span className="text-[15px] font-black text-white">{lookup.customer.name}</span>
-              </div>
-              <div className="space-y-3 px-5 py-4">
-                {lookup.rentals.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-extrabold text-slate-400">اشتراكاته السابقة</p>
-                    {lookup.rentals.slice(0, 4).map((r: any) => (
-                      <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-white/[.04] px-3.5 py-2.5 text-xs font-bold">
-                        <span className="font-black text-white">{r.platformName}</span>
-                        {r.accountType && <span className={`pill ${r.accountType === "FULL" ? "pill-amber" : "pill-blue"}`}>{r.accountType === "FULL" ? "حساب كامل" : "ملف / بروفايل"}</span>}
-                        {rentalBadge(r.status)}
-                        <span className="text-slate-400">حتى {fmtDate(r.endDate)}{r.status === "ACTIVE" && ` (بقي ${daysLeft(r.endDate)} يوم)`}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : phone.replace(/\D/g, "").length >= 7 && !looking ? (
-            <div className="pop-in rounded-2xl border border-white/10 bg-gradient-to-br from-white/[.04] to-transparent px-5 py-4">
-              <div className="mt-2">
-                <label className="label">👤 اسم العميل</label>
-                <div className="relative">
-                  <User size={18} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500" />
-                  <input className="field pr-11" placeholder="مثال: محمد عبدالله" value={name} onChange={(e) => setName(e.target.value)} />
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {(emailRequired || (plat?.extraFieldLabel && !isLinkMode)) && (
-            <div className="pop-in space-y-3 rounded-2xl border border-[#5ba2ff]/30 bg-gradient-to-br from-[#2c6dff]/10 to-transparent px-5 py-4">
-              {emailRequired && (
-                <div>
-                  <label className="label">📧 إيميل العميل (للتفعيل) <span className="text-[#ff5769]">إلزامي</span></label>
-                  <input className="field" dir="ltr" style={{ textAlign: "left" }} type="email" placeholder="customer@gmail.com" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
-                </div>
-              )}
-              {plat?.extraFieldLabel && !isLinkMode && (
-                <div>
-                  <label className="label">{plat.extraFieldLabel}</label>
-                  <input className="field" placeholder={plat.extraFieldLabel} value={customerExtra} onChange={(e) => setCustomerExtra(e.target.value)} />
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Step 3: duration */}
-      <section className="card card-hover overflow-hidden">
-        <div className="border-b border-white/10 bg-white/[.03] px-6 py-5">
-          <div className="section-head">
-            <span className="step-num">٣</span>
-            <div>
-              <h3 className="section-title">المدة والمبلغ</h3>
-              <p className="section-sub">حدد مدة الاشتراك بالأيام وسعر العملية بالريال اليمني.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid gap-4 p-6 sm:grid-cols-2">
-          <div>
-            <label className="label">⏳ مدة الاشتراك (أيام)</label>
-            {isLifetime ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم</div>
-            ) : (
-              <input className="field" inputMode="numeric" min={1} placeholder="مثال: 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-            )}
-          </div>
-          <div>
-            <label className="label">💵 السعر (ريال يمني)</label>
-            <input className="field" inputMode="numeric" placeholder="المبلغ" value={amount} onChange={(e) => setAmount(e.target.value.replace(/\D/g, ""))} />
-          </div>
-        </div>
-      </section>
-
-      {/* Step 4: Payment Method (Receipt vs Wallet) */}
-      <section className="card card-hover overflow-hidden border-[#2f7bff]/25">
-        <div className="border-b border-[#2f7bff]/30 bg-[#2f7bff]/10 px-6 py-5">
-          <div className="section-head">
-            <span className="step-num step-num-dark">٤</span>
-            <div>
-              <h3 className="section-title">طريقة الدفع والتأكيد</h3>
-              <p className="section-sub">اختر الخصم المباشر من المحفظة أو إرفاق سند بنكي للمدير.</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-5 p-6">
-          {/* تبديل طريقة الدفع */}
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => setPaymentType("RECEIPT")}
-              className={`choice ${paymentType === "RECEIPT" ? "choice-selected-blue" : ""}`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Camera size={20} className={paymentType === "RECEIPT" ? "text-white" : "text-[#5ba2ff]"} />
-                <div className="text-right">
-                  <div className="text-[13px] font-black">سند بنكي / تحويل</div>
-                  <div className="text-[11px] text-slate-400">إرفاق صورة السند ورقم الحوالة</div>
-                </div>
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setPaymentType("WALLET")}
-              className={`choice ${paymentType === "WALLET" ? "choice-selected" : ""}`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Wallet size={20} className={paymentType === "WALLET" ? "text-white" : "text-amber-400"} />
-                <div className="text-right">
-                  <div className="text-[13px] font-black">خصم من المحفظة</div>
-                  <div className="text-[11px] text-amber-300 font-mono">
-                    المتاح: {Number(me?.walletBalance || 0).toLocaleString()} ر.ي
-                  </div>
-                </div>
-              </div>
-            </button>
-          </div>
-
-          {paymentType === "WALLET" ? (
-            <div className="pop-in rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-black text-amber-300">الدفع عبر رصيد المحفظة المسبق</div>
-                  <div className="text-xs text-slate-300 mt-0.5">سيتم خصم {Number(amount || 0).toLocaleString()} ر.ي فوراً واعتماد الحساب تلقائياً.</div>
-                </div>
-                <Coins size={28} className="text-amber-400" />
-              </div>
-            </div>
-          ) : (
-            <>
-              <div>
-                <label className="label"><Landmark size={14} className="ml-1 inline text-[#1e5eff]" /> البنك / وسيلة الدفع</label>
-                <div className="flex flex-wrap gap-2">
-                  {meta.paymentMethods.map((b: any) => {
-                    const active = bankId === b.id;
-                    return (
-                      <button key={b.id} type="button" onClick={() => setBankId(b.id)}
-                        className={`rounded-xl border-2 px-4 py-2.5 text-[13px] font-extrabold transition active:scale-[.98] ${
-                          active ? "border-[#63a8ff] bg-[#2f7bff] text-white shadow-lg shadow-[#2f7bff]/30" : "border-white/10 bg-white/[.04] text-slate-300 hover:border-[#63a8ff]/50 hover:text-white"
-                        }`}>{b.name}</button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="label"><Wallet size={14} className="ml-1 inline text-[#1e5eff]" /> رقم الحوالة / العملية</label>
-                  <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="مثال: KRM-884120" value={ref} onChange={(e) => setRef(e.target.value)} />
-                </div>
-
-                <div>
-                  <label className="label">📸 صورة السند (كاميرا أو ألبوم)</label>
-                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
-                  {receipt ? (
-                    <div className="group relative overflow-hidden rounded-xl border-2 border-[#26c281]">
-                      <img src={receipt} alt="السند" className="h-[110px] w-full object-cover" />
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pb-2 pt-8">
-                        <span className="inline-flex items-center gap-1 rounded-full bg-[#26c281] px-2.5 py-1 text-[11px] font-black text-white">
-                          {scan === "reading" ? "جارٍ القراءة…" : "تم إرفاق السند ✓"}
-                        </span>
-                      </div>
-                      <button type="button" onClick={() => { setReceipt(""); setScan("idle"); setScanNote(""); }}
-                        className="absolute left-2 top-2 rounded-full bg-red-500 p-1.5 text-white shadow-lg transition hover:scale-110">
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  ) : (
-                    <button type="button" onClick={() => fileRef.current?.click()}
-                      className="flex h-[110px] w-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-[#b9c8e2] bg-gradient-to-b from-white/[.03] to-[#2f7bff]/10 text-[#174ea6] transition hover:border-[#1e5eff] hover:from-[#2f7bff]/15 active:scale-[.99]">
-                      <div className="flex items-center gap-1.5">
-                        <Camera size={20} />
-                        <ImagePlus size={16} className="opacity-60" />
-                      </div>
-                      <div className="text-[12px] font-extrabold">تصوير / رفع صورة السند</div>
-                    </button>
+                <div className="text-sm font-extrabold text-white">{p.name}</div>
+                <div className="text-[11px] font-semibold text-slate-400">
+                  {pLink ? "المدير يرسل رابط الاشتراك فقط"
+                    : pOnDemand ? "تفعيل على إيميل العميل" : (
+                    <>
+                      {(t?.PROFILE?.slots ?? 0) > 0 && `بروفايل (${t.PROFILE.slots})`}
+                      {(t?.PROFILE?.slots ?? 0) > 0 && (t?.FULL?.slots ?? 0) > 0 && " • "}
+                      {(t?.FULL?.slots ?? 0) > 0 && `كامل (${t.FULL.slots})`}
+                      {total === 0 && "لا يوجد مخزون"}
+                    </>
                   )}
                 </div>
-              </div>
-
-              {scan !== "idle" && (
-                <div className={`pop-in rounded-xl border px-4 py-3 text-xs font-bold ${
-                  scan === "reading" ? "border-[#b9d7ff] bg-[#eaf3ff] text-[#174ea6]"
-                  : scan === "ok" ? "border-[#bfe7d0] bg-[#e6f8ee] text-[#0f7a4e]"
-                  : "border-[#ffe1b0] bg-[#fff2dc] text-[#a76400]"
-                }`}>
-                  <div className="flex items-start gap-2">
-                    {scan === "reading" && <Loader2 size={14} className="mt-0.5 animate-spin" />}
-                    {scan === "ok" && <CheckCircle2 size={14} className="mt-0.5" />}
-                    {scan === "fail" && <XCircle size={14} className="mt-0.5" />}
-                    <span>{scanNote}</span>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+              </button>
+            );
+          })}
         </div>
+
+        {/* اختيار نوع البيع: بروفايل أو حساب كامل */}
+        {platformId && !isOnDemand && (
+          <div className="mt-4 border-t border-dashed border-white/10 pt-4">
+            <label className="label">نوع الاشتراك المباع للعميل</label>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <button type="button" disabled={profileSlots === 0 && !lookup?.renewable}
+                onClick={() => changeSaleType("PROFILE")}
+                className={`flex items-center gap-3 rounded-2xl border-2 p-3.5 text-right transition ${saleType === "PROFILE" ? "border-[#63a8ff] bg-[#2f7bff]/15 text-white" : "border-white/10 bg-white/[.03] hover:border-white/25"} disabled:opacity-40`}>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/10 text-[#63a8ff]"><Users size={20} /></span>
+                <div className="flex-1">
+                  <div className="text-sm font-black text-white">بروفايل واحد مشترك</div>
+                  <div className="text-[11px] font-semibold text-slate-400">ملف داخل حساب يسع عدة عملاء • متاح: {profileSlots}</div>
+                </div>
+              </button>
+              <button type="button" disabled={fullSlots === 0 && !lookup?.renewable}
+                onClick={() => changeSaleType("FULL")}
+                className={`flex items-center gap-3 rounded-2xl border-2 p-3.5 text-right transition ${saleType === "FULL" ? "border-[#63a8ff] bg-[#2f7bff]/15 text-white" : "border-white/10 bg-white/[.03] hover:border-white/25"} disabled:opacity-40`}>
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/10 text-amber-300"><UserCheck size={20} /></span>
+                <div className="flex-1">
+                  <div className="text-sm font-black text-white">حساب كامل خاص</div>
+                  <div className="text-[11px] font-semibold text-slate-400">الحساب كله لعميل واحد فقط • متاح: {fullSlots}</div>
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {platformId && isLinkOnly && (
+          <div className="mt-4 rounded-2xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-xs font-bold text-sky-200">
+            🔗 هذه المنصة تعمل بنظام <b>إرسال رابط فقط</b>: أدخل اسم العميل ورقمه والسند فقط — وسيضع المدير رابط التفعيل ليظهر لك في «مبيعاتي» وتنسخه للعميل.
+          </div>
+        )}
+        {platformId && mode === "ON_DEMAND_EMAIL" && (
+          <div className="mt-4 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-xs font-bold text-amber-300">
+            ⚡ هذه المنصة تعمل بنظام <b>التفعيل عند الطلب</b>: أدخل بريد العميل بالأسفل، وسيصله التفعيل بعد مراجعة المدير للطلب.
+          </div>
+        )}
       </section>
 
-      {/* Error display */}
-      {err && (
-        <div className="pop-in flex items-start gap-3 rounded-2xl border border-red-500/30 bg-red-500/10 px-5 py-4">
-          <XCircle size={20} className="mt-0.5 shrink-0 text-[#c11231]" />
+      {/* 2. العميل */}
+      <section className="card p-5">
+        <h2 className="mb-3 font-black text-white">٢) بيانات العميل</h2>
+        <div className="grid gap-3.5 sm:grid-cols-2">
           <div>
-            <div className="text-[13px] font-black text-[#c11231]">تعذر إتمام الطلب</div>
-            <div className="mt-1 text-[12.5px] font-semibold leading-relaxed text-red-200">{err}</div>
+            <label className="label">رقم الهاتف (مع رمز الدولة، بدون +)</label>
+            <input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="967771234567" value={phone} onChange={(e) => setPhone(e.target.value)} />
           </div>
+          <div>
+            <label className="label">اسم العميل</label>
+            <input className="field" placeholder="الاسم الثلاثي" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          {needsEmail && (
+            <div className="sm:col-span-2">
+              <label className="label">📧 البريد الإلكتروني للعميل <span className="text-red-400">(إلزامي لهذه المنصة)</span></label>
+              <input type="email" className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="customer@gmail.com" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} />
+            </div>
+          )}
+          {extraLabel && (
+            <div className="sm:col-span-2">
+              <label className="label">🔖 {extraLabel} <span className="text-red-400">(إلزامي)</span></label>
+              <input className="field" placeholder={`أدخل ${extraLabel}`} value={customerExtra} onChange={(e) => setCustomerExtra(e.target.value)} />
+            </div>
+          )}
         </div>
-      )}
+        {lookup?.renewable && !isOnDemand && (
+          <div className="mt-3.5 rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-3.5 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-black text-emerald-300">
+                <RefreshCcw size={17} /> عميل عائد — لديه اشتراك حالي على هذه المنصة
+              </div>
+              <button
+                type="button"
+                onClick={() => setForceNew((v) => !v)}
+                className={`rounded-xl border px-3 py-1 text-xs font-extrabold transition ${
+                  forceNew
+                    ? "border-amber-400/40 bg-amber-400/15 text-amber-300"
+                    : "border-white/15 bg-white/10 text-slate-200 hover:bg-white/15"
+                }`}
+              >
+                {forceNew ? "✨ سيتم صرف حساب جديد (اضغط للعودة للتجديد)" : "بيع حساب جديد بدلاً من التجديد؟"}
+              </button>
+            </div>
+            <p className="mt-1 text-xs font-semibold text-emerald-200/80">
+              {forceNew
+                ? "اخترت صرف حساب جديد مستقل للعميل بدلاً من تمديد اشتراكه السابق."
+                : `تاريخ الانتهاء الحالي: ${fmtDate(lookup.renewable.endDate)} — سيتم تمديد نفس الحساب دون تغيير بياناته!`}
+            </p>
+          </div>
+        )}
+      </section>
 
-      {/* Submit button */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-l from-[#0a1224] via-[#050914] to-[#0b1226] p-2">
-        <button onClick={submit} disabled={busy}
-          className="relative flex w-full items-center justify-center gap-3 rounded-[14px] bg-gradient-to-l from-[#63a8ff] to-[#2f7bff] px-6 py-5 text-lg font-black text-white shadow-[0_8px_28px_rgba(255,255,255,.15)] transition hover:bg-[#f2f6ff] active:scale-[.99] disabled:opacity-60">
-          {busy ? <Loader2 size={22} className="animate-spin text-[#1e5eff]" /> : <ShoppingCart size={22} className="text-[#1e5eff]" />}
-          <span>
-            {paymentType === "WALLET" ? "خصم من المحفظة وتأكيد الطلب فوراً" : (renewable && !effectiveForceNew ? "إرسال طلب التجديد والسند للمدير" : "إرسال الطلب والسند للمدير")}
-          </span>
-          <ChevronLeft size={22} className="text-[#1e5eff]" />
-        </button>
-      </div>
+      {/* 3. المدة */}
+      <section className="card p-5">
+        <h2 className="mb-3 font-black text-white">٣) مدة الاشتراك</h2>
+        {isLifetimePlat ? (
+          <div className="rounded-2xl border-2 border-amber-400/50 bg-amber-400/10 px-4 py-3.5 text-sm font-black text-amber-300">
+            ♾️ اشتراك دائم مدى الحياة — لا ينتهي ولا يحتاج تجديداً.
+          </div>
+        ) : (
+          <div>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {QUICK_DURATIONS.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => { setDurationDays(d); setDurationInput(String(d)); }}
+                  className={`rounded-xl border px-3.5 py-2 text-xs font-black transition ${
+                    durationDays === d
+                      ? "border-amber-400 bg-amber-400/15 text-amber-200 shadow-sm"
+                      : "border-white/10 bg-white/[.03] text-slate-300 hover:border-white/25"
+                  }`}
+                >
+                  {d === 30 ? "شهر (30 يوم)" : d === 60 ? "شهران (60)" : d === 90 ? "3 أشهر (90)" : d === 180 ? "6 أشهر (180)" : "سنة (365)"}
+                </button>
+              ))}
+            </div>
+            <label className="label">أو أدخل عدد أيام مخصص</label>
+            <div className="relative">
+              <input
+                type="text"
+                inputMode="numeric"
+                dir="ltr"
+                style={{ textAlign: "right" }}
+                className="field pl-16 text-lg font-black"
+                placeholder="مثال: 30"
+                value={durationInput}
+                onChange={(e) => {
+                  const clean = e.target.value.replace(/[^\d]/g, "");
+                  setDurationInput(clean);
+                  setDurationDays(clean ? Math.min(3650, parseInt(clean, 10)) : 0);
+                }}
+              />
+              <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xs font-extrabold text-slate-400">يوم</span>
+            </div>
+            <p className="mt-2 text-xs font-semibold text-slate-400">
+              {paymentType === "WALLET" && !isOnDemand
+                ? "⚡ مع الدفع من المحفظة يبدأ احتساب المدة فوراً من هذه اللحظة."
+                : "تبدأ المدة فعلياً من لحظة موافقة المدير / التفعيل."}
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* 4. الدفع والسند */}
+      <section className="card p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="font-black text-white">٤) الدفع والسند</h2>
+          <Badge tone={paymentType === "WALLET" ? "green" : "amber"}>
+            {paymentType === "WALLET" ? "اعتماد فوري من المحفظة" : "مراجعة سند بنكي"}
+          </Badge>
+        </div>
+
+        {/* التبديل بين الحوالة والمحفظة */}
+        <div className="mb-4 grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={() => setPaymentType("BANK")}
+            className={`flex flex-col items-center justify-center gap-1.5 rounded-2xl border-2 p-3 transition ${
+              paymentType === "BANK" ? "border-amber-400 bg-amber-400/10 text-white" : "border-white/10 bg-white/[.02] text-slate-400 hover:border-white/20"
+            }`}
+          >
+            <Camera size={20} className={paymentType === "BANK" ? "text-amber-300" : ""} />
+            <span className="text-xs font-black">حوالة بنكية (سند)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setPaymentType("WALLET")}
+            className={`flex flex-col items-center justify-center gap-1 rounded-2xl border-2 p-3 transition ${
+              paymentType === "WALLET" ? "border-emerald-400 bg-emerald-400/10 text-white" : "border-white/10 bg-white/[.02] text-slate-400 hover:border-white/20"
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              <Wallet size={20} className={paymentType === "WALLET" ? "text-emerald-300" : ""} />
+              <span className="text-xs font-black">خصم من المحفظة</span>
+            </div>
+            <span className="font-mono text-[10px] font-extrabold text-amber-300">
+              رصيدك: {Number(me?.walletBalance || 0).toLocaleString("ar-YE")} ر.ي
+            </span>
+          </button>
+        </div>
+
+        {/* حقل المبلغ */}
+        <div className="mb-4">
+          <label className="label">المبلغ المطلوب (ر.ي) <span className="text-red-400">*</span></label>
+          <input
+            className="field text-lg font-black text-amber-300"
+            inputMode="numeric"
+            placeholder="0"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ""))}
+          />
+        </div>
+
+        {paymentType === "WALLET" ? (
+          <div className={`rounded-2xl border p-4 text-center ${
+            !amount || Number(amount) <= 0
+              ? "border-white/10 bg-white/[.03]"
+              : walletSufficient
+                ? "border-emerald-400/30 bg-emerald-500/10"
+                : "border-red-400/30 bg-red-500/10"
+          }`}>
+            <p className={`text-xs font-bold leading-relaxed ${
+              !amount || Number(amount) <= 0
+                ? "text-slate-300"
+                : walletSufficient
+                  ? "text-emerald-200"
+                  : "text-red-300"
+            }`}>
+              {!amount || Number(amount) <= 0 ? (
+                <>أدخل سعر البيع أعلاه ليتم خصمه من رصيد محفظتك ({Number(me?.walletBalance || 0).toLocaleString("ar-YE")} ر.ي).</>
+              ) : walletSufficient ? (
+                <>
+                  ⚡ سيتم خصم <b className="text-white">{Number(amount).toLocaleString("ar-YE")} ر.ي</b> من محفظتك واعتماد الاشتراك فوراً.
+                  <span className="mt-1 block font-mono text-[11px] text-amber-300">
+                    سيصبح رصيدك بعد العملية: {(Number(me?.walletBalance || 0) - Number(amount)).toLocaleString("ar-YE")} ر.ي
+                  </span>
+                </>
+              ) : (
+                <>
+                  ⚠️ رصيد محفظتك الحالي ({Number(me?.walletBalance || 0).toLocaleString("ar-YE")} ر.ي) أقل من المبلغ المطلوب ({Number(amount).toLocaleString("ar-YE")} ر.ي). اطلب من المدير شحن محفظتك أو اختر الدفع عبر حوالة بنكية.
+                </>
+              )}
+            </p>
+          </div>
+        ) : (
+          <>
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => onReceipt(e.target.files?.[0])} />
+            <button type="button" onClick={() => fileRef.current?.click()}
+              className={`mb-3.5 flex w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed p-5 transition ${receipt ? "border-emerald-500 bg-emerald-500/10" : "border-white/15 bg-white/[.03] hover:border-amber-400"}`}>
+              {receipt ? (
+                <>
+                  <img src={receipt.dataUrl} alt="معاينة السند" className="max-h-40 rounded-xl border border-white/10" />
+                  <span className="text-xs font-extrabold text-emerald-300">✓ تم إرفاق السند ({receipt.name}) — اضغط للتغيير</span>
+                </>
+              ) : (
+                <>
+                  <Camera size={28} className="text-amber-300" />
+                  <span className="text-sm font-extrabold text-white">صوّر أو اختر صورة سند التحويل أولاً</span>
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-300"><Sparkles size={13} /> يقرأ الذكاء الاصطناعي رقم العملية والبنك تلقائياً</span>
+                </>
+              )}
+            </button>
+
+            {aiState !== "idle" && (
+              <div className={`mb-3.5 flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold ${
+                aiState === "reading" ? "bg-amber-400/10 text-amber-200" : aiState === "ok" ? "bg-emerald-500/10 text-emerald-300" : "bg-white/5 text-slate-300"}`}>
+                {aiState === "reading" ? <Loader2 size={15} className="shrink-0 animate-spin" /> : <Sparkles size={15} className="shrink-0" />}
+                <span>{aiNote}</span>
+              </div>
+            )}
+
+            <div className="grid gap-3.5 sm:grid-cols-2">
+              <div>
+                <label className="label">البنك / وسيلة الدفع</label>
+                <select className="field" value={bankId ?? ""} onChange={(e) => setBankId(Number(e.target.value))}>
+                  {meta.paymentMethods.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">رقم العملية (مراجعة/تعديل)</label>
+                <input className="field font-mono" dir="ltr" style={{ textAlign: "left" }} placeholder="TXN-998877" value={txRef} onChange={(e) => setTxRef(e.target.value)} />
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+
+      <button
+        type="button"
+        disabled={busy || (!platformId) || (chosenSlots === 0 && !lookup?.renewable) || (paymentType === "WALLET" && !walletSufficient)}
+        onClick={submit}
+        className="btn-gold w-full py-4 text-base shadow-lg"
+      >
+        {busy ? "جارٍ التنفيذ…" : paymentType === "WALLET"
+          ? "⚡ خصم من المحفظة واعتماد فوراً"
+          : isLinkOnly ? "🔗 رفع طلب الرابط للمدير"
+          : isOnDemand ? "⚡ إرسال طلب التفعيل للمدير"
+          : (lookup?.renewable && !forceNew) ? "↻ تأكيد التجديد على نفس الحساب"
+          : `✓ تأكيد البيع (${saleType === "FULL" ? "حساب كامل" : "بروفايل"})`}
+      </button>
     </div>
   );
 }

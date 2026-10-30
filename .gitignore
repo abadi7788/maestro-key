@@ -1,0 +1,28 @@
+# Dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# Next.js build output
+/.next/
+/out/
+/build
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Backups & Capacitor generated platforms
+/backups/
+/android/
+/ios/
+
+# Debug & OS files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+*.pem
+*.tsbuildinfo
+next-env.d.ts

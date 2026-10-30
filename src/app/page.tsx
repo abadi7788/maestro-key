@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/auth";
 import { homeForRole } from "@/lib/roles";
 import { ensureSeeded } from "@/lib/seed";
 
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   await ensureSeeded();
   const user = await getCurrentUser();

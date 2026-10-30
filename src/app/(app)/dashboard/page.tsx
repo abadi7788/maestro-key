@@ -1,153 +1,288 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import {
-  AlarmClock, ArrowLeft, BellRing, Boxes, CheckCircle2, KeyRound, Play, ReceiptText,
-  RefreshCcw, ShieldAlert, ShoppingCart, TrendingUp, Users, Wallet,
+  AlertTriangle, ArrowLeft, BellRing, Boxes, CheckCircle2, Clock, DollarSign, KeyRound,
+  PackageOpen, RefreshCw, ShoppingCart, TrendingUp, Users, Wallet, Zap,
 } from "lucide-react";
-import { api, fetchMe, fmtDate, money, daysLeft, type Me } from "@/lib/client";
-import { isAdminRole, isEmployeeRole } from "@/lib/roles";
-import { Badge, PlatformLogo, Spinner, StatCard, rentalBadge, paymentBadge } from "@/components/ui";
+import { api, fetchMe, money, fmtDate, type Me } from "@/lib/client";
+import { isAdminRole } from "@/lib/roles";
+import { Spinner, StatCard, Badge, rentalBadge } from "@/components/ui";
 
 export default function DashboardPage() {
   const [me, setMe] = useState<Me | null>(null);
-  const [data, setData] = useState<any>(null); const [meta, setMeta] = useState<any>(null);
-  const [rentals, setRentals] = useState<any[]>([]); const [due, setDue] = useState<any[]>([]);
-  const [jobMsg, setJobMsg] = useState(""); const [busy, setBusy] = useState(false);
+  const [data, setData] = useState<any>(null);
+  const [empData, setEmpData] = useState<{ renewals: any[]; mine: any[] } | null>(null);
+  const [running, setRunning] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
 
-  async function load(user: Me) {
-    const m = await api("/api/meta").catch(() => null); setMeta(m);
-    if (isAdminRole(user.role)) {
-      const [d, r] = await Promise.all([api("/api/admin-data?view=dashboard"), api("/api/rentals?view=all")]);
-      setData(d); setRentals(r.rentals);
-    } else {
-      const [d2, mine] = await Promise.all([api("/api/rentals?view=due"), api("/api/rentals?view=mine")]);
-      setDue(d2.rentals); setRentals(mine.rentals);
+  const load = useCallback(async () => {
+    setErr("");
+    try {
+      const user = await fetchMe();
+      if (!user) return;
+      setMe(user);
+      if (isAdminRole(user.role)) {
+        setData(await api("/api/admin-data?view=dashboard"));
+      } else {
+        const [ren, mine] = await Promise.all([
+          api("/api/rentals?view=renewals").catch(() => ({ rentals: [] })),
+          api("/api/rentals?view=mine").catch(() => ({ rentals: [] })),
+        ]);
+        setEmpData({ renewals: ren.rentals || [], mine: mine.rentals || [] });
+      }
+    } catch (e: any) {
+      setErr(e?.message || "تعذر تحميل بيانات لوحة التحكم — تحقق من الاتصال وأعد المحاولة");
     }
-  }
-  useEffect(() => { fetchMe().then((u) => { setMe(u); if (u) load(u); }); }, []);
-  // مزامنة تلقائية مع الطرف الآخر كل 8 ثوانٍ
-  useAutoRefresh(() => { if (me) return load(me); }, 8000);
+  }, []);
 
-  async function runJob() {
-    setBusy(true);
-    try { const d = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "runDailyJob" }) }); setJobMsg(`تم: انتهى ${d.endedCount} اشتراك، وأُرسل/جُهّز ${d.alertsSent} تنبيه واتساب قبل الانتهاء بيومين.`); if (me) load(me); }
-    catch (e: any) { setJobMsg(e.message); } finally { setBusy(false); }
+  useEffect(() => { load(); }, [load]);
+  useAutoRefresh(load, 8000);
+
+  async function runNow() {
+    setRunning(true); setMsg("");
+    try {
+      const r = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "runDailyJob" }) });
+      setMsg(`✓ تم فحص الاشتراكات: أُنهي ${r.endedCount} اشتراك، وجُهزت ${r.alertsSent} رسالة تنبيه انتهاء.`);
+      await load();
+    } catch (e: any) { setMsg("⚠️ " + e.message); }
+    finally { setRunning(false); }
   }
 
-  if (!me || !meta) return <Spinner />;
-  const s = data?.stats;
+  if (err && !me) {
+    return (
+      <div className="card space-y-3 p-6 text-center">
+        <p className="font-extrabold text-red-300">⚠️ {err}</p>
+        <button onClick={load} className="btn-primary mx-auto"><RefreshCw size={16} /> إعادة المحاولة</button>
+      </div>
+    );
+  }
+
+  if (!me) return <Spinner />;
+
+  // ==================== واجهة الموظف ====================
+  if (!isAdminRole(me.role)) {
+    if (!empData) return <Spinner />;
+    const todayMine = empData.mine.filter((r) => new Date(r.createdAt).toDateString() === new Date().toDateString()).length;
+    return (
+      <div className="space-y-6">
+        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0f172a] via-[#13203d] to-[#0b1325] p-6 text-white shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="text-xs font-bold text-amber-300">مرحباً {me.displayName} 👋</div>
+              <h1 className="mt-1 text-2xl font-black tracking-tight">بوابة المبيعات والتجديدات</h1>
+              <p className="mt-1 text-sm text-slate-300">سجّل مبيعاتك فوراً عبر المحفظة أو السند البنكي وتابع اشتراكات عملائك.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-2.5 text-right">
+                <div className="text-[11px] font-bold text-amber-200">رصيد محفظتك المتاح</div>
+                <div className="font-mono text-lg font-black text-white">{money(me.walletBalance || 0)}</div>
+              </div>
+              <Link href="/sale" className="btn-gold shadow-lg shadow-amber-500/20">
+                <ShoppingCart size={17} /> بيع / تجديد جديد
+              </Link>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-4">
+          <StatCard label="رصيد المحفظة" value={money(me.walletBalance || 0)} sub="للشراء والاعتماد الفوري" icon={<Wallet size={20} />} tone="text-amber-300 bg-amber-400/15" />
+          <StatCard label="عملياتي اليوم" value={todayMine} sub={`الإجمالي: ${empData.mine.length}`} icon={<TrendingUp size={20} />} tone="text-emerald-300 bg-emerald-500/15" />
+          <StatCard label="تجديدات مستحقة" value={empData.renewals.length} sub="تنتهي خلال يومين أو منتهية" icon={<Clock size={20} />} tone="text-sky-300 bg-sky-500/15" />
+          <StatCard label="عمليات نشطة" value={empData.mine.filter((r) => r.status === "ACTIVE").length} sub="اشتراكات سارية" icon={<CheckCircle2 size={20} />} tone="text-purple-300 bg-purple-500/15" />
+        </div>
+
+        <div className="card p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-black text-white">أحدث عملياتي</h2>
+            <Link href="/my-sales" className="text-xs font-extrabold text-[#63a8ff] hover:underline">عرض الكل ←</Link>
+          </div>
+          {empData.mine.length === 0 ? (
+            <p className="py-6 text-center text-sm font-semibold text-slate-400">لا توجد عمليات مسجلة بعد — ابدأ من زر «بيع / تجديد جديد».</p>
+          ) : (
+            <div className="space-y-2">
+              {empData.mine.slice(0, 6).map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-white/[.03] px-3.5 py-2.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-white">{r.customerName}</span>
+                    <span className="text-slate-400">• {r.platformName}</span>
+                    {rentalBadge(r.status)}
+                  </div>
+                  <span className="font-semibold text-slate-400">{r.isLifetime ? "♾️ دائم" : `حتى ${fmtDate(r.endDate)}`}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== واجهة المدير ====================
+  if (!data) return <Spinner />;
+  const s = data.stats;
+  const lowStock: Array<{ id: number; name: string; slots: number; threshold: number }> = data.lowStockPlatforms || [];
+  const urgent = s.endedRentals + s.pendingPayments + s.needsPasswordChange + (s.pendingActivations || 0);
 
   return (
     <div className="space-y-6">
-      {/* Hero */}
-      <div className="overflow-hidden rounded-3xl bg-[#0e1526] p-6 text-white sm:p-7">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      {/* Hero Header */}
+      <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0f172a] via-[#13203d] to-[#0b1325] p-6 text-white shadow-xl sm:p-8">
+        <div className="pointer-events-none absolute -left-20 -top-20 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-20 -right-20 h-64 w-64 rounded-full bg-blue-500/10 blur-3xl" />
+
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 text-[#174ea6]"><KeyRound size={20} /><span className="text-sm font-extrabold">متجر مايسترو كي</span></div>
-            <h1 className="mt-2 text-2xl font-black sm:text-3xl">أهلاً {me.displayName} 👋</h1>
-            <p className="mt-1 max-w-xl text-sm font-semibold leading-relaxed text-slate-600">
-              {isAdminRole(me.role) ? "عندك كل الصلاحيات: المخزون، مراجعة السندات، إجراءات الانتهاء، المحذوفات، وسجل التدقيق." : "واجهتك للبيع والتجديد فقط. اربط كل عملية بسند — وسيظهر لك الحساب المسحوب فوراً لإرساله للعميل."}
-            </p>
+            <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-bold text-amber-300">
+              <Zap size={13} /> متجر مايسترو كي — لوحة القيادة الذكية
+            </div>
+            <h1 className="mt-2.5 text-2xl font-black tracking-tight sm:text-3xl">نظرة شاملة ومباشرة</h1>
+            <p className="mt-1 text-sm text-slate-400">إدارة الاشتراكات، المخزون، السندات، ومحافظ الموظفين في مكان واحد.</p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Link href="/sale" className="btn-gold shadow-lg"><ShoppingCart size={19} /> بيع / تجديد جديد</Link>
-            {isAdminRole(me.role) && <button onClick={runJob} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-white10 px-4 py-3 text-sm font-extrabold text-white transition hover:bg-white20"><Play size={17} /> تشغيل المهمة اليومية الآن</button>}
-          </div>
-        </div>
-        {jobMsg && <div className="mt-4 rounded-xl bg-emerald-500/100/15 px-4 py-3 text-sm font-bold text-emerald-200">✓ {jobMsg}</div>}
-        {/* availability strip */}
-        <div className="no-scrollbar mt-6 flex gap-2.5 overflow-x-auto pb-1">
-          {meta.platforms.map((p: any) => {
-            const slots = meta.availability?.[p.id]?.slots ?? 0;
-            return (
-              <div key={p.id} className="flex shrink-0 items-center gap-2.5 rounded-2xl bg-white5 px-3.5 py-2.5">
-                <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={36} />
-                <div><div className="text-xs font-extrabold leading-none">{p.name}</div><div className={`mt-1 text-[11px] font-bold ${slots ? "text-emerald-300" : "text-red-300"}`}>{slots ? `${slots} مكان متاح` : "لا يوجد متاح"}</div></div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {isAdminRole(me.role) && s && (
-        <>
-          {(s.endedRentals > 0 || s.pendingPayments > 0 || s.needsPasswordChange > 0) && (
-            <Link href="/inbox" className="flex items-center gap-3 rounded-3xl border-2 border-red-200 bg-red-500/10 p-4.5 px-5 py-4 transition hover:bg-red-100">
-              <span className="rounded-2xl bg-red-600 p-3 text-white"><BellRing size={22} /></span>
-              <div className="flex-1">
-                <div className="font-black text-red-300">عندك إجراءات بانتظارك</div>
-                <div className="text-sm font-semibold text-red-300">{s.endedRentals} اشتراك انتهى • {s.pendingPayments} سند للمراجعة • {s.needsPasswordChange} حساب يحتاج تغيير كلمة مرور</div>
-              </div>
-              <ArrowLeft className="text-red-500" />
+          <div className="flex flex-wrap gap-2.5">
+            <button onClick={runNow} disabled={running} className="inline-flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 px-4 py-2.5 text-xs font-bold text-white backdrop-blur transition hover:bg-white/20 disabled:opacity-50">
+              <RefreshCw size={15} className={running ? "animate-spin" : ""} /> فحص التواريخ الآن
+            </button>
+            <Link href="/settings?tab=wallets" className="btn-ghost text-xs">
+              <Wallet size={15} /> محافظ الموظفين
             </Link>
-          )}
-          <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
-            <StatCard label="اشتراكات نشطة" value={s.activeRentals} sub={`${s.endingIn2Days} تنتهي خلال يومين`} icon={<CheckCircle2 size={20} />} tone="bg-emerald-100 text-emerald-300" />
-            <StatCard label="حسابات في المخزون" value={s.accountsTotal} sub={`${s.accountsAvailable} متاح • ${s.accountsRented} مؤجَّر بالكامل`} icon={<Boxes size={20} />} tone="bg-sky-100 text-[#174ea6]" />
-            <StatCard label="إيرادات مؤكدة" value={money(s.revenueConfirmed)} sub={`${money(s.revenuePending)} بانتظار التأكيد`} icon={<Wallet size={20} />} tone="bg-[#eaf3ff] text-[#2563eb]" />
-            <StatCard label="العملاء" value={s.customers} sub={`مبيعات اليوم: ${s.todaySales}`} icon={<Users size={20} />} tone="bg-violet-100 text-violet-700" />
-            <StatCard label="اشتراكات انتهت" value={s.endedRentals} sub="تحتاج إزالة بروفايل أو تغيير كلمة مرور" icon={<AlarmClock size={20} />} tone="bg-red-100 text-red-300" />
-            <StatCard label="سندات للمراجعة" value={s.pendingPayments} sub="راجع واعتمد أو ارفض" icon={<ReceiptText size={20} />} tone="bg-amber-100 text-amber-700" />
-            <StatCard label="حسابات توشك صلاحيتها" value={s.accountsExpiringSoon} sub="صلاحية الحساب نفسه تنتهي خلال 30 يوم" icon={<ShieldAlert size={20} />} tone="bg-orange-100 text-orange-700" />
-            <StatCard label="بانتظار تغيير كلمة مرور" value={s.needsPasswordChange} sub="لن تُباع قبل تغيير كلمتها يدوياً" icon={<KeyRound size={20} />} tone="bg-slate-200 text-slate-200" />
+            <Link href="/sale" className="btn-gold shadow-lg shadow-amber-500/20">
+              <ShoppingCart size={17} /> عملية بيع جديدة
+            </Link>
           </div>
-        </>
-      )}
+        </div>
 
-      {isEmployeeRole(me.role) && (
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="flex items-center gap-2 text-lg font-black"><RefreshCcw size={20} className="text-[#2563eb]" /> تجديدات مستحقة ({due.length})</h2>
-            <Link href="/renewals" className="text-sm font-extrabold text-[#2563eb]">عرض الكل ←</Link>
+        {/* Today's Quick Strip */}
+        <div className="relative mt-6 grid grid-cols-2 gap-3 border-t border-white/10 pt-5 sm:grid-cols-4">
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400">مبيعات اليوم</div>
+            <div className="mt-0.5 text-xl font-black text-white">{s.todaySales} <span className="text-xs font-normal text-slate-400">عملية</span></div>
           </div>
-          {due.length === 0 ? <div className="card p-5 text-center font-bold text-slate-500">لا توجد تجديدات مستحقة الآن 🎉</div> : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              {due.slice(0, 4).map((r: any) => <DueCard key={r.id} r={r} />)}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* Recent rentals */}
-      <section>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-lg font-black"><TrendingUp size={20} className="text-[#2563eb]" /> {isAdminRole(me.role) ? "أحدث العمليات" : "أحدث عملياتي"}</h2>
-          <Link href={isAdminRole(me.role) ? "/rentals" : "/my-sales"} className="text-sm font-extrabold text-[#2563eb]">عرض الكل ←</Link>
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400">الإيراد المؤكد</div>
+            <div className="mt-0.5 text-xl font-black text-emerald-400">{money(s.revenueConfirmed)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400">سندات قيد المراجعة</div>
+            <div className="mt-0.5 text-xl font-black text-amber-300">{money(s.revenuePending)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400">أرصدة محافظ الموظفين</div>
+            <div className="mt-0.5 text-xl font-black text-sky-300">{money(s.walletTotalBalance || 0)}</div>
+          </div>
         </div>
-        <div className="space-y-2.5">
-          {rentals.slice(0, 6).map((r: any) => (
-            <div key={r.id} className="card flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5">
-              <PlatformLogo src={r.platformImage} name={r.platformName} color={r.platformColor} size={42} />
-              <div className="min-w-[140px] flex-1">
-                <div className="font-extrabold leading-tight">{r.customerName}</div>
-                <div className="text-xs font-semibold text-slate-500">{r.platformName} • {r.isLifetime ? "اشتراك دائم ♾️" : <>حتى {fmtDate(r.endDate)}</>} {isAdminRole(me.role) && `• باع: ${r.sellerName}`}</div>
-              </div>
-              {rentalBadge(r.status)}
-              {r.payments?.[0] && paymentBadge(r.payments[0].status)}
-            </div>
-          ))}
-          {rentals.length === 0 && <div className="card p-6 text-center font-bold text-slate-500">لا توجد عمليات بعد — ابدأ أول عملية بيع.</div>}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-export function DueCard({ r }: { r: any }) {
-  const left = daysLeft(r.endDate);
-  return (
-    <div className="card p-4">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="font-extrabold">{r.customerName}</div>
-          <div className="text-xs font-semibold text-slate-500">{r.platformName} • <span dir="ltr">{r.customerPhone}</span></div>
-        </div>
-        {r.status === "ENDED" ? <Badge tone="red">انتهى {fmtDate(r.endDate)}</Badge> : left <= 0 ? <Badge tone="red">ينتهي اليوم</Badge> : <Badge tone="amber">بقي {left} يوم</Badge>}
       </div>
-      <div className="mt-2 flex items-center gap-2">{rentalBadge(r.status)}{r.whatsappAlertSent && <Badge tone="blue">أُرسل تنبيه واتساب ✓</Badge>}</div>
-      <Link href={`/sale?phone=${encodeURIComponent(r.customerPhone)}&platformId=${r.platformId}`} className="btn-primary mt-3.5 w-full py-2.5 text-sm"><RefreshCcw size={16} /> تسجيل تجديد — اربط السند وفعّل</Link>
+
+      {msg && (
+        <div className={`rounded-2xl px-4 py-3 text-sm font-bold ${msg.startsWith("⚠️") ? "border border-red-400/30 bg-red-500/10 text-red-300" : "border border-emerald-400/30 bg-emerald-500/10 text-emerald-300"}`}>
+          {msg}
+        </div>
+      )}
+
+      {/* Action Alert Banner */}
+      {urgent > 0 ? (
+        <Link href="/inbox" className="group block overflow-hidden rounded-2xl border border-red-400/35 bg-gradient-to-l from-red-500/15 via-[#141022] to-[#0d1526] p-5 shadow-sm transition hover:border-red-400/60 hover:shadow-md">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white shadow-md shadow-red-600/25">
+                <BellRing size={22} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-black text-white">لديك {urgent} إجراء يحتاج تدخلك</span>
+                  <Badge tone="red">عاجل</Badge>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold text-slate-300">
+                  {s.pendingActivations > 0 && <span>⚡ طلبات تفعيل/رابط: <b className="text-amber-300">{s.pendingActivations}</b></span>}
+                  {s.pendingPayments > 0 && <span>• سندات للمراجعة: <b className="text-amber-300">{s.pendingPayments}</b></span>}
+                  {s.endedRentals > 0 && <span>• اشتراكات انتهت: <b className="text-red-300">{s.endedRentals}</b></span>}
+                  {s.needsPasswordChange > 0 && <span>• تغيير كلمة مرور: <b className="text-red-300">{s.needsPasswordChange}</b></span>}
+                </div>
+              </div>
+            </div>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-xl bg-red-600 px-3.5 py-2 text-xs font-extrabold text-white transition group-hover:bg-red-700">
+              افتح التنبيهات <ArrowLeft size={14} />
+            </span>
+          </div>
+        </Link>
+      ) : (
+        <div className="flex items-center gap-3 rounded-2xl border border-emerald-400/25 bg-emerald-500/10 px-5 py-4 text-emerald-300">
+          <CheckCircle2 size={22} className="shrink-0 text-emerald-400" />
+          <div className="text-sm font-bold">كل شيء منظّم — لا توجد سندات معلقة أو حسابات تنتظر تغيير كلمة المرور حالياً.</div>
+        </div>
+      )}
+
+      {/* Low Stock Warning */}
+      {lowStock.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4">
+          <div className="flex items-start gap-3">
+            <PackageOpen size={22} className="mt-0.5 shrink-0 text-amber-300" />
+            <div>
+              <div className="text-sm font-black text-amber-200">تنبيه المخزون الفوري</div>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {lowStock.map((p) => (
+                  <Badge key={p.id} tone={p.slots === 0 ? "red" : "amber"}>
+                    {p.name}: {p.slots === 0 ? "نافد (0)" : `متبقي ${p.slots}`}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          </div>
+          <Link href="/accounts" className="btn-gold px-3.5 py-2 text-xs">تغذية المخزون ←</Link>
+        </div>
+      )}
+
+      {/* KPI Grid */}
+      <div>
+        <h2 className="mb-3 text-sm font-black text-slate-300">مؤشرات الأداء والمخزون</h2>
+        <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
+          <StatCard label="اشتراكات نشطة" value={s.activeRentals} sub={`مبيعات اليوم: ${s.todaySales}`} icon={<TrendingUp size={20} />} tone="text-emerald-300 bg-emerald-500/15" />
+          <StatCard label="تنتهي خلال يومين" value={s.endingIn2Days} sub="تحتاج تذكير واتساب" icon={<Clock size={20} />} tone="text-amber-300 bg-amber-500/15" />
+          <StatCard label="حسابات متاحة للبيع" value={s.accountsAvailable} sub={`من أصل ${s.accountsTotal} في المخزون`} icon={<Boxes size={20} />} tone="text-sky-300 bg-sky-500/15" />
+          <StatCard label="بانتظار تغيير كلمة المرور" value={s.needsPasswordChange} sub="محجوبة تلقائياً عن البيع" icon={<KeyRound size={20} />} tone="text-red-300 bg-red-500/15" />
+          <StatCard label="الإيراد المؤكد" value={money(s.revenueConfirmed)} sub={`معلّق للمراجعة: ${money(s.revenuePending)}`} icon={<DollarSign size={20} />} tone="text-emerald-300 bg-emerald-500/15" />
+          <StatCard label="أرصدة المحافظ" value={money(s.walletTotalBalance || 0)} sub="محافظ الموظفين والموزعين" icon={<Wallet size={20} />} tone="text-amber-300 bg-amber-400/15" />
+          <StatCard label="سندات تنتظر المراجعة" value={s.pendingPayments} sub="اضغط التنبيهات للاعتماد" icon={<AlertTriangle size={20} />} tone="text-amber-300 bg-amber-500/15" />
+          <StatCard label="حسابات قاربت الانتهاء" value={s.accountsExpiringSoon} sub={`العملاء المسجلون: ${s.customers}`} icon={<Users size={20} />} tone="text-purple-300 bg-purple-500/15" />
+        </div>
+      </div>
+
+      {/* Quick Shortcuts */}
+      <div>
+        <h2 className="mb-3 text-sm font-black text-slate-300">وصول سريع</h2>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Link href="/accounts" className="card card-hover flex items-center gap-3 p-4 transition">
+            <span className="rounded-xl bg-sky-500/15 p-2.5 text-sky-300"><Boxes size={18} /></span>
+            <div>
+              <div className="text-sm font-extrabold text-white">المخزون</div>
+              <div className="text-[11px] text-slate-400">إضافة وتعديل الحسابات</div>
+            </div>
+          </Link>
+          <Link href="/settings?tab=wallets" className="card card-hover flex items-center gap-3 p-4 transition">
+            <span className="rounded-xl bg-amber-400/15 p-2.5 text-amber-300"><Wallet size={18} /></span>
+            <div>
+              <div className="text-sm font-extrabold text-white">شحن المحافظ</div>
+              <div className="text-[11px] text-slate-400">أرصدة الموظفين والموزعين</div>
+            </div>
+          </Link>
+          <Link href="/renewals" className="card card-hover flex items-center gap-3 p-4 transition">
+            <span className="rounded-xl bg-emerald-500/15 p-2.5 text-emerald-300"><Clock size={18} /></span>
+            <div>
+              <div className="text-sm font-extrabold text-white">التجديدات</div>
+              <div className="text-[11px] text-slate-400">متابعة المنتهية قريباً</div>
+            </div>
+          </Link>
+          <Link href="/customers" className="card card-hover flex items-center gap-3 p-4 transition">
+            <span className="rounded-xl bg-purple-500/15 p-2.5 text-purple-300"><Users size={18} /></span>
+            <div>
+              <div className="text-sm font-extrabold text-white">العملاء</div>
+              <div className="text-[11px] text-slate-400">قاعدة البيانات والسجل</div>
+            </div>
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }

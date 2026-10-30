@@ -66,3 +66,7 @@ export function playNotifySound(): void {
 export function unlockNotifySound(): void {
   getCtx();
 }
+
+/** اسم بديل متوافق مع شاشة الإعدادات */
+export const playAlertSound = playNotifySound;
+

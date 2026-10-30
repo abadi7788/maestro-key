@@ -1,9 +1,10 @@
 import { db } from "@/db";
-import { platforms, paymentMethods, users, settings, customers, rentals, payments, auditLogs, pushSubscriptions, alerts, accounts } from "@/db/schema";
+import { platforms, paymentMethods, users, settings, customers, rentals, payments, auditLogs, pushSubscriptions, alerts, accounts, profiles, walletTransactions, walletBalances } from "@/db/schema";
 import { and, eq, ne } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAdmin, audit, jsonError } from "@/lib/auth";
 import { normalizeRole, isAdminRole } from "@/lib/roles";
+import { sanitizePermissionsInput } from "@/lib/permissions";
 import { encryptText } from "@/lib/crypto";
 import { ensureSeeded } from "@/lib/seed";
 import { notifyAdmin } from "@/lib/notify";
@@ -32,11 +33,14 @@ export async function POST(req: Request) {
         shortName: String(b.shortName || name.slice(0, 1) || "▶").slice(0, 4),
         isActive: b.isActive !== false,
         deliveryMode,
-        // نمط الإيميل يفرض طلب الإيميل دائماً — نمط الرابط لا يطلبه أبداً
         requiresCustomerEmail: deliveryMode === "LINK_ONLY" ? false : (deliveryMode === "ON_DEMAND_EMAIL" ? true : b.requiresCustomerEmail === true),
         extraFieldLabel: typeof b.extraFieldLabel === "string" ? b.extraFieldLabel.trim() || null : undefined,
         isLifetime: b.isLifetime === true,
       };
+      if (b.lowStockThreshold !== undefined) {
+        const th = Number(b.lowStockThreshold);
+        if (Number.isFinite(th) && th >= 0) patch.lowStockThreshold = Math.floor(th);
+      }
       if (imageUrl !== undefined) patch.imageUrl = imageUrl || null;
       if (b.id) await db.update(platforms).set(patch).where(eq(platforms.id, Number(b.id)));
       else {
@@ -59,10 +63,19 @@ export async function POST(req: Request) {
       if (!username || password.length < 6) return jsonError("اسم مستخدم وكلمة مرور (6 أحرف على الأقل) مطلوبة");
       const exists = await db.select({ id: users.id }).from(users).where(eq(users.username, username)).limit(1);
       if (exists.length) return jsonError("اسم المستخدم موجود مسبقاً", 409);
-      await db.insert(users).values({ username, passwordHash: await bcrypt.hash(password, 10), displayName: String(b.displayName || username), role: normalizeRole(b.role) });
+      const role = normalizeRole(b.role);
+      const permissions = b.permissions ? sanitizePermissionsInput(b.permissions) : null;
+      const [created] = await db.insert(users).values({
+        username,
+        passwordHash: await bcrypt.hash(password, 10),
+        displayName: String(b.displayName || username),
+        role,
+        permissions,
+      }).returning({ id: users.id });
+      await db.insert(walletBalances).values({ userId: created.id, balance: 0 }).onConflictDoNothing();
       await notifyAdmin({ title: "إضافة موظف", body: `تم إضافة الموظف ${String(b.displayName || username)}`, kind: "ADDITION", href: "/settings" });
-      await audit(admin, "USER_CREATED", "users", null, username);
-      return Response.json({ ok: true });
+      await audit(admin, "USER_CREATED", "users", created.id, username);
+      return Response.json({ ok: true, id: created.id });
     }
     if (action === "updateUser") {
       const id = Number(b.id);
@@ -87,7 +100,13 @@ export async function POST(req: Request) {
         }
         patch.isActive = !!b.isActive;
       }
-      if (b.password) patch.passwordHash = await bcrypt.hash(String(b.password), 10);
+      if (b.permissions !== undefined) {
+        patch.permissions = sanitizePermissionsInput(b.permissions);
+      }
+      if (b.password) {
+        if (String(b.password).length < 6) return jsonError("كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل");
+        patch.passwordHash = await bcrypt.hash(String(b.password), 10);
+      }
       if (b.unlock) { patch.failedAttempts = 0; patch.lockedUntil = null; }
       await db.update(users).set(patch).where(eq(users.id, id));
       await audit(admin, "USER_UPDATED", "users", id, JSON.stringify(Object.keys(patch)));
@@ -120,12 +139,13 @@ export async function POST(req: Request) {
         if (all.filter((u) => isAdminRole(u.role)).length <= 1) return jsonError("لا يمكن حذف آخر مدير في النظام");
       }
       try {
-        // نقل كل ارتباطات المستخدم (7 علاقات) للحفاظ على السجلات ثم حذف الحساب
         await db.update(rentals).set({ createdBy: admin.id }).where(eq(rentals.createdBy, id));
         await db.update(rentals).set({ activatedBy: admin.id }).where(eq(rentals.activatedBy, id));
         await db.update(payments).set({ createdBy: admin.id }).where(eq(payments.createdBy, id));
         await db.update(payments).set({ reviewedBy: admin.id }).where(eq(payments.reviewedBy, id));
         await db.update(auditLogs).set({ userId: admin.id }).where(eq(auditLogs.userId, id));
+        await db.update(profiles).set({ soldBy: admin.id }).where(eq(profiles.soldBy, id));
+        await db.update(walletTransactions).set({ createdBy: admin.id }).where(eq(walletTransactions.createdBy, id));
         await db.delete(pushSubscriptions).where(eq(pushSubscriptions.userId, id));
         await db.delete(alerts).where(eq(alerts.forUserId, id));
         await db.delete(users).where(eq(users.id, id));

@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { accounts, profiles, platforms, rentals, customers } from "@/db/schema";
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { requireAdmin, audit, jsonError } from "@/lib/auth";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { requirePermission, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { encryptText } from "@/lib/crypto";
 import { refreshAccountStatus, runDailyJob } from "@/lib/engine";
@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   try {
     await ensureSeeded();
-    await requireAdmin();
+    await requirePermission("INVENTORY_MANAGE", "هذه الصلاحية للمدير أو مسؤول المخزون فقط");
     await runDailyJob({ sendAlerts: false });
     const trash = new URL(req.url).searchParams.get("trash") === "1";
     const rows = await db.select({
@@ -42,7 +42,9 @@ export async function GET(req: Request) {
         ...r,
         hasLicenseKey: !!r.hasLicenseKey,
         profiles: profs.filter((p) => p.accountId === r.id).map((p) => ({
-          ...p, rental: relRentals.find((x) => x.profileId === p.id) || null,
+          ...p,
+          name: p.profileName,
+          rental: relRentals.find((x) => x.profileId === p.id) || null,
         })),
         currentRentals: relRentals.filter((x) => x.accountId === r.id),
         totalRentals: allRentalsCount.filter((x) => x.accountId === r.id).length,
@@ -54,7 +56,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     await ensureSeeded();
-    const user = await requireAdmin();
+    const user = await requirePermission("INVENTORY_MANAGE", "هذه الصلاحية للمدير أو مسؤول المخزون فقط");
     const b = await req.json().catch(() => ({}));
     const platformId = Number(b.platformId);
     if (!platformId) return jsonError("اختر المنصة أولاً");
@@ -81,50 +83,53 @@ export async function POST(req: Request) {
     }
 
     const type = deliveryKind === "CREDENTIALS" && b.type === "PROFILE" ? "PROFILE" : "FULL";
-
-    // إذا كان حساب كامل يتم إلغاء الـ PIN نهائياً
     const pin = type === "FULL" ? null : (String(b.pin || "").trim() || null);
 
-    // حساب عدد البروفايلات بناءً على القائمة المرسلة إن وجدت
-    const customProfiles: Array<{ name: string; pin: string }> = Array.isArray(b.profilesList) && b.profilesList.length > 0 ? b.profilesList : [];
-    
+    const rawProfiles = Array.isArray(b.profilesList)
+      ? b.profilesList
+      : Array.isArray(b.profiles)
+        ? b.profiles
+        : [];
+    const customProfiles: Array<{ name?: string; profileName?: string; pin?: string }> = rawProfiles.length > 0 ? rawProfiles : [];
+
     const maxProfiles = type === "PROFILE"
-      ? (customProfiles.length > 0 ? customProfiles.length : (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(10, Math.max(1, Number(b.maxProfiles)))))
+      ? (customProfiles.length > 0 ? customProfiles.length : (b.maxProfiles === "" || b.maxProfiles === null || b.maxProfiles === undefined ? 5 : Math.min(12, Math.max(1, Number(b.maxProfiles)))))
       : 1;
 
     const [acc] = await db.insert(accounts).values({
-      platformId, 
-      type, 
+      platformId,
+      type,
       maxProfiles,
       deliveryKind,
-      email, 
+      email,
       passwordEncrypted: password ? encryptText(password) : null,
       inviteLink: deliveryKind === "INVITE_LINK" ? inviteLink : (inviteLink || null),
       licenseKeyEncrypted: licenseKey ? encryptText(licenseKey) : null,
       maxUses: deliveryKind === "INVITE_LINK" ? maxUses : null,
       usedCount: 0,
       pin: deliveryKind === "CREDENTIALS" ? pin : null,
-      expiryDate, 
+      expiryDate,
       notes,
       salePrice: salePrice && Number.isFinite(salePrice) ? salePrice : null,
       status: "AVAILABLE",
     }).returning();
 
-    // إدراج البروفايلات ديناميكياً مع أسماء و PIN محدد لكل بروفايل
     if (type === "PROFILE") {
       if (customProfiles.length > 0) {
         await db.insert(profiles).values(customProfiles.map((p, i) => ({
           accountId: acc.id,
           profileNo: i + 1,
-          profileName: String(p.name || `بروفايل ${i + 1}`).trim(),
+          profileName: String(p.name || p.profileName || `بروفايل ${i + 1}`).trim(),
           pin: String(p.pin || "").trim() || null,
+          status: "AVAILABLE",
         })));
       } else {
         await db.insert(profiles).values(Array.from({ length: maxProfiles }, (_, i) => ({
-          accountId: acc.id, 
-          profileNo: i + 1, 
-          profileName: `بروفايل ${i + 1}`, 
+          accountId: acc.id,
+          profileNo: i + 1,
+          profileName: `بروفايل ${i + 1}`,
           pin: null,
+          status: "AVAILABLE",
         })));
       }
     }
@@ -144,7 +149,7 @@ export async function POST(req: Request) {
 export async function PUT(req: Request) {
   try {
     await ensureSeeded();
-    const user = await requireAdmin();
+    const user = await requirePermission("INVENTORY_MANAGE", "هذه الصلاحية للمدير أو مسؤول المخزون فقط");
     const b = await req.json().catch(() => ({}));
     const id = Number(b.id);
     const [acc] = await db.select().from(accounts).where(eq(accounts.id, id)).limit(1);
@@ -167,6 +172,54 @@ export async function PUT(req: Request) {
     if (b.notes !== undefined) patch.notes = String(b.notes || "") || null;
     if (b.salePrice !== undefined) patch.salePrice = b.salePrice ? Number(b.salePrice) : null;
     if (b.platformId) patch.platformId = Number(b.platformId);
+
+    // تحديث قائمة البروفايلات وأسمائها ورموز PIN الخاصة بها عند تعديل حساب بروفايلات
+    if (acc.type === "PROFILE" && Array.isArray(b.profilesList) && b.profilesList.length > 0) {
+      const existing = await db
+        .select()
+        .from(profiles)
+        .where(eq(profiles.accountId, id))
+        .orderBy(asc(profiles.profileNo));
+
+      const incoming: Array<{ id?: number; name?: string; profileName?: string; pin?: string }> = b.profilesList;
+      for (let i = 0; i < incoming.length; i++) {
+        const item = incoming[i];
+        const nextName = String(item.name || item.profileName || `بروفايل ${i + 1}`).trim();
+        const nextPin = String(item.pin || "").trim() || null;
+        if (i < existing.length) {
+          await db
+            .update(profiles)
+            .set({ profileName: nextName, pin: nextPin })
+            .where(eq(profiles.id, existing[i].id));
+        } else {
+          await db.insert(profiles).values({
+            accountId: id,
+            profileNo: i + 1,
+            profileName: nextName,
+            pin: nextPin,
+            status: "AVAILABLE",
+            isOccupied: false,
+          });
+        }
+      }
+
+      // حذف البروفايلات الزائدة الفارغة فقط (لا يُحذف أي بروفايل مشغول أو مرتبط باشتراك)
+      if (existing.length > incoming.length) {
+        const extras = existing.slice(incoming.length);
+        for (const ex of extras) {
+          if (!ex.isOccupied && ex.status === "AVAILABLE") {
+            const linked = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.profileId, ex.id)).limit(1);
+            if (!linked.length) {
+              await db.delete(profiles).where(eq(profiles.id, ex.id));
+            }
+          }
+        }
+      }
+
+      const finalProfs = await db.select({ id: profiles.id }).from(profiles).where(eq(profiles.accountId, id));
+      patch.maxProfiles = Math.max(1, finalProfs.length);
+    }
+
     await db.update(accounts).set(patch).where(eq(accounts.id, id));
     await refreshAccountStatus(id);
     await audit(user, "ACCOUNT_UPDATED", "accounts", id, `تعديل حساب ${acc.email || `#${id}`}${b.password ? " (مع كلمة المرور)" : ""}`);
