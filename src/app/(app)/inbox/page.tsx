@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { CheckCircle2, KeyRound, MessageCircle, PartyPopper, RotateCcw, UserMinus, Wallet, XCircle, Zap } from "lucide-react";
+import { CheckCircle2, KeyRound, MessageCircle, PartyPopper, RotateCcw, UserMinus, XCircle, Zap } from "lucide-react";
 import { api, fmtDate, money, openWhatsapp } from "@/lib/client";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, ReceiptButton, Spinner } from "@/components/ui";
 
@@ -28,7 +28,7 @@ export default function InboxPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 7000);
+  useAutoRefresh(load, 25000);
 
   async function act(body: any, okMsg: string) {
     setBusy(true); setMsg("");
@@ -55,7 +55,6 @@ export default function InboxPage() {
 
       {total === 0 && <Empty icon={<PartyPopper size={46} />} title="لا توجد إجراءات معلقة حالياً" hint="كل السندات والطلبات مراجعة وكل الحسابات جاهزة." />}
 
-      {/* 0. Pending On-Demand / Link-Only Activations */}
       {pendingAct.length > 0 && (
         <section className="space-y-3">
           <h2 className="flex items-center gap-2 text-base font-black text-amber-300">⚡ طلبات تفعيل / إرسال رابط فورية ({pendingAct.length})</h2>
@@ -117,7 +116,6 @@ export default function InboxPage() {
         </section>
       )}
 
-      {/* 1. Pending payments */}
       {pendingPays.length > 0 && (
         <section className="space-y-3">
           <h2 className="flex items-center gap-2 text-base font-black text-white">🧾 سندات دفع بانتظار المراجعة ({pendingPays.length})</h2>
@@ -152,7 +150,6 @@ export default function InboxPage() {
         </section>
       )}
 
-      {/* 2. Ended rentals */}
       {ended.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-base font-black text-white">⏰ اشتراكات انتهت — أزل العميل من المنصة ({ended.length})</h2>
@@ -175,7 +172,6 @@ export default function InboxPage() {
         </section>
       )}
 
-      {/* 3. Needs password change */}
       {needsPw.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-base font-black text-white">🔑 حسابات تنتظر تغيير كلمة المرور قبل إعادة البيع ({needsPw.length})</h2>
@@ -199,7 +195,6 @@ export default function InboxPage() {
           className="btn-gold mt-4 w-full">حفظ وإعادة للمخزون</button>
       </Modal>
 
-      {/* Modal تأكيد تفعيل طلب فوري (حسب نوع التسليم) */}
       <Modal open={!!actModal} onClose={() => setActModal(null)} title={actModal?.deliveryMode === "LINK_ONLY" ? `🔗 إرسال رابط اشتراك: ${actModal?.platformName}` : `⚡ تفعيل اشتراك: ${actModal?.platformName}`}>
         {actModal && (
           <div className="space-y-3">

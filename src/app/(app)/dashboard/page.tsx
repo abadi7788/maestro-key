@@ -39,7 +39,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 8000);
+  useAutoRefresh(load, 25000);
 
   async function runNow() {
     setRunning(true); setMsg("");
@@ -62,7 +62,6 @@ export default function DashboardPage() {
 
   if (!me) return <Spinner />;
 
-  // ==================== واجهة الموظف ====================
   if (!isAdminRole(me.role)) {
     if (!empData) return <Spinner />;
     const todayMine = empData.mine.filter((r) => new Date(r.createdAt).toDateString() === new Date().toDateString()).length;
@@ -120,7 +119,6 @@ export default function DashboardPage() {
     );
   }
 
-  // ==================== واجهة المدير ====================
   if (!data) return <Spinner />;
   const s = data.stats;
   const lowStock: Array<{ id: number; name: string; slots: number; threshold: number }> = data.lowStockPlatforms || [];
@@ -128,7 +126,6 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Hero Header */}
       <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-[#0f172a] via-[#13203d] to-[#0b1325] p-6 text-white shadow-xl sm:p-8">
         <div className="pointer-events-none absolute -left-20 -top-20 h-64 w-64 rounded-full bg-amber-500/10 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-20 -right-20 h-64 w-64 rounded-full bg-blue-500/10 blur-3xl" />
@@ -154,7 +151,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Today's Quick Strip */}
         <div className="relative mt-6 grid grid-cols-2 gap-3 border-t border-white/10 pt-5 sm:grid-cols-4">
           <div>
             <div className="text-[11px] font-semibold text-slate-400">مبيعات اليوم</div>
@@ -181,7 +177,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Action Alert Banner */}
       {urgent > 0 ? (
         <Link href="/inbox" className="group block overflow-hidden rounded-2xl border border-red-400/35 bg-gradient-to-l from-red-500/15 via-[#141022] to-[#0d1526] p-5 shadow-sm transition hover:border-red-400/60 hover:shadow-md">
           <div className="flex items-center justify-between gap-4">
@@ -214,7 +209,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Low Stock Warning */}
       {lowStock.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4">
           <div className="flex items-start gap-3">
@@ -234,7 +228,6 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* KPI Grid */}
       <div>
         <h2 className="mb-3 text-sm font-black text-slate-300">مؤشرات الأداء والمخزون</h2>
         <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-4">
@@ -249,7 +242,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Quick Shortcuts */}
       <div>
         <h2 className="mb-3 text-sm font-black text-slate-300">وصول سريع</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

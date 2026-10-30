@@ -346,28 +346,57 @@ const STATEMENTS: string[] = [
   `UPDATE platforms SET delivery_mode = 'ON_DEMAND_EMAIL' WHERE delivery_mode = 'ON_DEMAND'`,
 ];
 
-let schemaPromise: Promise<void> | null = null;
+const globalForSchema = globalThis as typeof globalThis & {
+  __maestroSchemaEnsured?: boolean;
+  __maestroSchemaPromise?: Promise<void> | null;
+};
 
 export async function ensureSchema(): Promise<void> {
-  if (schemaPromise) return schemaPromise;
-  schemaPromise = (async () => {
+  if (globalForSchema.__maestroSchemaEnsured) return;
+  if (globalForSchema.__maestroSchemaPromise) return globalForSchema.__maestroSchemaPromise;
+
+  globalForSchema.__maestroSchemaPromise = (async () => {
+    // 1) فحص سريع جداً: إذا كانت قاعدة البيانات محدثة مسبقاً نخرج فوراً بعد استعلام واحد فقط (10ms بدلاً من 115 استعلام)
+    try {
+      const check = await pool.query(
+        "SELECT version FROM _schema_meta WHERE version = 2 LIMIT 1"
+      );
+      if (check.rows?.length) {
+        globalForSchema.__maestroSchemaEnsured = true;
+        return;
+      }
+    } catch {
+      // جدول البيانات الوصفية غير موجود بعد — سينشأ الآن في أول تشغيل
+    }
+
     let failed = 0;
     for (const sql of STATEMENTS) {
       try {
         await pool.query(sql);
-      } catch (e: unknown) {
+      } catch {
         failed++;
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error("[schema-check] statement skipped:", msg.slice(0, 160), "|", sql.slice(0, 90));
       }
     }
+
+    try {
+      await pool.query(
+        "CREATE TABLE IF NOT EXISTS _schema_meta (version INT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT NOW())"
+      );
+      await pool.query(
+        "INSERT INTO _schema_meta (version) VALUES (2) ON CONFLICT (version) DO NOTHING"
+      );
+    } catch {}
+
+    globalForSchema.__maestroSchemaEnsured = true;
     if (failed > 0) {
-      console.error(`[schema-check] completed with ${failed} skipped statements (non-fatal)`);
+      console.log(`[schema-check] initial schema check finished (${failed} skipped)`);
     }
   })().catch((e) => {
-    // لا نكسر الطلب أبداً بسبب فحص المخطط — سنعيد المحاولة في الطلب التالي
-    console.error("[schema-check] failed, will retry next request:", e);
-    schemaPromise = null;
+    console.error("[schema-check] error:", e);
+    globalForSchema.__maestroSchemaPromise = null;
   });
-  return schemaPromise;
+
+  return globalForSchema.__maestroSchemaPromise;
 }
+
+

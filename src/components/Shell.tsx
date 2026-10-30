@@ -5,10 +5,10 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   LayoutDashboard, ShoppingCart, BellRing, Boxes, ReceiptText, Users, Trash2,
   Settings, ScrollText, LogOut, History, Menu, X, ShieldCheck, RefreshCcw, Wallet,
-  ArrowDownLeft, ArrowUpRight, RotateCcw, ExternalLink,
+  ArrowDownLeft, ArrowUpRight, RotateCcw, ExternalLink, KeyRound,
 } from "lucide-react";
 import { api, fetchMe, fmtDateTime, money, type Me } from "@/lib/client";
-import { isAdminRole } from "@/lib/roles";
+import { isAdminRole, normalizeRole } from "@/lib/roles";
 import BrandLogo from "@/components/BrandLogo";
 import AlertWatcher from "@/components/AlertWatcher";
 import { Badge, Modal, Spinner } from "@/components/ui";
@@ -41,6 +41,13 @@ export default function Shell({ children }: { children: ReactNode }) {
   const [walletOpen, setWalletOpen] = useState(false);
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletTxs, setWalletTxs] = useState<any[]>([]);
+
+  // نافذة تغيير كلمة المرور الذاتي
+  const [pwOpen, setPwOpen] = useState(false);
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState("");
 
   const refreshMeAndCounts = useCallback(async () => {
     const u = await fetchMe();
@@ -83,7 +90,7 @@ export default function Shell({ children }: { children: ReactNode }) {
     };
     const t = setInterval(() => {
       if (typeof document === "undefined" || document.visibilityState === "visible") void tick();
-    }, 8000);
+    }, 25000);
     return () => clearInterval(t);
   }, [me, refreshMeAndCounts]);
 
@@ -111,6 +118,8 @@ export default function Shell({ children }: { children: ReactNode }) {
   if (!me) return null;
 
   const admin = isAdminRole(me.role);
+  const normRole = normalizeRole(me.role);
+  const roleTitle = admin ? "مدير النظام" : normRole === "USER" ? "موزع / مستخدم" : "موظف مبيعات";
 
   const visibleItems = NAV.filter((n) => {
     if (n.adminOnly && !admin) return false;
@@ -133,8 +142,6 @@ export default function Shell({ children }: { children: ReactNode }) {
         ? "bg-[#2f7bff] text-white shadow-[0_0_18px_rgba(47,123,255,.35)]"
         : "text-slate-300 hover:bg-white/10 hover:text-white"
     }`;
-
-  const roleTitle = admin ? "مدير النظام" : "موظف مبيعات";
 
   return (
     <div className="relative mx-auto flex min-h-dvh w-full max-w-[1500px]">
@@ -183,9 +190,14 @@ export default function Shell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <button onClick={logout} className="mt-4 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400 transition hover:bg-white/10">
-          <LogOut size={20} /> تسجيل الخروج
-        </button>
+        <div className="mt-4 flex flex-col gap-1.5">
+          <button onClick={() => { setPwMsg(""); setPwOpen(true); }} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-300 transition hover:bg-white/10 hover:text-white">
+            <KeyRound size={16} /> تغيير كلمة المرور
+          </button>
+          <button onClick={logout} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-red-400 transition hover:bg-white/10">
+            <LogOut size={16} /> تسجيل الخروج
+          </button>
+        </div>
       </aside>
 
       {/* Main */}
@@ -249,7 +261,15 @@ export default function Shell({ children }: { children: ReactNode }) {
                   </Link>
                 ))}
               </nav>
-              <button onClick={logout} className="mt-4 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400"><LogOut size={20} /> تسجيل الخروج</button>
+
+              <div className="mt-4 flex flex-col gap-1.5">
+                <button onClick={() => { setMenuOpen(false); setPwMsg(""); setPwOpen(true); }} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-300 hover:bg-white/10">
+                  <KeyRound size={16} /> تغيير كلمة المرور
+                </button>
+                <button onClick={logout} className="flex items-center gap-3 rounded-xl px-3.5 py-2 text-xs font-bold text-red-400">
+                  <LogOut size={16} /> تسجيل الخروج
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -273,6 +293,57 @@ export default function Shell({ children }: { children: ReactNode }) {
           })}
         </div>
       </nav>
+
+      {/* مودال تغيير كلمة المرور */}
+      <Modal open={pwOpen} onClose={() => setPwOpen(false)} title="🔑 تغيير كلمة المرور">
+        {pwMsg && (
+          <div className={`mb-3 rounded-xl px-3 py-2 text-xs font-bold ${pwMsg.startsWith("✓") ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"}`}>
+            {pwMsg}
+          </div>
+        )}
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!currentPw || !newPw) return;
+            setPwBusy(true); setPwMsg("");
+            try {
+              const res = await api("/api/auth", {
+                method: "POST",
+                body: JSON.stringify({ action: "change-password", currentPassword: currentPw, newPassword: newPw }),
+              });
+              if (res.ok) {
+                setPwMsg("✓ تم تغيير كلمة المرور بنجاح وتسجيل العملية في سجل التدقيق");
+                setCurrentPw(""); setNewPw("");
+                setTimeout(() => setPwOpen(false), 1500);
+              } else {
+                setPwMsg(res.error || "⚠️ فشل تغيير كلمة المرور");
+              }
+            } catch (err: any) {
+              setPwMsg("⚠️ " + (err.message || "حدث خطأ"));
+            } finally {
+              setPwBusy(false);
+            }
+          }}
+          className="space-y-3"
+        >
+          <div>
+            <label className="label">كلمة المرور الحالية</label>
+            <input type="password" required className="field text-sm" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">كلمة المرور الجديدة (6 خانات على الأقل)</label>
+            <input type="password" required minLength={6} className="field text-sm" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="submit" disabled={pwBusy} className="btn-gold flex-1 py-2.5 text-xs">
+              {pwBusy ? "جارٍ الحفظ..." : "حفظ التغيير"}
+            </button>
+            <button type="button" onClick={() => setPwOpen(false)} className="btn-ghost py-2.5 text-xs">
+              إلغاء
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Wallet Statement Modal */}
       <Modal open={walletOpen} onClose={() => setWalletOpen(false)} title="💳 محفظتي وسجل العمليات" wide>

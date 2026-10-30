@@ -58,6 +58,8 @@ export async function POST(req: Request) {
       "restore",
       "permanentDelete",
       "deleteExpired",
+      "emptyTrash",
+      "restoreProfile",
     ]);
 
     if (action === "activateRental") {
@@ -369,8 +371,40 @@ export async function POST(req: Request) {
       const accountId = Number(b.accountId);
       const hasRentals = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.accountId, accountId)).limit(1);
       if (hasRentals.length) return jsonError("لا يمكن الحذف النهائي لحساب له سجل إيجارات — يبقى في المحذوفات حفاظاً على السجل المالي", 409);
+      await db.delete(profiles).where(eq(profiles.accountId, accountId));
       await db.delete(accounts).where(eq(accounts.id, accountId));
       await audit(user, "PERMANENT_DELETE", "accounts", accountId, "حذف نهائي من قاعدة البيانات");
+      return Response.json({ ok: true });
+    }
+
+    if (action === "emptyTrash") {
+      const trashed = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.isDeleted, true));
+      let deleted = 0;
+      for (const acc of trashed) {
+        const hasRentals = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.accountId, acc.id)).limit(1);
+        if (!hasRentals.length) {
+          await db.delete(profiles).where(eq(profiles.accountId, acc.id));
+          await db.delete(accounts).where(eq(accounts.id, acc.id));
+          deleted++;
+        }
+      }
+      await audit(user, "TRASH_EMPTIED", "accounts", null, `إفراغ سلة المحذوفات (تم مسح ${deleted} حساب بدون سجل مالي)`);
+      return Response.json({ ok: true, deleted });
+    }
+
+    if (action === "restoreProfile") {
+      const profileId = Number(b.profileId);
+      const [prof] = await db.select().from(profiles).where(eq(profiles.id, profileId)).limit(1);
+      if (!prof) return jsonError("بروفايل غير موجود", 404);
+      if (prof.currentRentalId) {
+        await db.update(rentals).set({ status: "CLOSED", updatedAt: now }).where(eq(rentals.id, prof.currentRentalId));
+      }
+      await db
+        .update(profiles)
+        .set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null })
+        .where(eq(profiles.id, profileId));
+      await refreshAccountStatus(prof.accountId);
+      await audit(user, "PROFILE_FREED", "profiles", profileId, `استرجاع يدوي للبروفايل ${prof.profileName || prof.profileNo} للبيع مجدداً`);
       return Response.json({ ok: true });
     }
 

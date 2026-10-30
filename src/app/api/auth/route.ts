@@ -9,16 +9,17 @@ import { getCurrentUser, audit } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { getWallet } from "@/lib/wallet";
 import { getEffectivePermissions } from "@/lib/permissions";
+import { notifyAdmin } from "@/lib/notify";
 
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
-async function buildUserPayload(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null }) {
+async function buildUserPayload(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null; walletBalance?: string | null }) {
   let walletBalance = 0;
   try {
     const w = await getWallet(user.id);
     walletBalance = w.balance;
   } catch {
-    walletBalance = 0;
+    walletBalance = Math.max(0, Math.floor(Number(user.walletBalance || 0)));
   }
   return {
     id: user.id,
@@ -30,7 +31,7 @@ async function buildUserPayload(user: { id: number; username: string; displayNam
   };
 }
 
-async function sessionResponse(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null }) {
+async function sessionResponse(user: { id: number; username: string; displayName: string; role: string; permissions?: string | null; walletBalance?: string | null }) {
   const token = signSession({ userId: user.id, role: user.role, username: user.username });
   const payload = await buildUserPayload(user);
   return new Response(JSON.stringify({ user: payload }), {
@@ -38,7 +39,6 @@ async function sessionResponse(user: { id: number; username: string; displayName
   });
 }
 
-// Option B: بيانات بريد الجيميل مثبتة داخل الكود حتى لا تُفقد عند تحديث .env
 const FALLBACK_SMTP = {
   host: "smtp.gmail.com",
   port: 587,
@@ -47,14 +47,9 @@ const FALLBACK_SMTP = {
   from: "almaystrwbady@gmail.com",
 };
 
-/**
- * إرسال كود الدخول (OTP).
- * الأولوية: Resend (الإنتاج — لا يُحظر مثل Gmail) ثم SMTP/Gmail (التطوير المحلي).
- */
 async function sendLoginCode(email: string, code: string) {
   const body = `كود الدخول الخاص بك هو: ${code}\nصالح لمدة 10 دقائق.\nمتجر مايسترو كي — Maestro Key`;
 
-  // 1) Resend — الطريقة الأساسية في الإنتاج (Vercel)
   const apiKey = process.env.RESEND_API_KEY;
   if (apiKey) {
     try {
@@ -77,7 +72,6 @@ async function sendLoginCode(email: string, code: string) {
     }
   }
 
-  // 2) SMTP/Gmail — احتياطي لبيئة التطوير حيث لا يكون RESEND_API_KEY مضبوطاً
   const rows = await db.select().from(settings);
   const map: Record<string, string> = {};
   rows.forEach((r) => { map[r.key] = r.value; });
@@ -147,6 +141,32 @@ export async function POST(req: Request) {
     await db.update(users).set({ email, passwordHash: await bcrypt.hash(newPassword, 10), failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() }).where(eq(users.id, adminUser.id));
     await audit(adminUser, "PASSWORD_SET", "users", adminUser.id, "تعيين كلمة مرور المدير بعد كود البريد");
     return await sessionResponse(adminUser);
+  }
+
+  if (body.action === "change-password") {
+    const user = await getCurrentUser();
+    if (!user) return Response.json({ error: "غير مصرح — سجل الدخول أولاً" }, { status: 401 });
+    const oldPassword = String(body.oldPassword || body.currentPassword || "");
+    const newPassword = String(body.newPassword || "");
+    if (!oldPassword || newPassword.length < 6) {
+      return Response.json({ error: "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل" }, { status: 400 });
+    }
+    const match = await bcrypt.compare(oldPassword, user.passwordHash);
+    if (!match) return Response.json({ error: "كلمة المرور الحالية غير صحيحة" }, { status: 401 });
+
+    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "Unknown IP";
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
+
+    const logDetails = `قام المستخدم [${user.displayName || user.username}] بتغيير كلمة المرور الخاصة به (IP: ${ip})`;
+    await audit(user, "USER_PASSWORD_CHANGED", "users", user.id, logDetails);
+    await notifyAdmin({
+      title: "تغيير كلمة مرور مستخدم",
+      body: logDetails,
+      kind: "SECURITY",
+      href: "/audit",
+    });
+    return Response.json({ ok: true, message: "تم تغيير كلمة المرور بنجاح" });
   }
 
   const username = String(body.username || body.email || "").trim().toLowerCase();

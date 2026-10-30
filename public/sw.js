@@ -13,29 +13,6 @@ const PRECACHE_URLS = [
 ];
 
 let after = 0;
-let timer = null;
-
-async function poll() {
-  const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (open.length) return;
-  try {
-    const res = await fetch("/api/alerts?after=" + after, { credentials: "include", cache: "no-store" });
-    if (!res.ok) return;
-    const data = await res.json();
-    for (const a of data.alerts || []) {
-      if (a.id > after) after = a.id;
-      await self.registration.showNotification("مايسترو كي", {
-        body: a.title + " — " + a.body,
-        icon: "/icons/icon-192x192.png",
-        badge: "/icons/badge-72x72.png",
-        tag: "maestro-key",
-        silent: false,
-        data: { href: a.href || "/inbox" },
-      });
-    }
-    if (data.latestId > after) after = data.latestId;
-  } catch {}
-}
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -65,7 +42,7 @@ self.addEventListener("fetch", (event) => {
       fetch(req).then((res) => {
         if (res && res.ok && url.origin === self.location.origin) {
           const copy = res.clone();
-          caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy));
+          caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
         }
         return res;
       }).catch(async () => {
@@ -73,8 +50,7 @@ self.addEventListener("fetch", (event) => {
         const cached = await cache.match(req);
         if (cached) return cached;
 
-        // البحث عن صفحة الأوفلاين بصيغتيها لضمان إيجادها
-        const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline");
+        const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline") || await cache.match("/offline.html");
         if (offlineFallback) return offlineFallback;
 
         return new Response(
@@ -98,7 +74,7 @@ self.addEventListener("fetch", (event) => {
         const network = fetch(req).then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
-            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy));
+            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
           }
           return res;
         }).catch(() => hit);
@@ -111,9 +87,8 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("message", (e) => {
   if (e.data?.type === "watch") {
     after = Number(e.data.after || after || 0);
-    if (!timer) timer = setInterval(poll, 8000);
-    poll();
   }
+  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
 });
 
 self.addEventListener("push", (event) => {
@@ -147,8 +122,4 @@ self.addEventListener("notificationclick", (e) => {
     }
     await self.clients.openWindow(href);
   })());
-});
-
-self.addEventListener("message", (e) => {
-  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
 });

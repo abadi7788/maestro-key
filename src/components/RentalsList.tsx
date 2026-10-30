@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { CheckCircle2, Eye, KeyRound, MessageCircle, ReceiptText, RefreshCcw, RotateCcw, Search, Send, UserMinus, Wallet, XCircle } from "lucide-react";
+import { CheckCircle2, KeyRound, MessageCircle, ReceiptText, RefreshCcw, RotateCcw, Search, Send, UserMinus, Wallet, XCircle } from "lucide-react";
 import Link from "next/link";
 import { api, fmtDate, fmtDateTime, money, daysLeft, openWhatsapp } from "@/lib/client";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, ReceiptButton, Spinner, paymentBadge, rentalBadge } from "@/components/ui";
@@ -25,7 +25,7 @@ export default function RentalsList({ view, title, subtitle, adminControls = fal
   }, [view, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 8000);
+  useAutoRefresh(load, 25000);
 
   async function act(id: number, body: any, okMsg: string) {
     setBusy(id); setMsg("");
@@ -130,7 +130,6 @@ export default function RentalsList({ view, title, subtitle, adminControls = fal
                     </div>
                   </div>
 
-                  {/* Quick actions */}
                   <div className="flex flex-wrap gap-2">
                     {canReveal && (
                       <button onClick={() => openCredentials(r)} className="btn-gold px-3.5 py-2 text-xs">
@@ -177,7 +176,6 @@ export default function RentalsList({ view, title, subtitle, adminControls = fal
                   </div>
                 </div>
 
-                {/* Payments */}
                 {r.payments?.length > 0 && (
                   <div className="mt-3.5 space-y-2 border-t border-dashed border-white/10 pt-3">
                     {r.payments.map((p: any) => {
@@ -224,7 +222,6 @@ export default function RentalsList({ view, title, subtitle, adminControls = fal
         </div>
       )}
 
-      {/* Modal عرض بيانات الحساب بعد موافقة المدير */}
       <Modal open={!!credModal} onClose={() => setCredModal(null)} title={credData?.deliveryMode === "LINK_ONLY" ? "🔗 رابط اشتراك العميل" : "🔑 بيانات الحساب للعميل"}>
         {credLoading ? <Spinner /> : credErr ? (
           <p className="py-6 text-center font-bold text-red-400">{credErr}</p>

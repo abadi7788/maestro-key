@@ -39,7 +39,6 @@ export default function SettingsPage() {
   const [pwReset, setPwReset] = useState<{ id: number; name: string; pw: string } | null>(null);
   const [permModal, setPermModal] = useState<{ user: any; perms: Record<string, boolean> } | null>(null);
 
-  // إدارة المحافظ
   const [walletTxs, setWalletTxs] = useState<any[]>([]);
   const [walletModal, setWalletModal] = useState<{ user: any; mode: "topup" | "deduct"; amount: string; note: string } | null>(null);
   const [statementUser, setStatementUser] = useState<any | null>(null);
@@ -102,7 +101,7 @@ export default function SettingsPage() {
     ]);
     if (d) setData((prev: any) => prev ? { ...prev, users: d.users, platforms: d.platforms, paymentMethods: d.paymentMethods, whatsappLogs: d.whatsappLogs } : d);
     if (w?.transactions) setWalletTxs(w.transactions);
-  }, 10000);
+  }, 25000);
 
   async function manage(body: any, okMsg: string) {
     setBusy(true); setMsg("");
@@ -197,7 +196,6 @@ export default function SettingsPage() {
       {/* ================= WALLETS TAB ================= */}
       {tab === "wallets" && (
         <div className="space-y-5">
-          {/* KPI Summary */}
           <div className="grid gap-3.5 sm:grid-cols-3">
             <div className="card border-amber-400/25 bg-gradient-to-br from-amber-400/10 to-transparent p-4">
               <div className="text-xs font-bold text-amber-300">إجمالي أرصدة المحافظ الحالية</div>
@@ -216,14 +214,13 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Staff Wallets Grid */}
           <div className="card p-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="font-black text-white">💳 أرصدة الموظفين والموزعين</h2>
                 <p className="text-xs font-semibold text-slate-400">اشحن رصيد أي موظف ليتمكن من البيع والاعتماد الفوري من نقطة البيع دون انتظار مراجعة سند بنكي.</p>
               </div>
-              <button onClick={() => { setTab("users"); setUserForm({ role: "EMPLOYEE" }); }} className="btn-ghost text-xs">
+              <button onClick={() => setUserForm({ role: "EMPLOYEE", openWallet: true, initialBalance: "0", permissions: { ...DEFAULT_EMPLOYEE_PERMISSIONS } })} className="btn-ghost text-xs">
                 <Plus size={15} /> موظف / موزع جديد
               </button>
             </div>
@@ -278,7 +275,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* All Recent Wallet Transactions */}
           <div className="card p-5">
             <h3 className="mb-3 font-black text-white">📜 أحدث حركات المحافظ (جميع الموظفين)</h3>
             {walletTxs.length === 0 ? (
@@ -337,7 +333,7 @@ export default function SettingsPage() {
               <h2 className="font-black text-white">حسابات الموظفين والمديرين والصلاحيات</h2>
               <p className="text-xs font-semibold text-slate-400">تحكم في حسابات الموظفين، أرصدتهم، وصلاحيات كل موظف بدقة.</p>
             </div>
-            <button onClick={() => setUserForm({ role: "EMPLOYEE", permissions: { ...DEFAULT_EMPLOYEE_PERMISSIONS } })} className="btn-gold text-xs"><Plus size={16} /> مستخدم جديد</button>
+            <button onClick={() => setUserForm({ role: "EMPLOYEE", openWallet: true, initialBalance: "0", permissions: { ...DEFAULT_EMPLOYEE_PERMISSIONS } })} className="btn-gold text-xs"><Plus size={16} /> مستخدم جديد</button>
           </div>
           <div className="space-y-2.5">
             {data.users.map((u: any) => {
@@ -348,7 +344,7 @@ export default function SettingsPage() {
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-extrabold text-white">{u.displayName}</span>
-                      <Badge tone={isAdmin ? "gold" : "blue"}>{isAdmin ? "مدير النظام" : "موظف مبيعات"}</Badge>
+                      <Badge tone={isAdmin ? "gold" : "blue"}>{isAdmin ? "مدير النظام" : u.role === "USER" ? "موزع" : "موظف مبيعات"}</Badge>
                       {!u.isActive && <Badge tone="red">معطَّل</Badge>}
                       {isLocked && <Badge tone="red">🔒 مقفل مؤقتاً</Badge>}
                       <Badge tone="amber">💳 {Number(u.walletBalance || 0).toLocaleString("ar-YE")} ر.ي</Badge>
@@ -597,7 +593,6 @@ export default function SettingsPage() {
 
       {/* ================= MODALS ================= */}
 
-      {/* شحن / خصم محفظة موظف */}
       <Modal
         open={!!walletModal}
         onClose={() => setWalletModal(null)}
@@ -681,7 +676,6 @@ export default function SettingsPage() {
         )}
       </Modal>
 
-      {/* كشف حساب موظف محدد */}
       <Modal open={!!statementUser} onClose={() => setStatementUser(null)} title={`📜 كشف محفظة: ${statementUser?.displayName || ""}`} wide>
         {statementLoading ? (
           <Spinner />
@@ -718,7 +712,6 @@ export default function SettingsPage() {
         )}
       </Modal>
 
-      {/* صلاحيات موظف */}
       <Modal open={!!permModal} onClose={() => setPermModal(null)} title={`🛡️ صلاحيات الموظف: ${permModal?.user?.displayName || ""}`}>
         {permModal && (
           <div className="space-y-3">
@@ -758,7 +751,6 @@ export default function SettingsPage() {
         )}
       </Modal>
 
-      {/* Modal إضافة / تعديل منصة */}
       <Modal open={!!platModal} onClose={() => setPlatModal(null)} title={platModal?.id ? `✏️ تعديل منصة: ${platModal.name}` : "➕ إضافة منصة جديدة"}>
         {platModal && (
           <div className="space-y-3.5">
@@ -837,7 +829,7 @@ export default function SettingsPage() {
         )}
       </Modal>
 
-      <Modal open={!!userForm} onClose={() => setUserForm(null)} title="إضافة موظف / مستخدم جديد">
+      <Modal open={!!userForm} onClose={() => setUserForm(null)} title="إضافة موظف / موزع جديد">
         <div className="space-y-3">
           <div><label className="label">الاسم الظاهر</label><input className="field" placeholder="مثال: محمد علي" value={userForm?.displayName || ""} onChange={(e) => setUserForm({ ...userForm, displayName: e.target.value })} /></div>
           <div><label className="label">اسم الدخول (إنجليزي بدون مسافات)</label><input className="field" dir="ltr" style={{ textAlign: "left" }} placeholder="mohammed" value={userForm?.username || ""} onChange={(e) => setUserForm({ ...userForm, username: e.target.value })} /></div>
@@ -845,9 +837,14 @@ export default function SettingsPage() {
           <div>
             <label className="label">الدور</label>
             <select className="field" value={userForm?.role || "EMPLOYEE"} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })}>
-              <option value="EMPLOYEE">موظف / موزع مبيعات (نقطة البيع + محفظة خاصة)</option>
+              <option value="EMPLOYEE">موظف مبيعات (نقطة البيع + محفظة خاصة)</option>
+              <option value="USER">موزع معتمد (نقطة البيع + محفظة خاصة)</option>
               <option value="ADMIN">مدير النظام (كل الصلاحيات)</option>
             </select>
+          </div>
+          <div>
+            <label className="label">رصيد افتتاحي للمحفظة (اختياري — ر.ي)</label>
+            <input className="field font-mono text-amber-300" inputMode="numeric" placeholder="0" value={userForm?.initialBalance || ""} onChange={(e) => setUserForm({ ...userForm, openWallet: true, initialBalance: e.target.value.replace(/\D/g, "") })} />
           </div>
           <button disabled={busy} onClick={async () => { if (await manage({ action: "createUser", ...userForm }, "تم إنشاء الحساب وتجهيز محفظته")) setUserForm(null); }} className="btn-gold w-full">إنشاء الحساب</button>
         </div>

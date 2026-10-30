@@ -4,6 +4,9 @@ import { Eye, EyeOff, KeyRound, Loader2, LockKeyhole, Mail, User } from "lucide-
 import { api } from "@/lib/client";
 import { homeForRole, isAdminOnlyPath, isAdminRole, safeNextPath } from "@/lib/roles";
 
+export const dynamic = "force-dynamic";
+
+
 const ADMIN_EMAIL = "almaystrwbady@gmail.com";
 
 export default function LoginPage() {
@@ -155,3 +158,4 @@ export default function LoginPage() {
     </main>
   );
 }
+

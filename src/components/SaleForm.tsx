@@ -56,7 +56,7 @@ export default function SaleForm({ prefillPhone = "" }: { prefillPhone?: string 
     ]);
     if (m) setMeta(m);
     if (u) setMe(u);
-  }, 8000);
+  }, 25000);
 
   useEffect(() => {
     if (prefillPhone) {
