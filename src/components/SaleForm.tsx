@@ -145,7 +145,7 @@ export default function SaleForm() {
     }
 
     if (emailRequired && !customerEmail.trim()) return setErr("هذا الاشتراك يتطلب إيميل العميل للتفعيل — اطلبه من العميل وأدخله");
-    if (!isLifetime && (!duration || duration < 1)) return setErr("أدخل مدة الاشتراك بالأيام");
+    if (!isLifetime && !isLinkMode && (!duration || duration < 1)) return setErr("أدخل مدة الاشتراك بالأيام");
     if (deliverySource === "MANUAL" && !manualEmail.trim() && !manualPassword && !manualLink.trim() && !manualCode.trim()) {
       return setErr("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود على الأقل)");
     }
@@ -159,7 +159,7 @@ export default function SaleForm() {
       const d = await api("/api/sales", {
         method: "POST",
         body: JSON.stringify({
-          platformId, durationDays: duration, customerName: name, customerPhone: phone,
+          platformId, durationDays: (isLinkMode && (!duration || duration < 1)) ? 0 : duration, customerName: name, customerPhone: phone,
           paymentType,
           paymentMethodId: paymentType === "WALLET" ? null : bankId, 
           transactionRef: paymentType === "WALLET" ? `WALLET-${Date.now().toString().slice(-6)}` : ref.trim(), 
@@ -540,9 +540,14 @@ export default function SaleForm() {
 
         <div className="grid gap-4 p-6 sm:grid-cols-2">
           <div>
-            <label className="label">⏳ مدة الاشتراك (أيام)</label>
+            <label className="label">⏳ مدة الاشتراك (أيام) {isLinkMode && <span className="text-[#5ba2ff] font-bold">(اختياري للروابط)</span>}</label>
             {isLifetime ? (
               <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم</div>
+            ) : isLinkMode ? (
+              <div className="space-y-1">
+                <input className="field" inputMode="numeric" min={1} placeholder="اختياري (أو اتركه فارغاً لاشتراكات الروابط)" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
+                <p className="text-[11px] font-bold text-slate-400">🔗 اختياري: اشتراكات الروابط لا تتطلب تحديد عدد الأيام إجبارياً.</p>
+              </div>
             ) : (
               <input className="field" inputMode="numeric" min={1} placeholder="مثال: 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
             )}

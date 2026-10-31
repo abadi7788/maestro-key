@@ -89,6 +89,21 @@ export async function POST(req: Request) {
       if (dupImg.length) return jsonError("صورة السند هذه مُستخدمة سابقاً في عملية أخرى", 409);
     }
 
+    let effectivePaymentMethodId = paymentMethodId ?? null;
+    if (paymentType === "WALLET" && !effectivePaymentMethodId) {
+      try {
+        const [wMethod] = await db.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.name, "المحفظة")).limit(1);
+        if (wMethod) {
+          effectivePaymentMethodId = wMethod.id;
+        } else {
+          const [created] = await db.insert(paymentMethods).values({ name: "المحفظة" }).returning({ id: paymentMethods.id });
+          if (created) effectivePaymentMethodId = created.id;
+        }
+      } catch (pmErr) {
+        console.warn("[Wallet] Could not resolve paymentMethodId for wallet:", pmErr);
+      }
+    }
+
     const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
     if (!platform) {
       if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: منصة غير موجودة");
@@ -96,9 +111,10 @@ export async function POST(req: Request) {
     }
 
     const mode: DeliveryMode = normalizeDeliveryMode(platform.deliveryMode);
-    const lifetime = !!platform.isLifetime;
-    const days = lifetime ? 0 : durationDays;
-    if (!lifetime && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+    const isLinkMode = mode === "LINK_ONLY";
+    const lifetime = !!platform.isLifetime || (isLinkMode && (!durationDays || durationDays <= 0));
+    const days = lifetime ? 0 : (durationDays || 0);
+    if (!lifetime && !isLinkMode && (!Number.isInteger(days) || days < 1 || days > 3650)) {
       if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: مدة اشتراك غير صالحة");
       return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
     }
@@ -146,7 +162,7 @@ export async function POST(req: Request) {
 
       await db.insert(payments).values({
         rentalId: rental.id, 
-        paymentMethodId: paymentMethodId ?? null, 
+        paymentMethodId: effectivePaymentMethodId, 
         transactionRef, 
         amount, 
         receiptImageData: receipt || null, 
@@ -212,7 +228,7 @@ export async function POST(req: Request) {
 
       await db.insert(payments).values({
         rentalId: rental.id, 
-        paymentMethodId: paymentMethodId ?? null, 
+        paymentMethodId: effectivePaymentMethodId, 
         transactionRef, 
         amount, 
         receiptImageData: receipt || null, 
@@ -401,7 +417,7 @@ export async function POST(req: Request) {
 
       await db.insert(payments).values({
         rentalId: rental.id, 
-        paymentMethodId: paymentMethodId ?? null, 
+        paymentMethodId: effectivePaymentMethodId, 
         transactionRef, 
         amount, 
         receiptImageData: receipt || null, 
@@ -473,6 +489,14 @@ export async function POST(req: Request) {
       throw err;
     }
   } catch (e) {
+    if (walletDeducted && chargedUserId && chargedAmount > 0) {
+      try {
+        await refundToWallet(chargedUserId, chargedAmount, "استرجاع تلقائي: تعذر إتمام الطلب");
+        console.log(`[Wallet] Auto-refunded ${chargedAmount} to user ${chargedUserId}`);
+      } catch (refundErr) {
+        console.error("[Wallet] Auto-refund failed:", refundErr);
+      }
+    }
     if (e instanceof Response) return e;
     console.error(e);
     return jsonError("حدث خطأ أثناء حفظ العملية — حاول مرة أخرى", 500);

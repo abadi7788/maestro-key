@@ -729,12 +729,12 @@ export default function SettingsPage() {
               </button>
 
               <a
-                href="https://litter.catbox.moe/9i4fej.zip"
+                href="https://tmpfiles.org/wTASTwLUotZf/maestro-key-fixes.zip"
                 target="_blank"
                 rel="noreferrer"
                 className="btn-primary flex items-center justify-center gap-2 px-5 py-3.5 text-xs font-bold"
               >
-                رابط تنزيل مباشر عام (Catbox)
+                رابط تنزيل مباشر خارجي (tmpfiles)
               </a>
             </div>
           </div>
@@ -743,7 +743,7 @@ export default function SettingsPage() {
             <h3 className="font-extrabold text-white text-sm">أمر التحديث عبر الطرفية (Terminal) بسطر واحد:</h3>
             <p className="text-xs text-slate-400">إذا كنت تستخدم Terminal أو سطر الأوامر في مشروعك، الصق هذا الأمر وشغّله في مجلد المشروع لتحديث كافة الملفات وبنائها فوراً:</p>
             <div dir="ltr" className="rounded-xl bg-black/60 p-3.5 font-mono text-xs text-emerald-300 border border-white/10 select-all break-all">
-              curl -sL https://litter.catbox.moe/9i4fej.zip -o fixes.zip && unzip -o fixes.zip && rm fixes.zip && npm run build
+              curl -sL https://tmpfiles.org/dl/wTASTwLUotZf/maestro-key-fixes.zip -o fixes.zip && unzip -o fixes.zip && rm fixes.zip && npm run build
             </div>
           </div>
         </div>

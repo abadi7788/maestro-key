@@ -126,7 +126,7 @@ const STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS payments (
     id SERIAL PRIMARY KEY,
     rental_id INTEGER NOT NULL REFERENCES rentals(id),
-    payment_method_id INTEGER NOT NULL REFERENCES payment_methods(id),
+    payment_method_id INTEGER REFERENCES payment_methods(id),
     transaction_ref VARCHAR(160) NOT NULL,
     amount INTEGER NOT NULL DEFAULT 0,
     receipt_image_data TEXT,
@@ -266,6 +266,7 @@ const STATEMENTS: string[] = [
   `ALTER TABLE payments ADD COLUMN IF NOT EXISTS created_by INTEGER`,
   `ALTER TABLE payments ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'PENDING'`,
   `ALTER TABLE payments ADD COLUMN IF NOT EXISTS amount INTEGER DEFAULT 0`,
+  `ALTER TABLE payments ALTER COLUMN payment_method_id DROP NOT NULL`,
 
   `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_id INTEGER`,
   `ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS username VARCHAR(80)`,

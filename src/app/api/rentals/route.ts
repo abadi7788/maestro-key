@@ -54,7 +54,7 @@ export async function GET(req: Request) {
       status: payments.status, isExtension: payments.isExtension, createdAt: payments.createdAt,
       rejectionReason: payments.rejectionReason, bankName: paymentMethods.name,
       hasReceipt: payments.receiptImageData,
-    }).from(payments).innerJoin(paymentMethods, eq(payments.paymentMethodId, paymentMethods.id))
+    }).from(payments).leftJoin(paymentMethods, eq(payments.paymentMethodId, paymentMethods.id))
       .where(inArray(payments.rentalId, rentalIds)).orderBy(desc(payments.createdAt)) : [];
 
     const profs = await db.select().from(profiles);
@@ -65,7 +65,11 @@ export async function GET(req: Request) {
       // Employees never see account emails in lists (only at moment of sale)
       accountEmail: isAdminRole(user.role) ? r.accountEmail : null,
       profileNo: r.profileId ? profMap.get(r.profileId)?.profileNo ?? null : null,
-      payments: pays.filter((p) => p.rentalId === r.id).map((p) => ({ ...p, hasReceipt: !!p.hasReceipt })),
+      payments: pays.filter((p) => p.rentalId === r.id).map((p) => ({
+        ...p,
+        bankName: p.bankName || (p.transactionRef?.startsWith("WALLET-") ? "المحفظة" : "غير محدد"),
+        hasReceipt: !!p.hasReceipt,
+      })),
     })).filter((r) => !paymentStatus || r.payments.some((p) => p.status === paymentStatus));
 
     if (view === "due") {
