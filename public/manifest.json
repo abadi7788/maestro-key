@@ -3,13 +3,13 @@
   "short_name": "Maestro Key",
   "description": "Maestro Key — متجر اشتراكات المنصات الرقمية. مفتاح واحد لكل المنصات.",
   "id": "/",
-  "start_url": "/sale",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "portrait",
-  "background_color": "#070b14",
-  "theme_color": "#070b14",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
   "dir": "rtl",
   "lang": "ar",
   "icons": [
@@ -17,13 +17,13 @@
       "src": "/icons/icon-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     },
     {
       "src": "/icons/icon-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     },
     {
       "src": "/icons/icon-maskable-512x512.png",
