@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { accounts, profiles, customers, rentals, payments, platforms } from "@/db/schema";
+import { accounts, profiles, customers, rentals, payments, platforms, walletBalances, paymentMethods } from "@/db/schema";
 import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { deductFromWallet, refundToWallet } from "@/lib/wallet";
 import { requireUser, audit, jsonError } from "@/lib/auth";
@@ -68,13 +68,18 @@ export async function POST(req: Request) {
     if (customerPhone.length < 7) return jsonError("أدخل رقم واتساب العميل بشكل صحيح");
 
     if (paymentType === "WALLET") {
-      try {
-        await deductFromWallet(user.id, amount, "شراء اشتراك عبر المحفظة");
-        walletDeducted = true;
-        chargedUserId = user.id;
-        chargedAmount = amount;
-      } catch (err: any) {
-        return jsonError(err.message || "رصيد المحفظة غير كافٍ لإتمام العملية", 400);
+      // التحقق المسبق من توفر رصيد كافٍ في المحفظة دون الخصم قبل الأوان
+      const [balRow] = await db
+        .select({ balance: walletBalances.balance })
+        .from(walletBalances)
+        .where(eq(walletBalances.userId, user.id))
+        .limit(1);
+      const currentBalance = balRow?.balance ?? 0;
+      if (currentBalance < amount) {
+        return jsonError(
+          `رصيد المحفظة غير كافٍ لإتمام العملية — المتاح: ${currentBalance.toLocaleString()} ر.ي والمطلوب: ${amount.toLocaleString()} ر.ي`,
+          400
+        );
       }
     } else {
       if (!paymentMethodId || !transactionRef) return jsonError("يجب اختيار البنك وإدخال رقم العملية لإتمام العملية");
@@ -90,7 +95,7 @@ export async function POST(req: Request) {
     }
 
     let effectivePaymentMethodId = paymentMethodId ?? null;
-    if (paymentType === "WALLET" && !effectivePaymentMethodId) {
+    if (paymentType === "WALLET") {
       try {
         const [wMethod] = await db.select({ id: paymentMethods.id }).from(paymentMethods).where(eq(paymentMethods.name, "المحفظة")).limit(1);
         if (wMethod) {
@@ -102,11 +107,30 @@ export async function POST(req: Request) {
       } catch (pmErr) {
         console.warn("[Wallet] Could not resolve paymentMethodId for wallet:", pmErr);
       }
+      if (!effectivePaymentMethodId) {
+        try {
+          const [first] = await db.select({ id: paymentMethods.id }).from(paymentMethods).limit(1);
+          if (first) effectivePaymentMethodId = first.id;
+        } catch {}
+      }
+    }
+
+    async function processWalletDeduction(rentalId: number, noteText: string) {
+      if (paymentType !== "WALLET") return;
+      await deductFromWallet({
+        userId: user.id,
+        amount,
+        note: noteText,
+        rentalId,
+        createdBy: user.id,
+      });
+      walletDeducted = true;
+      chargedUserId = user.id;
+      chargedAmount = amount;
     }
 
     const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
     if (!platform) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: منصة غير موجودة");
       return jsonError("منصة غير موجودة");
     }
 
@@ -142,7 +166,6 @@ export async function POST(req: Request) {
     // ---------- مسار التسليم اليدوي الفوري ----------
     if (deliverySource === "MANUAL") {
       if (!manualEmail && !manualPassword && !manualLink && !manualCode) {
-        if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: لم يتم إدخال بيانات تسليم");
         return jsonError("أدخل بيانات التسليم اليدوي (إيميل أو كلمة مرور أو رابط أو كود)");
       }
       const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
@@ -173,6 +196,8 @@ export async function POST(req: Request) {
         durationDays: days, 
         createdBy: user.id,
       });
+
+      await processWalletDeduction(rental.id, `تسليم يدوي: ${platform.name}`);
 
       const lines = [
         manualEmail && `📧 الإيميل: ${manualEmail}`,
@@ -238,6 +263,8 @@ export async function POST(req: Request) {
         createdBy: user.id,
       });
 
+      await processWalletDeduction(rental.id, `طلب اشتراك: ${platform.name}`);
+
       await notifyAdmin({
         title: mode === "LINK_ONLY" ? "طلب رابط — بانتظار الإرسال" : "طلب جديد — بانتظار التفعيل",
         body: `${customer.name} (${platform.name}) — ${paymentType === "WALLET" ? "تم الدفع بالمحفظة" : "بانتظار السند"}`,
@@ -298,7 +325,6 @@ export async function POST(req: Request) {
         if (acc && stillHeld) {
           const newEnd = lifetime ? lifetimeEndDate() : (renewable.status === "ACTIVE" ? addDays(new Date(renewable.endDate), days) : addDays(now, days));
           if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < newEnd) {
-            if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: الحساب ينتهي قبل مدة التجديد");
             return jsonError("الحساب الحالي للعميل ينتهي قبل نهاية مدة التجديد. اختر «بيع جديد» لسحب حساب آخر يغطي المدة.", 409);
           }
           await db.update(rentals).set({
@@ -309,7 +335,7 @@ export async function POST(req: Request) {
 
           await db.insert(payments).values({
             rentalId: renewable.id, 
-            paymentMethodId: paymentMethodId ?? null, 
+            paymentMethodId: effectivePaymentMethodId, 
             transactionRef, 
             amount, 
             receiptImageData: receipt || null, 
@@ -321,6 +347,8 @@ export async function POST(req: Request) {
             previousRentalStatus: renewable.status, 
             createdBy: user.id,
           });
+
+          await processWalletDeduction(renewable.id, `تجديد اشتراك: ${platform.name}`);
 
           await refreshAccountStatus(acc.id);
           const renKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
@@ -360,34 +388,56 @@ export async function POST(req: Request) {
         if (claimed.length) { claimedAcc = claimed[0]; break; }
       } else {
         if (saleType === "FULL") continue;
-        const claimed = await db.execute(sql`
-          UPDATE profiles
-          SET status = 'SOLD',
-              sold_at = now(),
-              sold_by = ${user.id},
-              is_occupied = true,
-              current_rental_id = NULL
-          WHERE id = (
-            SELECT id FROM profiles
-            WHERE account_id = ${acc.id} AND status = 'AVAILABLE'
-            ORDER BY id ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-          )
-          RETURNING id, account_id, profile_no, profile_name, pin, status
-        `);
-        const rows = claimed.rows as Array<{ id: number; account_id: number; profile_no: number; profile_name: string | null; pin: string | null; status: string }>;
-        if (rows.length) {
+        let claimedProfileRow: any = null;
+        try {
+          const claimed = await db.execute(sql`
+            UPDATE profiles
+            SET status = 'SOLD',
+                sold_at = now(),
+                sold_by = ${user.id},
+                is_occupied = true,
+                current_rental_id = NULL
+            WHERE id = (
+              SELECT id FROM profiles
+              WHERE account_id = ${acc.id} AND (status = 'AVAILABLE' OR status IS NULL)
+              ORDER BY id ASC
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            )
+            RETURNING id, account_id, profile_no, profile_name, pin, status
+          `);
+          const rows = claimed.rows as any[];
+          if (rows.length) claimedProfileRow = rows[0];
+        } catch (colErr) {
+          console.warn("[Profiles] Falling back to standard occupancy update:", colErr);
+          const fallback = await db.execute(sql`
+            UPDATE profiles
+            SET is_occupied = true,
+                current_rental_id = NULL
+            WHERE id = (
+              SELECT id FROM profiles
+              WHERE account_id = ${acc.id} AND is_occupied = false
+              ORDER BY id ASC
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            )
+            RETURNING id, account_id, profile_no, profile_name, pin
+          `);
+          const rows = fallback.rows as any[];
+          if (rows.length) claimedProfileRow = { ...rows[0], status: "SOLD" };
+        }
+
+        if (claimedProfileRow) {
           claimedAcc = acc;
           claimedProfile = {
-            id: rows[0].id,
-            accountId: rows[0].account_id,
-            profileNo: rows[0].profile_no,
-            profileName: rows[0].profile_name,
-            pin: rows[0].pin,
+            id: claimedProfileRow.id,
+            accountId: claimedProfileRow.account_id,
+            profileNo: claimedProfileRow.profile_no,
+            profileName: claimedProfileRow.profile_name,
+            pin: claimedProfileRow.pin,
             isOccupied: true,
             currentRentalId: null,
-            status: rows[0].status,
+            status: claimedProfileRow.status || "SOLD",
             soldAt: now,
             soldBy: user.id,
             createdAt: now,
@@ -398,7 +448,6 @@ export async function POST(req: Request) {
     }
 
     if (!claimedAcc) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: لا يوجد مخزون كافٍ");
       const typeLabel = saleType === "FULL" ? "حساب كامل" : saleType === "PROFILE" ? "ملف/بروفايل" : "حساب متاح";
       return jsonError(`عفواً، لا يوجد «${typeLabel}» متاح حالياً لهذه المنصة يغطي المدة المطلوبة.`, 409);
     }
@@ -413,7 +462,19 @@ export async function POST(req: Request) {
         activationStatus: (platform.requiresCustomerEmail || platform.extraFieldLabel) ? "PENDING" : "NOT_REQUIRED",
       }).returning();
 
-      if (claimedProfile) await db.update(profiles).set({ currentRentalId: rental.id }).where(eq(profiles.id, claimedProfile.id));
+      if (claimedProfile) {
+        try {
+          await db.execute(sql`
+            UPDATE profiles
+            SET current_rental_id = ${rental.id},
+                is_occupied = true,
+                status = 'SOLD'
+            WHERE id = ${claimedProfile.id}
+          `);
+        } catch {
+          await db.update(profiles).set({ currentRentalId: rental.id, isOccupied: true }).where(eq(profiles.id, claimedProfile.id));
+        }
+      }
 
       await db.insert(payments).values({
         rentalId: rental.id, 
@@ -428,6 +489,8 @@ export async function POST(req: Request) {
         durationDays: days, 
         createdBy: user.id,
       });
+
+      await processWalletDeduction(rental.id, `شراء اشتراك: ${platform.name}`);
 
       await refreshAccountStatus(claimedAcc.id);
       const claimedKind = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
@@ -478,8 +541,21 @@ export async function POST(req: Request) {
       await audit(user, "SALE", "rentals", rental.id, `بيع ${platform.name} للعميل ${customer.name} — ${paymentType}`);
       return respondWithAccount(rental.id, claimedAcc, claimedProfile, neededEnd, false);
     } catch (err) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: فشل حفظ سجل البيع");
-      if (claimedProfile) await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, claimedProfile.id));
+      if (claimedProfile) {
+        try {
+          await db.execute(sql`
+            UPDATE profiles
+            SET is_occupied = false,
+                current_rental_id = NULL,
+                status = 'AVAILABLE',
+                sold_at = NULL,
+                sold_by = NULL
+            WHERE id = ${claimedProfile.id}
+          `);
+        } catch {
+          await db.update(profiles).set({ isOccupied: false, currentRentalId: null }).where(eq(profiles.id, claimedProfile.id));
+        }
+      }
       const ck = claimedAcc.deliveryKind === "INVITE_LINK" || claimedAcc.deliveryKind === "LICENSE_KEY" ? claimedAcc.deliveryKind : "CREDENTIALS";
       if (ck !== "CREDENTIALS") {
         await db.update(accounts).set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, updatedAt: now }).where(eq(accounts.id, claimedAcc.id));
@@ -488,17 +564,23 @@ export async function POST(req: Request) {
       }
       throw err;
     }
-  } catch (e) {
+  } catch (e: any) {
     if (walletDeducted && chargedUserId && chargedAmount > 0) {
       try {
-        await refundToWallet(chargedUserId, chargedAmount, "استرجاع تلقائي: تعذر إتمام الطلب");
+        await refundToWallet({
+          userId: chargedUserId,
+          amount: chargedAmount,
+          note: "استرجاع تلقائي: تعذر إتمام الطلب",
+          createdBy: chargedUserId,
+        });
         console.log(`[Wallet] Auto-refunded ${chargedAmount} to user ${chargedUserId}`);
       } catch (refundErr) {
         console.error("[Wallet] Auto-refund failed:", refundErr);
       }
     }
     if (e instanceof Response) return e;
-    console.error(e);
-    return jsonError("حدث خطأ أثناء حفظ العملية — حاول مرة أخرى", 500);
+    const errorMsg = e?.message || (typeof e === "string" ? e : "حدث خطأ غير متوقع أثناء حفظ العملية");
+    console.error("[Sales Error Detailed]:", errorMsg, e);
+    return jsonError(`خطأ أثناء حفظ العملية: ${errorMsg}`, 500);
   }
 }

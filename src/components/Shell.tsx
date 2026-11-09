@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   LayoutDashboard, ShoppingCart, BellRing, Boxes, ReceiptText, Users, Trash2,
   Settings, ScrollText, LogOut, History, Menu, X, ShieldCheck, RefreshCcw, Wallet,
-  KeyRound
+  KeyRound, Download
 } from "lucide-react";
 
 
@@ -155,6 +155,18 @@ export default function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
 
+        {/* تحميل كود المشروع كاملاً */}
+        <div className="mb-4 rounded-2xl border border-blue-500/20 bg-blue-500/10 p-3">
+          <div className="text-[11px] font-bold text-blue-300">تحميل المشروع كاملاً:</div>
+          <a
+            href="/downloads/maestro-key-full.zip"
+            download="maestro-key-full-project.zip"
+            className="mt-2 flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white shadow-lg transition hover:bg-blue-500"
+          >
+            <Download size={15} /> تنزيل ملفات المشروع (ZIP)
+          </a>
+        </div>
+
         <nav className="flex-1 space-y-1 overflow-y-auto">
           {visibleItems.map((n) => (
             <Link key={n.href} href={n.href} className={linkCls(n.href)}>
@@ -245,6 +257,16 @@ export default function Shell({ children }: { children: ReactNode }) {
             </div>
           </div>
 
+          <a
+            href="/downloads/maestro-key-full.zip"
+            download="maestro-key-full-project.zip"
+            title="تحميل كود المشروع كاملاً (ZIP)"
+            className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/20 px-2.5 py-1.5 text-xs font-black text-emerald-300 hover:bg-emerald-500 hover:text-white transition"
+          >
+            <Download size={15} />
+            <span className="hidden sm:inline">تحميل المشروع</span>
+          </a>
+
           {isAdminRole(me.role) && inboxCount > 0 && (
             <Link href="/inbox" className="relative rounded-lg bg-white/10 p-2 text-white">
               <BellRing size={20} />
@@ -256,7 +278,7 @@ export default function Shell({ children }: { children: ReactNode }) {
         {/* Mobile drawer */}
         {menuOpen && (
           <div className="fixed inset-0 z-50 bg-black/50 lg:hidden" onClick={() => setMenuOpen(false)}>
-            <div className="pop-in h-full w-72 bg-[#050914] p-5 text-white" onClick={(e) => e.stopPropagation()}>
+            <div className="pop-in flex flex-col h-full w-72 max-h-[100dvh] overflow-y-auto bg-[#050914] p-5 pb-28 text-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="mb-5 flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <BrandLogo size={40} glow={false} />
@@ -265,12 +287,24 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <button onClick={() => setMenuOpen(false)} className="rounded-lg bg-white/10 p-2 text-white"><X size={18} /></button>
               </div>
 
+              {/* بطاقة تنزيل المشروع للهاتف مباشرة */}
+              <div className="mb-4 rounded-xl border border-blue-500/30 bg-blue-500/10 p-3">
+                <div className="text-[11px] font-bold text-blue-300">تحميل ملفات المشروع كاملة:</div>
+                <a
+                  href="/downloads/maestro-key-full.zip"
+                  download="maestro-key-full-project.zip"
+                  className="mt-2 flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 py-2 text-xs font-black text-white shadow-lg transition hover:bg-blue-500"
+                >
+                  <Download size={15} /> تنزيل كامل ملفات المشروع (ZIP)
+                </a>
+              </div>
+
               <div className="mb-4 rounded-xl border border-amber-400/20 bg-amber-400/10 p-3">
                 <div className="text-[11px] text-slate-400">الرصيد المتاح:</div>
                 <div className="text-sm font-black text-amber-300">{Number(me.walletBalance || 0).toLocaleString()} ريال يمني</div>
               </div>
 
-              <nav className="space-y-1">
+              <nav className="flex-1 space-y-1">
                 {visibleItems.map((n) => (
                   <Link key={n.href} href={n.href} onClick={() => setMenuOpen(false)} className={linkCls(n.href)}>
                     {n.icon}<span className="flex-1">{n.label}</span>
@@ -278,9 +312,26 @@ export default function Shell({ children }: { children: ReactNode }) {
                   </Link>
                 ))}
               </nav>
-              <button onClick={logout} className="mt-6 flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400"><LogOut size={20} /> تسجيل الخروج</button>
 
-
+              <div className="mt-6 flex flex-col gap-1.5 border-t border-white/10 pt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPwOpen(true);
+                  }}
+                  className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-300 transition hover:bg-white/10 hover:text-white"
+                >
+                  <KeyRound size={18} /> تغيير كلمة المرور
+                </button>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-bold text-red-400 transition hover:bg-white/10"
+                >
+                  <LogOut size={18} /> تسجيل الخروج
+                </button>
+              </div>
             </div>
           </div>
         )}

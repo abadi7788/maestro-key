@@ -1,6 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 
+export const dynamic = "force-dynamic";
+
+
 /**
  * صفحة عدم الاتصال (PWA Offline Page) — بهوية متجر Maestro Key.
  * تنسيقها مضمّن (Inline CSS) عمداً حتى تظهر بكامل جمالها

@@ -68,12 +68,29 @@ export async function GET(req: Request) {
 
     if (view === "settings") {
       const rows = await db.select().from(settings);
-      const allUsers = await db.select({ id: users.id, username: users.username, displayName: users.displayName, role: users.role, isActive: users.isActive, lastLoginAt: users.lastLoginAt, createdAt: users.createdAt }).from(users).orderBy(users.id);
+      const allUsers = await db.select({
+        id: users.id,
+        username: users.username,
+        email: users.email,
+        displayName: users.displayName,
+        role: users.role,
+        permissions: users.permissions,
+        isActive: users.isActive,
+        lastLoginAt: users.lastLoginAt,
+        createdAt: users.createdAt,
+      }).from(users).orderBy(users.id);
+      const { walletBalances } = await import("@/db/schema");
+      const balances = await db.select().from(walletBalances);
+      const balanceMap = new Map(balances.map((b) => [b.userId, b.balance]));
+      const enrichedUsers = allUsers.map((u) => ({
+        ...u,
+        walletBalance: balanceMap.get(u.id) ?? 0,
+      }));
       const plats = await db.select().from(platforms).orderBy(platforms.id);
       const banks = await db.select().from(paymentMethods).orderBy(paymentMethods.id);
       const logs = await db.select().from(whatsappLogs).orderBy(desc(whatsappLogs.createdAt)).limit(100);
       const map: Record<string, string> = {}; rows.forEach((r) => (map[r.key] = r.value));
-      return Response.json({ settings: map, users: allUsers, platforms: plats, paymentMethods: banks, whatsappLogs: logs });
+      return Response.json({ settings: map, users: enrichedUsers, platforms: plats, paymentMethods: banks, whatsappLogs: logs });
     }
 
     return jsonError("عرض غير معروف");
