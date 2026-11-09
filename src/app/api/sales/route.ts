@@ -28,7 +28,9 @@ export async function GET(req: Request) {
       platformName: platforms.name, profileId: rentals.profileId, accountType: accounts.type,
     }).from(rentals).innerJoin(platforms, eq(rentals.platformId, platforms.id)).leftJoin(accounts, eq(rentals.accountId, accounts.id))
       .where(eq(rentals.customerId, customer.id)).orderBy(desc(rentals.createdAt)).limit(20);
-    return Response.json({ customer, rentals: rows });
+    const orderCount = rows.length;
+    const tag = orderCount >= 3 ? "VIP" : orderCount >= 1 ? "ACTIVE" : "NEW";
+    return Response.json({ customer, rentals: rows, orderCount, tag });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }
 

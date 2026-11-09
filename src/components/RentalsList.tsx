@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { Check, ExternalLink, KeyRound, Loader2, Lock, MessageCircle, ReceiptText, Search, X } from "lucide-react";
+import { Check, Copy, ExternalLink, KeyRound, Loader2, Lock, MessageCircle, ReceiptText, RotateCcw, Search, X } from "lucide-react";
 import { api, fetchMe, fmtDate, fmtDateTime, money, waLink, daysLeft, type Me } from "@/lib/client";
 import { isAdminRole } from "@/lib/roles";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, ReceiptButton, Spinner, paymentBadge, rentalBadge } from "@/components/ui";
@@ -13,12 +13,39 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
   const [status, setStatus] = useState(""); const [payStatus, setPayStatus] = useState(""); const [q, setQ] = useState("");
   const [rejecting, setRejecting] = useState<any>(null); const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState("");
   const [credRental, setCredRental] = useState<any>(null); const [credData, setCredData] = useState<any>(null); const [credBusy, setCredBusy] = useState(false); const [credErr, setCredErr] = useState("");
+  const [replaceTarget, setReplaceTarget] = useState<any>(null);
+  const [replaceReason, setReplaceReason] = useState("توقف الحساب / مشاكل دخول أو إغلاق");
+  const [replaceResult, setReplaceResult] = useState<any>(null);
+  const [replaceBusy, setReplaceBusy] = useState(false);
+  const [replaceErr, setReplaceErr] = useState("");
 
   async function openCreds(r: any) {
     setCredRental(r); setCredData(null); setCredErr(""); setCredBusy(true);
     try { const d = await api(`/api/sales/credentials?rentalId=${r.id}`); setCredData(d); }
     catch (e: any) { setCredErr(e.message || "تعذّر فتح البيانات"); }
     finally { setCredBusy(false); }
+  }
+
+  async function doReplacement() {
+    if (!replaceTarget) return;
+    setReplaceBusy(true);
+    setReplaceErr("");
+    try {
+      const res = await api("/api/actions", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "compensateReplacement",
+          rentalId: replaceTarget.id,
+          reason: replaceReason.trim() || "تعويض واستبدال بروفايل جديد",
+        }),
+      });
+      setReplaceResult(res);
+      await load();
+    } catch (err: any) {
+      setReplaceErr(err.message || "تعذر إتمام عملية التعويض");
+    } finally {
+      setReplaceBusy(false);
+    }
   }
 
   const load = useCallback(async () => {
@@ -120,6 +147,20 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
                     <Check size={14} /> تفعيل الطلب في التنبيهات
                   </Link>
                 )}
+                {(r.status === "ACTIVE" || r.status === "ENDED") && r.deliveryMode !== "LINK_ONLY" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReplaceTarget(r);
+                      setReplaceResult(null);
+                      setReplaceErr("");
+                      setReplaceReason("توقف الحساب / مشاكل دخول أو إغلاق");
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3.5 py-2 text-xs font-black text-amber-300 transition hover:bg-amber-400/20 active:scale-[.98]"
+                  >
+                    <RotateCcw size={14} /> تعويض ببروفايل جديد
+                  </button>
+                )}
                 <a className="btn-ghost py-2 text-xs" target="_blank" rel="noreferrer" href={waLink(r.customerPhone, `مرحباً ${r.customerName}، معك متجر مايسترو كي بخصوص اشتراك ${r.platformName}.`)}><MessageCircle size={15} className="text-[#1fa855]" /> مراسلة العميل</a>
                 {!r.isLifetime && (r.status === "ACTIVE" || r.status === "ENDED") && (
                   <Link href={`/sale?phone=${encodeURIComponent(r.customerPhone)}&platformId=${r.platformId}`} className="btn-ghost py-2 text-xs">↻ تسجيل تجديد لهذا العميل</Link>
@@ -211,6 +252,137 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
             <p className="text-center text-[11px] text-slate-400">تم تسجيل عرض هذه البيانات في سجل التدقيق. لا تشاركها مع غير العميل.</p>
           </div>
         ) : null}
+      </Modal>
+
+      {/* Replacement Generator Modal — تعويض ببروفايل جديد وتجهيز رسالة واتساب */}
+      <Modal
+        open={!!replaceTarget}
+        onClose={() => {
+          setReplaceTarget(null);
+          setReplaceResult(null);
+          setReplaceErr("");
+        }}
+        title="🔄 تعويض ببروفايل جديد وتجهيز رسالة اعتذار"
+      >
+        {replaceResult ? (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-emerald-300">
+              <div className="flex items-center gap-2 font-black text-sm mb-1">
+                <Check size={18} className="text-emerald-400" />
+                {replaceResult.message}
+              </div>
+              <p className="text-xs text-slate-300">
+                تم استبدال البروفايل وتخصيص الحساب الجديد في النظام فوراً، وحفظ العملية في سجل التدقيق.
+              </p>
+            </div>
+
+            {replaceResult.newCredentials && (
+              <div className="space-y-2 rounded-2xl border border-white/10 bg-white/[.04] p-3.5">
+                <div className="text-xs font-black text-[#63a8ff] mb-1">بيانات الحساب الجديد المسحوب:</div>
+                {replaceResult.newCredentials.email && (
+                  <div className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-400">الإيميل:</span>
+                    <span className="font-mono font-bold text-white" dir="ltr">{replaceResult.newCredentials.email}</span>
+                  </div>
+                )}
+                {replaceResult.newCredentials.password && (
+                  <div className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-400">كلمة المرور:</span>
+                    <span className="font-mono font-bold text-white" dir="ltr">{replaceResult.newCredentials.password}</span>
+                  </div>
+                )}
+                {replaceResult.newCredentials.profileName && (
+                  <div className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-400">البروفايل:</span>
+                    <span className="font-bold text-white">{replaceResult.newCredentials.profileName}</span>
+                  </div>
+                )}
+                {replaceResult.newCredentials.pin && (
+                  <div className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-400">رمز PIN:</span>
+                    <span className="font-mono font-bold text-amber-300">{replaceResult.newCredentials.pin}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="rounded-2xl border border-white/10 bg-[#09101f] p-3.5">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-bold text-slate-300">رسالة الواتساب الجاهزة للإرسال:</span>
+                <CopyBtn text={replaceResult.whatsappMessage} label="نسخ النص" />
+              </div>
+              <pre className="max-h-44 overflow-y-auto whitespace-pre-wrap font-sans text-xs leading-relaxed text-slate-200" dir="rtl">
+                {replaceResult.whatsappMessage}
+              </pre>
+            </div>
+
+            <a
+              href={waLink(replaceResult.customerPhone, replaceResult.whatsappMessage)}
+              target="_blank"
+              rel="noreferrer"
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1fa855] px-5 py-3 font-black text-white shadow-lg transition hover:bg-[#178a45] active:scale-[.99]"
+            >
+              <MessageCircle size={18} /> إرسال رسالة التعويض للعميل عبر واتساب
+            </a>
+
+            <button
+              type="button"
+              onClick={() => {
+                setReplaceTarget(null);
+                setReplaceResult(null);
+              }}
+              className="btn-ghost w-full py-2.5 text-xs font-bold"
+            >
+              إغلاق
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3.5 text-xs font-semibold leading-relaxed text-amber-200">
+              يقوم هذا الإجراء بسحب بروفايل متاح جديد فوراً لنفس المنصة (<b>{replaceTarget?.platformName}</b>) وربطه بالعميل (<b>{replaceTarget?.customerName}</b>)، مع إخلاء البروفايل القديم وتجهيز رسالة اعتذار وتعويض بالبيانات الجديدة.
+            </div>
+
+            {replaceErr && (
+              <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-xs font-bold text-red-300">
+                ⚠️ {replaceErr}
+              </div>
+            )}
+
+            <div>
+              <label className="label">سبب التعويض والاستبدال <span className="text-slate-400 text-[11px]">(يُحفظ في سجل التدقيق)</span></label>
+              <input
+                className="field"
+                value={replaceReason}
+                onChange={(e) => setReplaceReason(e.target.value)}
+                placeholder="مثال: توقف الحساب من المنصة / مشاكل دخول"
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                disabled={replaceBusy}
+                onClick={doReplacement}
+                className="btn-gold flex-1 py-3 text-sm font-black"
+              >
+                {replaceBusy ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <Loader2 size={16} className="animate-spin" /> جلب بروفايل بديل…
+                  </span>
+                ) : (
+                  "تأكيد سحب بروفايل بديل وتجهيز الرسالة"
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setReplaceTarget(null)}
+                className="btn-ghost py-3 px-4 text-xs font-bold"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

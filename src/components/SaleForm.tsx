@@ -37,6 +37,21 @@ export default function SaleForm() {
   const [scan, setScan] = useState<"idle" | "reading" | "ok" | "fail">("idle");
   const [scanNote, setScanNote] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
+
+  function formatPhoneInput(val: string): string {
+    const raw = val.replace(/[^\d+]/g, "");
+    const digits = val.replace(/\D/g, "");
+    if (digits.startsWith("967")) {
+      const rest = digits.slice(3);
+      if (rest.length <= 3) return `+967 ${rest}`;
+      if (rest.length <= 6) return `+967 ${rest.slice(0, 3)} ${rest.slice(3)}`;
+      return `+967 ${rest.slice(0, 3)} ${rest.slice(3, 6)} ${rest.slice(6, 9)}`;
+    }
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 6) return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+    return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6, 9)}`;
+  }
 
   useEffect(() => {
     fetchMe().then((u) => setMe(u)).catch(() => {});
@@ -129,6 +144,7 @@ export default function SaleForm() {
   }
 
   async function submit() {
+    if (submittingRef.current || busy) return;
     setErr("");
     const numericAmount = Number(amount || 0);
     if (!platformId) return setErr("اختر المنصة");
@@ -154,6 +170,7 @@ export default function SaleForm() {
       if (availableForType <= 0) return setErr(accountType === "PROFILE" ? "لا يوجد ملف / بروفايل متاح لهذه المنصة حالياً" : "لا يوجد حساب كامل متاح لهذه المنصة حالياً");
     }
 
+    submittingRef.current = true;
     setBusy(true);
     try {
       const d = await api("/api/sales", {
@@ -176,7 +193,12 @@ export default function SaleForm() {
         }),
       });
       setResult(d); window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (e: any) { setErr(e.message); } finally { setBusy(false); }
+    } catch (e: any) { 
+      setErr(e.message); 
+    } finally { 
+      submittingRef.current = false;
+      setBusy(false); 
+    }
   }
 
   function reset() {
@@ -518,15 +540,33 @@ export default function SaleForm() {
         <div className="space-y-4 p-6">
           <div>
             <label className="label">📱 رقم واتساب العميل</label>
-            <input className="field" dir="ltr" style={{ textAlign: "left" }} inputMode="tel" placeholder="777123456" value={phone} onChange={(e) => setPhone(e.target.value)} />
-            {looking && <p className="mt-2 text-xs font-bold text-[#63a8ff]">جارٍ البحث عن الرقم…</p>}
+            <input
+              className="field font-mono"
+              dir="ltr"
+              style={{ textAlign: "left" }}
+              inputMode="tel"
+              placeholder="777 123 456"
+              value={phone}
+              onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
+            />
+            {looking && <p className="mt-2 text-xs font-bold text-[#63a8ff]">جارٍ البحث عن الرقم وتصنيف العميل…</p>}
           </div>
 
           {lookup?.customer ? (
             <div className="pop-in overflow-hidden rounded-2xl border border-emerald-500/25 bg-gradient-to-br from-emerald-500/10 to-transparent">
-              <div className="flex flex-wrap items-center gap-2 border-b border-emerald-500/25 px-5 py-3">
-                <span className="pill pill-green">عميل معروف ✓</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-500/25 px-5 py-3">
                 <span className="text-[15px] font-black text-white">{lookup.customer.name}</span>
+                <div>
+                  {(lookup.orderCount >= 3 || (lookup.rentals?.length ?? 0) >= 3) ? (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-400/20 px-3 py-1 text-xs font-black text-amber-300 shadow-[0_0_12px_rgba(251,191,36,.25)]">
+                      ⭐ عميل دائم ({lookup.orderCount ?? lookup.rentals?.length} عمليات سابقة)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/20 px-3 py-1 text-xs font-black text-emerald-300">
+                      ✓ عميل نشط ({lookup.orderCount ?? lookup.rentals?.length} عملية سابقة)
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="space-y-3 px-5 py-4">
                 {lookup.rentals.length > 0 && (
@@ -546,6 +586,11 @@ export default function SaleForm() {
             </div>
           ) : phone.replace(/\D/g, "").length >= 7 && !looking ? (
             <div className="pop-in rounded-2xl border border-white/10 bg-gradient-to-br from-white/[.04] to-transparent px-5 py-4">
+              <div className="mb-2">
+                <span className="inline-flex items-center gap-1 rounded-full border border-blue-400/40 bg-blue-500/20 px-3 py-1 text-xs font-black text-blue-300">
+                  ✨ عميل جديد (أول عملية شراء له)
+                </span>
+              </div>
               <div className="mt-2">
                 <label className="label">👤 اسم العميل</label>
                 <div className="relative">
@@ -749,12 +794,12 @@ export default function SaleForm() {
       {/* Submit button */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-l from-[#0a1224] via-[#050914] to-[#0b1226] p-2">
         <button onClick={submit} disabled={busy}
-          className="relative flex w-full items-center justify-center gap-3 rounded-[14px] bg-gradient-to-l from-[#63a8ff] to-[#2f7bff] px-6 py-5 text-lg font-black text-white shadow-[0_8px_28px_rgba(255,255,255,.15)] transition hover:bg-[#f2f6ff] active:scale-[.99] disabled:opacity-60">
-          {busy ? <Loader2 size={22} className="animate-spin text-[#1e5eff]" /> : <ShoppingCart size={22} className="text-[#1e5eff]" />}
+          className="relative flex w-full items-center justify-center gap-3 rounded-[14px] bg-gradient-to-l from-[#63a8ff] to-[#2f7bff] px-6 py-5 text-lg font-black text-white shadow-[0_8px_28px_rgba(255,255,255,.15)] transition hover:brightness-110 active:scale-[.99] disabled:opacity-60 disabled:cursor-not-allowed">
+          {busy ? <Loader2 size={22} className="animate-spin text-white" /> : <ShoppingCart size={22} className="text-white" />}
           <span>
-            {paymentType === "WALLET" ? "خصم من المحفظة وتأكيد الطلب فوراً" : (renewable && !effectiveForceNew ? "إرسال طلب التجديد والسند للمدير" : "إرسال الطلب والسند للمدير")}
+            {busy ? "جارٍ تأكيد الطلب وحفظ العملية فوراً…" : paymentType === "WALLET" ? "خصم من المحفظة وتأكيد الطلب فوراً" : (renewable && !effectiveForceNew ? "إرسال طلب التجديد والسند للمدير" : "إرسال الطلب والسند للمدير")}
           </span>
-          <ChevronLeft size={22} className="text-[#1e5eff]" />
+          {!busy && <ChevronLeft size={22} className="text-white" />}
         </button>
       </div>
     </div>

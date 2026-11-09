@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import {
-  AlarmClock, ArrowLeft, BellRing, Boxes, CheckCircle2, KeyRound, Play, ReceiptText,
+  AlarmClock, ArrowLeft, BellRing, Boxes, CheckCircle2, CreditCard, KeyRound, Landmark, Play, ReceiptText,
   RefreshCcw, ShieldAlert, ShoppingCart, TrendingUp, Users, Wallet,
 } from "lucide-react";
 import { api, fetchMe, fmtDate, money, daysLeft, type Me } from "@/lib/client";
@@ -95,6 +95,95 @@ export default function DashboardPage() {
             <StatCard label="حسابات توشك صلاحيتها" value={s.accountsExpiringSoon} sub="صلاحية الحساب نفسه تنتهي خلال 30 يوم" icon={<ShieldAlert size={20} />} tone="bg-orange-100 text-orange-700" />
             <StatCard label="بانتظار تغيير كلمة مرور" value={s.needsPasswordChange} sub="لن تُباع قبل تغيير كلمتها يدوياً" icon={<KeyRound size={20} />} tone="bg-slate-200 text-slate-200" />
           </div>
+
+          {/* التحقق المالي والحسابي اليومي للمدير (Daily Financial Reconciliation) */}
+          {data?.dailyReconciliation && (
+            <section className="overflow-hidden rounded-3xl border border-white/10 bg-[#0c1426] p-5 sm:p-6 shadow-xl">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-4">
+                <div>
+                  <h2 className="flex items-center gap-2 text-base font-black text-white sm:text-lg">
+                    <Landmark size={20} className="text-amber-400" />
+                    التحقق المالي والحسابي اليومي (الإغلاق اليومي)
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-400 font-semibold">
+                    ملخص مبيعات اليوم المفصلة حسب طريقة الدفع ولكل موظف لتسهيل المطابقة والمحاسبة اليومية.
+                  </p>
+                </div>
+                <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-1.5 text-xs font-black text-amber-300">
+                  {data.dailyReconciliation.todaySalesCount} عمليات اليوم
+                </div>
+              </div>
+
+              {/* بطاقات الإجمالي حسب طريقة الدفع */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
+                    <Wallet size={16} />
+                    إجمالي مبيعات المحفظة اليوم
+                  </div>
+                  <div className="mt-2 text-xl font-black text-white">
+                    {money(data.dailyReconciliation.todayWalletTotal)}
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-400 font-semibold">خصم فوري مباشر من أرصدة المحافظ</div>
+                </div>
+
+                <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4">
+                  <div className="flex items-center gap-2 text-xs font-bold text-blue-300">
+                    <CreditCard size={16} />
+                    إجمالي مبيعات السندات / نقداً
+                  </div>
+                  <div className="mt-2 text-xl font-black text-white">
+                    {money(data.dailyReconciliation.todayReceiptTotal)}
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-400 font-semibold">حوالات بنكية وسندات دفع مؤكدة</div>
+                </div>
+
+                <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 p-4">
+                  <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
+                    <TrendingUp size={16} />
+                    صافي إجمالي مبيعات اليوم
+                  </div>
+                  <div className="mt-2 text-xl font-black text-emerald-400">
+                    {money(data.dailyReconciliation.todayTotalAmount)}
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-400 font-semibold">المجموع الكلي المقبوض لليوم</div>
+                </div>
+              </div>
+
+              {/* جدول تفصيل مبيعات الموظفين */}
+              {data.dailyReconciliation.staffReconciliation?.length > 0 && (
+                <div className="mt-5">
+                  <h3 className="mb-2 text-xs font-black text-slate-300">تفصيل المبيعات حسب الموظف:</h3>
+                  <div className="overflow-x-auto rounded-2xl border border-white/10 bg-white/[.02]">
+                    <table className="w-full text-right text-xs">
+                      <thead>
+                        <tr className="border-b border-white/10 bg-white/[.04] text-slate-400 font-extrabold">
+                          <th className="p-3">الموظف / المستخدم</th>
+                          <th className="p-3">عدد العمليات</th>
+                          <th className="p-3">مدفوعات المحفظة</th>
+                          <th className="p-3">مدفوعات السندات</th>
+                          <th className="p-3 font-black text-white">إجمالي المبيعات</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {data.dailyReconciliation.staffReconciliation.map((u: any) => (
+                          <tr key={u.userId} className="hover:bg-white/[.02] transition">
+                            <td className="p-3 font-extrabold text-white">
+                              {u.name} <span className="text-[11px] font-normal text-slate-500">(@{u.username})</span>
+                            </td>
+                            <td className="p-3 font-bold text-slate-300">{u.salesCount}</td>
+                            <td className="p-3 font-mono font-bold text-amber-300">{money(u.walletAmount)}</td>
+                            <td className="p-3 font-mono font-bold text-blue-300">{money(u.receiptAmount)}</td>
+                            <td className="p-3 font-mono font-black text-emerald-400">{money(u.totalAmount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
         </>
       )}
 

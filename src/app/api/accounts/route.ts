@@ -68,9 +68,13 @@ export async function POST(req: Request) {
     const maxUses = maxUsesRaw === null ? null : (Number.isFinite(maxUsesRaw) && maxUsesRaw > 0 ? Math.floor(maxUsesRaw) : null);
     const notes = String(b.notes || "").trim() || null;
     const salePrice = b.salePrice ? Number(b.salePrice) : null;
-    const expiryRaw = String(b.expiryDate || "").trim();
-    const expiryDate = expiryRaw ? new Date(expiryRaw) : null;
-    if (expiryRaw && (!expiryDate || isNaN(expiryDate.getTime()))) return jsonError("تاريخ الانتهاء غير صالح — اتركه فارغاً للاشتراك الدائم");
+    const expiryMode = b.expiryMode || (b.noExpiry ? "LIFETIME" : "DATE");
+    let expiryDate: Date | null = null;
+    if (expiryMode === "DATE") {
+      const expiryRaw = String(b.expiryDate || "").trim();
+      expiryDate = expiryRaw ? new Date(expiryRaw) : null;
+      if (expiryRaw && (!expiryDate || isNaN(expiryDate.getTime()))) return jsonError("تاريخ الانتهاء غير صالح — اختر بدون انتهاء للاشتراك الدائم");
+    }
 
     if (deliveryKind === "INVITE_LINK") {
       if (!inviteLink) return jsonError("أدخل رابط الدعوة / التفعيل");
@@ -163,7 +167,14 @@ export async function PUT(req: Request) {
     if (b.usedCount !== undefined) patch.usedCount = Math.max(0, Number(b.usedCount) || 0);
     if (b.deliveryKind) patch.deliveryKind = normalizeAccountDelivery(b.deliveryKind);
     if (b.pin !== undefined) patch.pin = acc.type === "FULL" ? null : (String(b.pin || "").trim() || null);
-    if (b.expiryDate !== undefined) patch.expiryDate = b.expiryDate ? new Date(String(b.expiryDate)) : null;
+    if (b.expiryMode !== undefined || b.expiryDate !== undefined || b.noExpiry !== undefined) {
+      const mode = b.expiryMode || (b.noExpiry ? "LIFETIME" : (b.expiryDate ? "DATE" : "LIFETIME"));
+      if (mode === "DATE" && b.expiryDate) {
+        patch.expiryDate = new Date(String(b.expiryDate));
+      } else {
+        patch.expiryDate = null;
+      }
+    }
     if (b.notes !== undefined) patch.notes = String(b.notes || "") || null;
     if (b.salePrice !== undefined) patch.salePrice = b.salePrice ? Number(b.salePrice) : null;
     if (b.platformId) patch.platformId = Number(b.platformId);

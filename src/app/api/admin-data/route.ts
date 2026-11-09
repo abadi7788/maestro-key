@@ -22,7 +22,35 @@ export async function GET(req: Request) {
       const now = Date.now();
       const revenueConfirmed = pays.filter((p) => p.status === "CONFIRMED").reduce((s, p) => s + (p.amount || 0), 0);
       const revenuePending = pays.filter((p) => p.status === "PENDING").reduce((s, p) => s + (p.amount || 0), 0);
-      const todaySales = allRentals.filter((r) => new Date(r.createdAt).toDateString() === new Date().toDateString()).length;
+      const isToday = (d: any) => new Date(d).toDateString() === new Date().toDateString();
+      const todayRentals = allRentals.filter((r) => isToday(r.createdAt));
+      const todayPayments = pays.filter((p) => isToday(p.createdAt) && p.status !== "REJECTED");
+
+      const isWalletPay = (p: any) => p.transactionRef?.startsWith("WALLET-") || !p.paymentMethodId;
+      const todayWalletTotal = todayPayments.filter(isWalletPay).reduce((s, p) => s + (p.amount || 0), 0);
+      const todayReceiptTotal = todayPayments.filter((p) => !isWalletPay(p)).reduce((s, p) => s + (p.amount || 0), 0);
+      const todayTotalAmount = todayWalletTotal + todayReceiptTotal;
+
+      const allUsers = await db.select({ id: users.id, name: users.displayName, username: users.username, role: users.role }).from(users);
+      
+      const staffReconciliation = allUsers.map((u) => {
+        const uRentals = todayRentals.filter((r) => r.createdBy === u.id);
+        const uRentalIds = new Set(uRentals.map((r) => r.id));
+        const uPays = todayPayments.filter((p) => uRentalIds.has(p.rentalId) || p.createdBy === u.id);
+        const walletAmt = uPays.filter(isWalletPay).reduce((s, p) => s + (p.amount || 0), 0);
+        const receiptAmt = uPays.filter((p) => !isWalletPay(p)).reduce((s, p) => s + (p.amount || 0), 0);
+        return {
+          userId: u.id,
+          name: u.name,
+          username: u.username,
+          role: u.role,
+          salesCount: uRentals.length,
+          walletAmount: walletAmt,
+          receiptAmount: receiptAmt,
+          totalAmount: walletAmt + receiptAmt,
+        };
+      }).filter((s) => s.salesCount > 0 || s.totalAmount > 0 || s.role === "STAFF" || s.role === "EMPLOYEE");
+
       return Response.json({
         job,
         stats: {
@@ -36,6 +64,13 @@ export async function GET(req: Request) {
           endingIn2Days: allRentals.filter((r) => r.status === "ACTIVE" && new Date(r.endDate).getTime() - now <= 2 * 86400000 && new Date(r.endDate).getTime() >= now).length,
           pendingPayments: pays.filter((p) => p.status === "PENDING").length,
           revenueConfirmed, revenuePending, customers: custs.length, todaySales,
+        },
+        dailyReconciliation: {
+          todayWalletTotal,
+          todayReceiptTotal,
+          todayTotalAmount,
+          todaySalesCount: todayRentals.length,
+          staffReconciliation,
         },
       });
     }

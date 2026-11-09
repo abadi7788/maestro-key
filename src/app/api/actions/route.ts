@@ -11,7 +11,7 @@ import { notifyAdmin } from "@/lib/notify";
 import { hasPermission } from "@/lib/permissions";
 import { refundToWallet } from "@/lib/wallet";
 import { isAdminRole } from "@/lib/roles";
-import { buildWhatsAppMessage } from "@/lib/whatsapp";
+import { buildWhatsAppMessage, buildReplacementMessage } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -489,6 +489,159 @@ export async function POST(req: Request) {
       await db.update(rentals).set({ whatsappAlertSent: true, whatsappAlertSentAt: now }).where(eq(rentals.id, rental.id));
       await audit(user, "WHATSAPP_SENT", "rentals", rental.id, `تنبيه انتهاء للعميل ${cust?.name}`);
       return Response.json({ ok: true, message, phone: cust?.phone });
+    }
+
+    // ---------- Compensate & Replace Profile / Account (One-click) ----------
+    if (action === "compensateReplacement") {
+      const rentalId = Number(b.rentalId);
+      const reason = String(b.reason || "تعويض واستبدال بروفايل جديد للعميل");
+      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
+      if (!rental) return jsonError("الطلب أو الاشتراك غير موجود", 404);
+
+      const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
+      const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
+      if (!plat || !cust) return jsonError("بيانات المنصة أو العميل غير مكتملة", 400);
+
+      const isProfile = !!rental.profileId;
+      let newAccount: any = null;
+      let newProfile: any = null;
+
+      if (isProfile) {
+        // البحث عن بروفايل متاح لنفس المنصة
+        const availProfiles = await db
+          .select({
+            profile: profiles,
+            account: accounts,
+          })
+          .from(profiles)
+          .innerJoin(accounts, eq(profiles.accountId, accounts.id))
+          .where(
+            and(
+              eq(accounts.platformId, plat.id),
+              eq(accounts.isDeleted, false),
+              eq(accounts.status, "AVAILABLE"),
+              eq(profiles.status, "AVAILABLE"),
+              eq(profiles.isOccupied, false)
+            )
+          )
+          .limit(1);
+
+        if (!availProfiles.length) {
+          return jsonError(`لا يوجد بروفايل متاح حالياً لمنصة "${plat.name}" للتعويض الفوري. يرجى تزويد المخزون أولاً.`, 409);
+        }
+
+        newProfile = availProfiles[0].profile;
+        newAccount = availProfiles[0].account;
+
+        // إخلاء البروفايل القديم
+        if (rental.profileId) {
+          await db.update(profiles).set({
+            isOccupied: false,
+            currentRentalId: null,
+            status: "AVAILABLE",
+            soldAt: null,
+            soldBy: null,
+          }).where(eq(profiles.id, rental.profileId));
+        }
+
+        // تخصيص البروفايل الجديد للطلب
+        await db.update(profiles).set({
+          isOccupied: true,
+          currentRentalId: rental.id,
+          status: "SOLD",
+          soldAt: now,
+          soldBy: user.id,
+        }).where(eq(profiles.id, newProfile.id));
+
+        // تحديث بيانات الاشتراك
+        await db.update(rentals).set({
+          accountId: newAccount.id,
+          profileId: newProfile.id,
+          passwordUsedEncrypted: newAccount.passwordEncrypted,
+          status: "ACTIVE",
+          updatedAt: now,
+        }).where(eq(rentals.id, rental.id));
+
+        if (rental.accountId) await refreshAccountStatus(rental.accountId);
+        if (newAccount.id !== rental.accountId) await refreshAccountStatus(newAccount.id);
+
+      } else {
+        // حساب كامل
+        const availAccounts = await db
+          .select()
+          .from(accounts)
+          .where(
+            and(
+              eq(accounts.platformId, plat.id),
+              eq(accounts.type, "FULL"),
+              eq(accounts.isDeleted, false),
+              eq(accounts.status, "AVAILABLE")
+            )
+          )
+          .limit(1);
+
+        if (!availAccounts.length) {
+          return jsonError(`لا يوجد حساب كامل متاح حالياً لمنصة "${plat.name}" للتعويض الفوري.`, 409);
+        }
+
+        newAccount = availAccounts[0];
+
+        // تحرير الحساب القديم
+        if (rental.accountId) {
+          await db.update(accounts).set({ status: "AVAILABLE", updatedAt: now }).where(eq(accounts.id, rental.accountId));
+        }
+
+        // تخصيص الحساب الجديد
+        await db.update(accounts).set({ status: "RENTED", updatedAt: now }).where(eq(accounts.id, newAccount.id));
+
+        await db.update(rentals).set({
+          accountId: newAccount.id,
+          passwordUsedEncrypted: newAccount.passwordEncrypted,
+          status: "ACTIVE",
+          updatedAt: now,
+        }).where(eq(rentals.id, rental.id));
+      }
+
+      const rawPassword = decryptText(newAccount.passwordEncrypted);
+      const rawLicense = decryptText(newAccount.licenseKeyEncrypted);
+
+      // تجهيز رسالة الواتساب الذكية للاعتذار والتعويض
+      const replacementMessage = await buildReplacementMessage({
+        customerName: cust.name,
+        customerPhone: cust.phone,
+        platformId: plat.id,
+        platformName: plat.name,
+        accountType: isProfile ? "PROFILE" : "FULL",
+        accountDeliveryKind: newAccount.deliveryKind,
+        email: newAccount.email,
+        password: rawPassword,
+        profileName: newProfile ? (newProfile.profileName || `بروفايل ${newProfile.profileNo}`) : null,
+        profileNo: newProfile?.profileNo ?? null,
+        pin: newProfile?.pin || (isProfile ? newAccount.pin : ""),
+        link: newAccount.inviteLink,
+        licenseKey: rawLicense,
+        endDate: rental.endDate,
+        isLifetime: rental.isLifetime,
+        reason,
+      });
+
+      await audit(user, "RENTAL_REPLACEMENT", "rentals", rental.id, `تعويض العميل ${cust.name} ببيانات جديدة لمنصة ${plat.name} — السبب: ${reason}`);
+
+      return Response.json({
+        ok: true,
+        message: "تم سحب الحساب/البروفايل الجديد بنجاح وتجهيز رسالة التعويض",
+        whatsappMessage: replacementMessage,
+        customerPhone: cust.phone,
+        newCredentials: {
+          email: newAccount.email,
+          password: rawPassword,
+          profileName: newProfile ? (newProfile.profileName || `بروفايل ${newProfile.profileNo}`) : null,
+          profileNo: newProfile?.profileNo ?? null,
+          pin: newProfile?.pin || (isProfile ? newAccount.pin : ""),
+          link: newAccount.inviteLink,
+          licenseKey: rawLicense,
+        }
+      });
     }
 
     return jsonError("إجراء غير معروف");

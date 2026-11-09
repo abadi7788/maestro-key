@@ -47,6 +47,8 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
     maxUses: "", 
     email: "", 
     password: "", 
+    expiryMode: "DATE",
+    expiryDate: "",
     profilesList: defaultProfiles 
   };
 
@@ -225,7 +227,11 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                     expDays !== null && expDays < 0 ? <Badge tone="red">منتهي الصلاحية ({fmtDate(a.expiryDate)})</Badge> :
                     expDays !== null && expDays <= 30 ? <Badge tone="amber">بقي {expDays} يوم ({fmtDate(a.expiryDate)})</Badge> :
                     <span className="text-xs text-slate-400 font-semibold">حتى {fmtDate(a.expiryDate)} ({expDays} يوم)</span>
-                  ) : <Badge tone="gold">♾️ بدون انتهاء</Badge>}
+                  ) : kind === "LICENSE_KEY" ? (
+                    <Badge tone="blue">⚡ بيع مباشر بدون مدة (منتج رقمي / مفتاح)</Badge>
+                  ) : (
+                    <Badge tone="gold">♾️ اشتراك دائم / مدى الحياة</Badge>
+                  )}
                 </div>
 
 
@@ -305,6 +311,7 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                           pin: a.pin || "", 
                           notes: a.notes || "", 
                           expiryDate: a.expiryDate ? String(a.expiryDate).slice(0, 10) : "", 
+                          expiryMode: kind === "LICENSE_KEY" ? "ONETIME" : !a.expiryDate ? "LIFETIME" : "DATE",
                           noExpiry: !a.expiryDate, 
                           platformId: a.platformId, 
                           deliveryKind: kind, 
@@ -485,13 +492,66 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
               </>
             )}
 
-            <div>
-              <label className="label">⏳ تاريخ انتهاء الحساب <span className="font-semibold text-slate-500">(اختياري)</span></label>
-              <input type="date" className="field" value={form.expiryDate || ""} disabled={!!form.noExpiry} onChange={(e) => setForm({ ...form, expiryDate: e.target.value })} />
-              <label className="mt-2 flex cursor-pointer items-center gap-2 text-[12px] font-bold text-slate-300">
-                <input type="checkbox" className="h-4 w-4 accent-[#c99327]" checked={!!form.noExpiry} onChange={(e) => setForm({ ...form, noExpiry: e.target.checked, expiryDate: e.target.checked ? "" : form.expiryDate })} />
-                ♾️ بدون انتهاء (للاشتراكات الدائمة)
-              </label>
+            <div className="sm:col-span-2">
+              <label className="label">⏳ نظام وصلاحية انتهاء الاشتراك</label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, expiryMode: "DATE", noExpiry: false })}
+                  className={`rounded-xl border p-2.5 text-right text-xs font-bold transition ${
+                    (form.expiryMode || "DATE") === "DATE"
+                      ? "border-[#2f7bff] bg-[#2f7bff]/15 text-white shadow-[0_0_12px_rgba(47,123,255,.25)]"
+                      : "border-white/10 bg-white/[.04] text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <div className="font-extrabold text-white">📅 محدد بتاريخ ووقت</div>
+                  <div className="mt-1 text-[11px] text-slate-400">تاريخ انتهاء وعداد تنازلي</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, expiryMode: "LIFETIME", noExpiry: true, expiryDate: "" })}
+                  className={`rounded-xl border p-2.5 text-right text-xs font-bold transition ${
+                    form.expiryMode === "LIFETIME"
+                      ? "border-amber-400 bg-amber-400/15 text-white shadow-[0_0_12px_rgba(251,191,36,.25)]"
+                      : "border-white/10 bg-white/[.04] text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <div className="font-extrabold text-amber-300">♾️ غير محدود / مدى الحياة</div>
+                  <div className="mt-1 text-[11px] text-slate-400">دائم بلا إلزامه بانتهاء</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, expiryMode: "ONETIME", noExpiry: true, expiryDate: "" })}
+                  className={`rounded-xl border p-2.5 text-right text-xs font-bold transition ${
+                    form.expiryMode === "ONETIME"
+                      ? "border-emerald-400 bg-emerald-400/15 text-white shadow-[0_0_12px_rgba(52,211,153,.25)]"
+                      : "border-white/10 bg-white/[.04] text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <div className="font-extrabold text-emerald-300">⚡ بيع مباشر بدون مدة</div>
+                  <div className="mt-1 text-[11px] text-slate-400">منتجات رقمية ومفاتيح لمرة واحدة</div>
+                </button>
+              </div>
+
+              {(form.expiryMode || "DATE") === "DATE" ? (
+                <div className="mt-3">
+                  <label className="mb-1 block text-xs font-semibold text-slate-300">حدد تاريخ الانتهاء بدقة:</label>
+                  <input
+                    type="date"
+                    className="field"
+                    value={form.expiryDate || ""}
+                    onChange={(e) => setForm({ ...form, expiryDate: e.target.value })}
+                  />
+                </div>
+              ) : form.expiryMode === "LIFETIME" ? (
+                <p className="mt-2.5 rounded-xl border border-amber-400/20 bg-amber-400/10 p-2.5 text-xs font-semibold leading-relaxed text-amber-200">
+                  ✓ خيار «اشتراك دائم / مدى الحياة»: لن يُلزم بتاريخ انتهاء ولن يظهر له عداد تنازلي، وسيظهر في البطاقة وواتساب كـ «اشتراك دائم / مدى الحياة».
+                </p>
+              ) : (
+                <p className="mt-2.5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-2.5 text-xs font-semibold leading-relaxed text-emerald-200">
+                  ✓ خيار «بيع مباشر بدون مدة»: مخصص للمنتجات الرقمية والأكواد والمفاتيح التي تُباع لمرة واحدة فقط دون دورة تجديد مستمرة.
+                </p>
+              )}
             </div>
 
             <div>
