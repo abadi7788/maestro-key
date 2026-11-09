@@ -1,0 +1,172 @@
+# maestro-key-build
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Build Android APK
+        run: |
+          mkdir -p public
+          mkdir -p assets
+          if [ -f icon.png ]; then
+            cp icon.png assets/icon.png
+            cp icon.png public/icon.png
+          fi
+
+          # صفحة التوجيه والتشغيل الذاتي المستقر
+          cat << 'EOF' > public/index.html
+          <!DOCTYPE html>
+          <html lang="ar" dir="rtl">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>Maestro Key</title>
+            <style>
+              body {
+                margin: 0;
+                background-color: #0b0c10;
+                color: #ffffff;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                font-family: system-ui, -apple-system, sans-serif;
+                text-align: center;
+              }
+              .logo { width: 100px; height: 100px; margin-bottom: 25px; border-radius: 50%; }
+              .spinner {
+                width: 36px;
+                height: 36px;
+                border: 3px solid rgba(255,255,255,0.15);
+                border-top-color: #00dfd8;
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+                margin-top: 20px;
+              }
+              @keyframes spin { to { transform: rotate(360deg); } }
+              #offline-box { display: none; }
+              .btn {
+                background: linear-gradient(90deg, #0070f3, #00dfd8);
+                color: #fff;
+                border: none;
+                padding: 12px 28px;
+                border-radius: 25px;
+                font-size: 15px;
+                font-weight: bold;
+                cursor: pointer;
+                margin-top: 15px;
+              }
+            </style>
+          </head>
+          <body>
+            <img src="icon.png" class="logo" alt="Logo" onerror="this.style.display='none'">
+            
+            <div id="loading-box">
+              <div class="spinner"></div>
+            </div>
+
+            <div id="offline-box">
+              <h2 style="font-size: 18px; margin-bottom: 8px;">تعذر الاتصال بالشبكة</h2>
+              <p style="color: #888; font-size: 13px;">تأكد من اتصالك بالإنترنت ثم اضغط إعادة المحاولة</p>
+              <button class="btn" onclick="tryLoad()">إعادة المحاولة</button>
+            </div>
+
+            <script>
+              const TARGET_URL = "https://maestro-key.vercel.app";
+
+              function tryLoad() {
+                document.getElementById('loading-box').style.display = 'block';
+                document.getElementById('offline-box').style.display = 'none';
+
+                if (navigator.onLine) {
+                  window.location.replace(TARGET_URL);
+                } else {
+                  setTimeout(() => {
+                    document.getElementById('loading-box').style.display = 'none';
+                    document.getElementById('offline-box').style.display = 'block';
+                  }, 1000);
+                }
+              }
+
+              window.addEventListener('online', tryLoad);
+              tryLoad();
+            </script>
+          </body>
+          </html>
+          EOF
+
+          npm install --legacy-peer-deps
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets
+          npx cap add android
+          npx cap sync
+          if [ -f assets/icon.png ]; then
+            npx @capacitor/assets generate --android
+          fi
+
+          # ضبط إعدادات أندرويد لعدم الانهيار وحفظ الجلسة
+          sed -i 's/android:launchMode="singleTop"/android:launchMode="singleTask"/' android/app/src/main/AndroidManifest.xml
+          sed -i '/<application/a \        android:usesCleartextTraffic="true"' android/app/src/main/AndroidManifest.xml
+          sed -i '/<\/manifest>/i \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' android/app/src/main/AndroidManifest.xml
+
+          # منع انهيار زر الرجوع وتثبيت التنقل
+          MAIN_ACTIVITY=$(find android/app/src/main/java -name "MainActivity.java")
+          cat << 'EOF' > "$MAIN_ACTIVITY"
+          package com.maestrokey.app;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  if (this.bridge != null && this.bridge.getWebView() != null) {
+                      this.bridge.getWebView().getSettings().setDomStorageEnabled(true);
+                      this.bridge.getWebView().getSettings().setDatabaseEnabled(true);
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (this.bridge != null && this.bridge.getWebView() != null && this.bridge.getWebView().canGoBack()) {
+                      this.bridge.getWebView().goBack();
+                  } else {
+                      moveTaskToBack(true);
+                  }
+              }
+          }
+          EOF
+
+          cd android
+          echo "android.useAndroidX=true" >> gradle.properties
+          echo "android.enableJetifier=true" >> gradle.properties
+          cat << 'EOF' >> app/build.gradle
+          configurations.all {
+              exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+              exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+          }
+          EOF
+          chmod +x gradlew
+          ./gradlew assembleDebug -x lint -x test --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maestro-key-app
+          path: android/app/build/outputs/apk/debug/*.apk
