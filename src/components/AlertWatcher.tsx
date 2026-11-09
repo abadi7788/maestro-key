@@ -151,6 +151,37 @@ export default function AlertWatcher() {
       )
         setReady(true);
     } catch {}
+
+    const syncBackgroundPush = async () => {
+      try {
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
+        const reg = await navigator.serviceWorker?.register("/sw.js");
+        if (!reg || !("PushManager" in window)) return;
+        const keyRes = await fetch("/api/push");
+        const { publicKey } = await keyRes.json();
+        if (!publicKey) return;
+
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+        }
+        if (sub) {
+          await fetch("/api/push", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(sub),
+          });
+          setReady(true);
+        }
+      } catch (err) {
+        console.warn("Background push sync:", err);
+      }
+    };
+    syncBackgroundPush();
+
     navigator.serviceWorker?.register("/sw.js").catch(() => {});
 
     const clearBadge = async () => {

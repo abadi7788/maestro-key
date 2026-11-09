@@ -1,5 +1,5 @@
-// maestro-sw-v9 (النسخة المنظفة والمصلحة نهائياً)
-const STATIC_CACHE = "maestro-static-v9";
+// maestro-sw-v10
+const STATIC_CACHE = "maestro-static-v10";
 const OFFLINE_URL = "/offline.html";
 
 const PRECACHE_URLS = [
@@ -13,29 +13,6 @@ const PRECACHE_URLS = [
 ];
 
 let after = 0;
-let timer = null;
-
-async function poll() {
-  const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (open.length) return;
-  try {
-    const res = await fetch("/api/alerts?after=" + after, { credentials: "include", cache: "no-store" });
-    if (!res.ok) return;
-    const data = await res.json();
-    for (const a of data.alerts || []) {
-      if (a.id > after) after = a.id;
-      await self.registration.showNotification("مايسترو كي", {
-        body: a.title + " — " + a.body,
-        icon: "/icons/icon-192x192.png",
-        badge: "/icons/badge-72x72.png",
-        tag: "maestro-key",
-        silent: false,
-        data: { href: a.href || "/inbox" },
-      });
-    }
-    if (data.latestId > after) after = data.latestId;
-  } catch {}
-}
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -73,11 +50,9 @@ self.addEventListener("fetch", (event) => {
         const cached = await cache.match(req);
         if (cached) return cached;
 
-        // البحث عن صفحة الأوفلاين بصيغتيها لضمان إيجادها
         const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline") || await cache.match("/offline.html");
         if (offlineFallback) return offlineFallback;
 
-        // إرجاع صفحة HTML مع status: 200 لمنع شاشة Chrome الافتراضية "This page couldn't load"
         return new Response(
           `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر الاتصال — مايسترو كي</title><style>body{background:#070b14;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box}h2{font-size:22px;margin:0 0 8px;font-weight:900}p{color:#94a3b8;font-size:14px;margin:0 0 24px;line-height:1.6}button{background:#2f7bff;color:#fff;border:none;padding:12px 28px;border-radius:14px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 8px 20px rgba(47,123,255,.3)}</style></head><body><h2>تعذر تحميل الصفحة مؤقتاً</h2><p>يرجى التحقق من اتصال الشبكة ثم إعادة المحاولة.</p><button onclick="location.reload()">إعادة المحاولة</button></body></html>`,
           {
@@ -109,25 +84,79 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-self.addEventListener("message", (e) => {
-  if (e.data?.type === "watch") {
-    after = Number(e.data.after || after || 0);
-  }
-  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
-});
-
-
+// استلام الإشعارات في الخلفية حتى عندما يكون التطبيق أو المتصفح مغلقاً
 self.addEventListener("push", (event) => {
-  let data = { title: "مايسترو كي", body: "إشعار جديد", href: "/inbox", tag: "mk" };
-  try { data = { ...data, ...(event.data ? event.data.json() : {}) }; } catch {}
-  event.waitUntil(self.registration.showNotification("مايسترو كي", {
-    body: (data.title ? data.title + " — " : "") + (data.body || "إشعار جديد"),
+  let data = {
+    title: "مايسترو كي",
+    body: "لديك إشعار جديد في النظام",
+    href: "/inbox",
+    tag: "mk-" + Date.now(),
+  };
+
+  if (event.data) {
+    try {
+      const parsed = event.data.json();
+      data = { ...data, ...parsed };
+    } catch {
+      try {
+        data.body = event.data.text();
+      } catch {}
+    }
+  }
+
+  const notificationTitle = data.title || "مايسترو كي";
+  const notificationOptions = {
+    body: data.body || "لديك إشعار جديد",
     icon: "/icons/icon-192x192.png",
     badge: "/icons/badge-72x72.png",
-    tag: "maestro-key",
-    silent: false,
-    data: { href: data.href || "/inbox" },
-  }));
+    tag: data.tag || "maestro-key-alert",
+    vibrate: [200, 100, 200],
+    requireInteraction: true,
+    data: {
+      href: data.href || "/inbox",
+      dateOfArrival: Date.now(),
+    },
+    actions: [
+      { action: "open", title: "عرض الإشعار" }
+    ]
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(notificationTitle, notificationOptions)
+  );
+});
+
+// فتح التطبيق وتوجيهه إلى الرابط المطلوب عند النقر على الإشعار
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  const targetPath = event.notification.data?.href || "/inbox";
+  const targetUrl = new URL(targetPath, self.location.origin).href;
+
+  event.waitUntil(
+    (async () => {
+      // إخفاء الشارة أو تنبيه النوافذ المفتوحة
+      const clientList = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+
+      // إذا كان هناك تبويب أو نافذة مفتوحة للتطبيق، ركّز عليها وانتقل للرابط
+      for (const client of clientList) {
+        if (client.url.startsWith(self.location.origin) && "focus" in client) {
+          if ("navigate" in client) {
+            await client.navigate(targetUrl);
+          }
+          return await client.focus();
+        }
+      }
+
+      // إذا كان التطبيق مغلقاً تماماً، افتح نافذة جديدة بالرابط المطلوب
+      if (self.clients.openWindow) {
+        return await self.clients.openWindow(targetUrl);
+      }
+    })()
+  );
 });
 
 async function clearAll() {
@@ -137,19 +166,11 @@ async function clearAll() {
   list.forEach((c) => c.postMessage({ type: "clear-badge" }));
 }
 
-self.addEventListener("notificationclick", (e) => {
-  e.notification.close();
-  const href = e.notification.data?.href || "/inbox";
-  e.waitUntil((async () => {
-    await clearAll();
-    const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    for (const c of list) {
-      if ("focus" in c) { await c.focus(); return; }
-    }
-    await self.clients.openWindow(href);
-  })());
-});
-
 self.addEventListener("message", (e) => {
-  if (e.data?.type === "clear-now") e.waitUntil(clearAll());
+  if (e.data?.type === "watch") {
+    after = Number(e.data.after || after || 0);
+  }
+  if (e.data?.type === "clear-now") {
+    e.waitUntil(clearAll());
+  }
 });

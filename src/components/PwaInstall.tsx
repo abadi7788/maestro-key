@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Loader2, X } from "lucide-react";
+import { Loader2, Smartphone, X } from "lucide-react";
 import { registerPwaWorker } from "@/lib/pwa-client";
 
 type InstallPrompt = Event & {
@@ -51,7 +51,7 @@ export default function PwaInstall() {
   return (
     <aside className="fixed bottom-24 left-4 z-40 flex items-center gap-2 rounded-2xl border border-white/15 bg-[#0c1426]/95 p-2 text-white shadow-2xl backdrop-blur-xl lg:bottom-5" aria-label="تثبيت التطبيق">
       <button type="button" onClick={install} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-[#2563eb] px-4 py-3 text-sm font-bold disabled:opacity-60">
-        {busy ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
+        {busy ? <Loader2 size={17} className="animate-spin" /> : <Smartphone size={17} />}
         {busy ? "جارٍ فتح التثبيت…" : "تثبيت التطبيق"}
       </button>
       <button type="button" onClick={() => setPrompt(null)} className="rounded-xl p-2 text-slate-400 hover:text-white" aria-label="إخفاء خيار التثبيت"><X size={17} /></button>
