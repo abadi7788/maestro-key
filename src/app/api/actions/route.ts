@@ -11,6 +11,7 @@ import { notifyAdmin } from "@/lib/notify";
 import { hasPermission } from "@/lib/permissions";
 import { refundToWallet } from "@/lib/wallet";
 import { isAdminRole } from "@/lib/roles";
+import { buildWhatsAppMessage } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -221,28 +222,24 @@ export async function POST(req: Request) {
       const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
       const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);
 
-      // رسالة الواتساب حسب النمط
+      // رسالة الواتساب الذكية حسب نوع الاشتراك والمنصة
       const endLabel = rental.isLifetime ? "دائم ♾️" : formatDate(patch.endDate ? new Date(String(patch.endDate)) : new Date(rental.endDate));
-      let credentials: string;
-      if (mode === "LINK_ONLY") {
-        credentials = `🔗 رابط التفعيل: ${aLink}${aNote ? `\n📝 ${aNote}` : ""}`;
-      } else if (mode === "ON_DEMAND_EMAIL") {
-        credentials = `تم التفعيل على إيميلك بنجاح ✓${aLink ? `\n🔗 رابط التفعيل: ${aLink}` : ""}${aNote ? `\n📝 ${aNote}` : ""}`;
-      } else {
-        credentials = [
-          aEmail && `📧 الإيميل: ${aEmail}`,
-          aPass && `🔑 كلمة المرور: ${aPass}`,
-          aPin && `🔒 PIN: ${aPin}`,
-          aLink && `🔗 رابط التفعيل: ${aLink}`,
-          aNote && `📝 ${aNote}`,
-        ].filter(Boolean).join("\n") || "تم تفعيل حسابك بنجاح ✓";
-      }
-      const tpl = await getSetting("whatsapp_activation_template",
-        "مبروك {{name}} 🎉\nاشتراك {{platform}} تم تفعيله بنجاح من متجر مايسترو كي 🔑\n{{credentials}}\n⏳ صالح حتى: {{end_date}}");
-      const message = renderTemplate(tpl, {
-        name: cust?.name || "", platform: plat?.name || "",
-        email: aEmail, password: aPass, link: aLink, note: aNote,
-        credentials, end_date: endLabel,
+      const message = await buildWhatsAppMessage({
+        customerName: cust?.name || "",
+        customerPhone: cust?.phone || "",
+        platformId: plat?.id ?? rental.platformId,
+        platformName: plat?.name || "",
+        accountType: mode === "LINK_ONLY" ? "LINK_ONLY" : (aPin ? "PROFILE" : "FULL"),
+        accountDeliveryKind: mode === "LINK_ONLY" ? "INVITE_LINK" : "CREDENTIALS",
+        email: aEmail || "",
+        password: aPass || "",
+        pin: aPin || "",
+        link: aLink || "",
+        note: aNote || "",
+        endDate: patch.endDate ? new Date(String(patch.endDate)) : new Date(rental.endDate),
+        isLifetime: !!rental.isLifetime,
+        days: rental.durationDays,
+        templateType: "ACTIVATION",
       });
 
       const hasMeta = !!(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_ID);
@@ -318,18 +315,73 @@ export async function POST(req: Request) {
     }
     if (action === "restoreProfile") {
       const profileId = Number(b.profileId);
+      const reason = String(b.reason || "استرجاع يدوي للبيع").trim();
+      const newPinRaw = b.newPin !== undefined ? String(b.newPin).trim() : undefined;
       const [prof] = await db.select().from(profiles).where(eq(profiles.id, profileId)).limit(1);
       if (!prof) return jsonError("البروفايل غير موجود", 404);
-      await db.update(profiles).set({
+
+      // إذا كان مرتبطاً بطلب إيجار حالي، نغلق الاشتراك
+      if (prof.currentRentalId) {
+        await db.update(rentals).set({
+          status: "CLOSED",
+          updatedAt: now,
+        }).where(eq(rentals.id, prof.currentRentalId));
+      }
+
+      const patch: Partial<typeof profiles.$inferInsert> = {
         status: "AVAILABLE",
         isOccupied: false,
         soldAt: null,
         soldBy: null,
         currentRentalId: null,
-      }).where(eq(profiles.id, profileId));
+      };
+      if (newPinRaw !== undefined) {
+        patch.pin = newPinRaw || null;
+      }
+
+      await db.update(profiles).set(patch).where(eq(profiles.id, profileId));
       await refreshAccountStatus(prof.accountId);
-      await audit(user, "PROFILE_RESTORED", "profiles", profileId, `استرجاع بروفايل #${prof.profileNo} (${prof.profileName || ""}) يدوياً للبيع`);
-      return Response.json({ ok: true });
+      const auditNote = `استرجاع بروفايل #${prof.profileNo} (${prof.profileName || ""}) — السبب: ${reason}${newPinRaw !== undefined ? ` — PIN جديد: ${newPinRaw || "بدون"}` : ""}`;
+      await audit(user, "PROFILE_RESTORED", "profiles", profileId, auditNote);
+      return Response.json({ ok: true, message: "تم استرجاع البروفايل وتعيين حالته متاحاً للبيع بنجاح" });
+    }
+
+    if (action === "restoreAccount") {
+      const accountId = Number(b.accountId);
+      const reason = String(b.reason || "استرجاع الحساب يدprop للمخزون").trim();
+      const newPassword = b.newPassword ? String(b.newPassword).trim() : undefined;
+      const newPin = b.newPin !== undefined ? String(b.newPin).trim() : undefined;
+      const [acc] = await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1);
+      if (!acc) return jsonError("الحساب غير موجود", 404);
+
+      // إغلاق أي اشتراكات نشطة على هذا الحساب
+      await db.update(rentals).set({
+        status: "CLOSED",
+        updatedAt: now,
+      }).where(and(eq(rentals.accountId, accountId), eq(rentals.status, "ACTIVE")));
+
+      // إذا كان الحساب بروفايلات، تصفير حالة البروفايلات لتكون متاحة
+      if (acc.type === "PROFILE") {
+        await db.update(profiles).set({
+          status: "AVAILABLE",
+          isOccupied: false,
+          soldAt: null,
+          soldBy: null,
+          currentRentalId: null,
+        }).where(eq(profiles.accountId, accountId));
+      }
+
+      const patch: Partial<typeof accounts.$inferInsert> = {
+        status: "AVAILABLE",
+        updatedAt: now,
+      };
+      if (newPassword) patch.passwordEncrypted = encryptText(newPassword);
+      if (newPin !== undefined) patch.pin = newPin || null;
+
+      await db.update(accounts).set(patch).where(eq(accounts.id, accountId));
+      await refreshAccountStatus(accountId);
+      await audit(user, "ACCOUNT_RESTORED", "accounts", accountId, `استرجاع الحساب ${acc.email || `#${accountId}`} للمخزون — السبب: ${reason}${newPassword ? " (مع كلمة مرور جديدة)" : ""}`);
+      return Response.json({ ok: true, message: "تم استرجاع الحساب للمخزون بنجاح" });
     }
     if (action === "cancelAndRefundToWallet") {
       const rentalId = Number(b.rentalId);

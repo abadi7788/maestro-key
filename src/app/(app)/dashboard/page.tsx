@@ -98,9 +98,33 @@ export default function DashboardPage() {
         </>
       )}
 
-      {isEmployeeRole(me.role) && (
-        <section>
-          <div className="mb-3 flex items-center justify-between">
+      {!isAdminRole(me.role) && (
+        <section className="space-y-4">
+          <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3">
+            <StatCard 
+              label="رصيد محفظتي المتاح" 
+              value={`${Number(me.walletBalance || 0).toLocaleString()} ر.ي`} 
+              sub="للشراء المباشر والاعتماد الفوري" 
+              icon={<Wallet size={20} />} 
+              tone="bg-emerald-100 text-emerald-300" 
+            />
+            <StatCard 
+              label="إجمالي مبيعاتي" 
+              value={rentals.length} 
+              sub="عمليات مسجلة باسمك" 
+              icon={<ShoppingCart size={20} />} 
+              tone="bg-sky-100 text-[#174ea6]" 
+            />
+            <StatCard 
+              label="تجديدات مستحقة لعملائي" 
+              value={due.length} 
+              sub="تحتاج تنبيه أو تجديد" 
+              icon={<RefreshCcw size={20} />} 
+              tone="bg-amber-100 text-amber-700" 
+            />
+          </div>
+
+          <div className="mb-3 flex items-center justify-between pt-2">
             <h2 className="flex items-center gap-2 text-lg font-black"><RefreshCcw size={20} className="text-[#2563eb]" /> تجديدات مستحقة ({due.length})</h2>
             <Link href="/renewals" className="text-sm font-extrabold text-[#2563eb]">عرض الكل ←</Link>
           </div>

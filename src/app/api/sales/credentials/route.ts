@@ -8,6 +8,7 @@ import { decryptText } from "@/lib/crypto";
 import { formatDate, renderTemplate } from "@/lib/constants";
 import { getSetting } from "@/lib/engine";
 import { normalizeDeliveryMode } from "@/lib/delivery";
+import { buildWhatsAppMessage } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -183,18 +184,32 @@ export async function GET(req: Request) {
     }
 
     const password = decryptText(acc.passwordEncrypted);
-    const profileLabel = prof ? `بروفايل ${prof.profileNo}${prof.pin ? ` — PIN: ${prof.pin}` : ""}` : (acc.pin ? `PIN: ${acc.pin}` : "حساب كامل");
-    const tpl = await getSetting("whatsapp_sale_template", "");
-    const message = renderTemplate(tpl, {
-      name: cust?.name || "", platform: plat?.name || "", email: acc.email || "", password,
-      profile: profileLabel, end_date: rental.isLifetime ? "دائم ♾️" : formatDate(new Date(rental.endDate)),
+    const profileLabel = prof ? (prof.profileName || `بروفايل ${prof.profileNo}`) : (acc.type === "FULL" ? "حساب كامل" : "بروفايل");
+    const pin = prof?.pin || (acc.type === "FULL" ? "" : acc.pin) || "";
+    
+    const message = await buildWhatsAppMessage({
+      customerName: cust?.name || "",
+      customerPhone: cust?.phone || "",
+      platformId: plat?.id ?? acc.platformId,
+      platformName: plat?.name || "",
+      accountType: acc.type,
+      accountDeliveryKind: accKind,
+      email: acc.email || "",
+      password,
+      profileName: prof?.profileName || null,
+      profileNo: prof?.profileNo || null,
+      pin,
+      endDate: rental.endDate,
+      isLifetime: !!rental.isLifetime,
+      days: rental.durationDays,
+      templateType: "SALE",
     });
 
     await audit(user, "PASSWORD_REVEALED", "accounts", acc.id, `عرض بيانات الحساب بعد تأكيد السند — عميل ${cust?.name || ""} — بواسطة ${user.username}`);
 
     return Response.json({
       ok: true, deliveryMode: normalizeDeliveryMode(plat?.deliveryMode), isLifetime: !!rental.isLifetime,
-      email: acc.email || "", password, profileLabel, pin: prof?.pin || acc.pin || "",
+      email: acc.email || "", password, profileLabel, pin,
       link: "", licenseKey: "", note: "",
       accountType: acc.type, accountDeliveryKind: accKind,
       customerName: cust?.name || "", customerPhone: cust?.phone || "",

@@ -168,8 +168,41 @@ export async function PUT(req: Request) {
     if (b.salePrice !== undefined) patch.salePrice = b.salePrice ? Number(b.salePrice) : null;
     if (b.platformId) patch.platformId = Number(b.platformId);
     await db.update(accounts).set(patch).where(eq(accounts.id, id));
+
+    // تحديث أسماء و PIN البروفايلات الخاصة بالحساب في قاعدة البيانات
+    if (Array.isArray(b.profilesList) && acc.type === "PROFILE") {
+      for (let i = 0; i < b.profilesList.length; i++) {
+        const prof = b.profilesList[i];
+        const pPin = prof.pin !== undefined ? (String(prof.pin || "").trim() || null) : undefined;
+        const pName = prof.name ? String(prof.name).trim() : `بروفايل ${i + 1}`;
+        if (prof.id) {
+          await db.update(profiles).set({
+            pin: pPin,
+            profileName: pName,
+          }).where(and(eq(profiles.id, Number(prof.id)), eq(profiles.accountId, id)));
+        } else {
+          const pNo = prof.profileNo ? Number(prof.profileNo) : (i + 1);
+          const [existing] = await db.select({ id: profiles.id }).from(profiles).where(and(eq(profiles.accountId, id), eq(profiles.profileNo, pNo))).limit(1);
+          if (existing) {
+            await db.update(profiles).set({
+              pin: pPin,
+              profileName: pName,
+            }).where(eq(profiles.id, existing.id));
+          } else {
+            await db.insert(profiles).values({
+              accountId: id,
+              profileNo: pNo,
+              profileName: pName,
+              pin: pPin ?? null,
+              status: "AVAILABLE",
+            });
+          }
+        }
+      }
+    }
+
     await refreshAccountStatus(id);
-    await audit(user, "ACCOUNT_UPDATED", "accounts", id, `تعديل حساب ${acc.email || `#${id}`}${b.password ? " (مع كلمة المرور)" : ""}`);
+    await audit(user, "ACCOUNT_UPDATED", "accounts", id, `تعديل حساب ${acc.email || `#${id}`}${b.password ? " (مع كلمة المرور)" : ""}${Array.isArray(b.profilesList) ? " (تحديث البروفايلات والـ PIN)" : ""}`);
     return Response.json({ ok: true });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }

@@ -6,6 +6,8 @@ import { api, fmtDate, daysLeft } from "@/lib/client";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, Spinner, accountBadge } from "@/components/ui";
 
 interface ProfileItem {
+  id?: number;
+  profileNo?: number;
   name: string;
   pin: string;
 }
@@ -15,6 +17,16 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
   const [meta, setMeta] = useState<any>(null);
   const [q, setQ] = useState(""); const [platFilter, setPlatFilter] = useState("");
   const [showForm, setShowForm] = useState(false); const [editing, setEditing] = useState<any>(null);
+
+  const [reclaimTarget, setReclaimTarget] = useState<{
+    type: "PROFILE" | "ACCOUNT";
+    id: number;
+    name: string;
+    currentPin?: string;
+    accountEmail?: string;
+  } | null>(null);
+  const [reclaimPin, setReclaimPin] = useState("");
+  const [reclaimReason, setReclaimReason] = useState("");
 
   const defaultProfiles: ProfileItem[] = [
     { name: "بروفايل 1", pin: "" },
@@ -227,9 +239,19 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                           <button
                             type="button"
                             disabled={busy}
-                            onClick={() => act({ action: "restoreProfile", profileId: p.id }, `تم استرجاع ${p.name || `بروفايل ${p.profileNo}`} للبيع مجدداً`)}
+                            onClick={() => {
+                              setReclaimTarget({
+                                type: "PROFILE",
+                                id: p.id,
+                                name: `${a.platformName} — ${p.name || `بروفايل ${p.profileNo}`}`,
+                                currentPin: p.pin || "",
+                                accountEmail: a.email,
+                              });
+                              setReclaimPin(p.pin || "");
+                              setReclaimReason("استرجاع البروفايل للبيع وتحديث الـ PIN");
+                            }}
                             className="rounded bg-black/30 px-1.5 py-0.5 text-[10px] text-amber-200 transition hover:bg-black/50"
-                            title="استرجاع يدوي لهذا البروفايل ليكون متاحاً للبيع مجدداً"
+                            title="استرجاع يدوي لهذا البروفايل وتعديل الـ PIN ليكون متاحاً للبيع مجدداً"
                           >
                             ↺ استرجاع
                           </button>
@@ -291,10 +313,35 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
                           maxUses: a.maxUses ?? "", 
                           salePrice: a.salePrice ?? "",
                           type: a.type || "PROFILE",
-                          profilesList: a.profiles?.length > 0 ? a.profiles.map((p: any) => ({ name: p.name || `بروفايل ${p.profileNo}`, pin: p.pin || "" })) : defaultProfiles
+                          profilesList: a.profiles?.length > 0 ? a.profiles.map((p: any) => ({
+                            id: p.id,
+                            profileNo: p.profileNo,
+                            name: p.name || p.profileName || `بروفايل ${p.profileNo}`,
+                            pin: p.pin || ""
+                          })) : defaultProfiles
                         }); 
                         setShowForm(true); 
                       }} className="btn-ghost px-3 py-2 text-xs"><Pencil size={15} /> تعديل</button>
+                      {a.type === "FULL" && (a.status !== "AVAILABLE" || (a.currentRentals?.length ?? 0) > 0) && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setReclaimTarget({
+                              type: "ACCOUNT",
+                              id: a.id,
+                              name: `${a.platformName} — ${a.email || `حساب #${a.id}`}`,
+                              accountEmail: a.email,
+                            });
+                            setReclaimPin("");
+                            setReclaimReason("استرجاع الحساب بالكامل للمخزون");
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-bold text-amber-300 hover:bg-amber-400/20"
+                          title="استرجاع الحساب بالكامل ليكون متاحاً للبيع فوراً"
+                        >
+                          <RotateCcw size={15} /> استرجاع الحساب
+                        </button>
+                      )}
                       {a.status === "NEEDS_PASSWORD_CHANGE" && <button onClick={() => setPwFor(a)} className="btn-gold px-3 py-2 text-xs"><KeyRound size={15} /> تم تغيير كلمة المرور</button>}
                       {expDays !== null && expDays < 0 && <button disabled={busy} onClick={() => { if (confirm("هذا الحساب منتهي الصلاحية. هل تريد حذفه وإمكانية إضافة حساب جديد بدل منه؟")) act({ action: "deleteExpired", accountId: a.id }, "تم حذف الحساب منتهي الصلاحية"); }} className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-3 py-2 text-xs font-extrabold text-white hover:bg-red-700"><XOctagon size={15} /> حذف حساب منتهي</button>}
                       <button disabled={busy} onClick={() => { const reason = prompt("سبب نقل الحساب إلى سلة المحذوفات:") ?? ""; act({ action: "moveToTrash", accountId: a.id, reason }, "تم نقل الحساب إلى سلة المحذوفات (حذف ناعم)"); }} className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-[#101828] px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/10"><Trash2 size={15} /> حذف</button>
@@ -471,6 +518,73 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
         <p className="mb-3 text-sm font-semibold text-slate-600">الحساب <b dir="ltr">{pwFor?.email || `#${pwFor?.id}`}</b> — أدخل كلمة المرور الجديدة التي وضعتها في المنصة. سيعود الحساب «متاحاً للبيع».</p>
         <input className="field" dir="ltr" style={{ textAlign: "left" }} value={newPw} onChange={(e) => setNewPw(e.target.value)} placeholder="NewPassword#2026" />
         <button disabled={busy || !newPw.trim()} onClick={async () => { if (await act({ action: "confirmPasswordChange", accountId: pwFor.id, newPassword: newPw.trim() }, "تم تحديث كلمة المرور وإعادة الحساب للمخزون")) { setPwFor(null); setNewPw(""); } }} className="btn-gold mt-4 w-full">تأكيد وإعادة للمخزون</button>
+      </Modal>
+
+      {/* Reclaim Modal with new PIN and reason */}
+      <Modal 
+        open={!!reclaimTarget} 
+        onClose={() => setReclaimTarget(null)} 
+        title={reclaimTarget?.type === "PROFILE" ? "↺ استرجاع البروفايل للبيع وتعديل الـ PIN" : "↺ استرجاع الحساب بالكامل للمخزون"}
+      >
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3.5 text-xs font-semibold leading-relaxed text-amber-200">
+            أنت بصدد استرجاع <b className="text-white">{reclaimTarget?.name}</b> إلى حالة <b className="text-emerald-300">«متاح للبيع»</b> فوراً.
+            سيتم إغلاق أي اشتراك سابق مرتبط به، وتوثيق سبب الاسترجاع في سجل العمليات والتدقيق.
+          </div>
+
+          {reclaimTarget?.type === "PROFILE" && (
+            <div>
+              <label className="label">🔒 رمز الدخول (PIN) الجديد للملف <span className="text-xs text-slate-400">(يمكنك تعديله لحفظه مباشرة في قاعدة البيانات)</span></label>
+              <input 
+                className="field font-mono text-center text-sm font-bold tracking-widest" 
+                placeholder="أدخل رمز الـ PIN الجديد أو اتركه كما هو"
+                maxLength={8}
+                value={reclaimPin} 
+                onChange={(e) => setReclaimPin(e.target.value)} 
+              />
+              <p className="mt-1 text-[11px] text-slate-400">سيتم حفظ هذا الـ PIN الجديد مباشرة في قاعدة البيانات عند تأكيد الاسترجاع وتعيين حالته متاحاً للبيع.</p>
+            </div>
+          )}
+
+          <div>
+            <label className="label">📝 سبب الاسترجاع <span className="text-red-400">* (إلزامي للتدقيق)</span></label>
+            <textarea 
+              rows={3} 
+              className="field text-xs leading-relaxed" 
+              placeholder="مثال: انتهاء الاشتراك / طلب العميل استبدال / تغيير بيانات الدخول"
+              value={reclaimReason} 
+              onChange={(e) => setReclaimReason(e.target.value)} 
+            />
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <button 
+              type="button"
+              disabled={busy || !reclaimReason.trim()}
+              onClick={async () => {
+                if (!reclaimTarget) return;
+                const ok = await act({
+                  action: reclaimTarget.type === "PROFILE" ? "restoreProfile" : "restoreAccount",
+                  profileId: reclaimTarget.id,
+                  accountId: reclaimTarget.id,
+                  newPin: reclaimPin,
+                  reason: reclaimReason.trim(),
+                }, `تم استرجاع ${reclaimTarget.name} وتحديث بياناته بنجاح`);
+                if (ok) setReclaimTarget(null);
+              }}
+              className="btn-gold flex-1"
+            >
+              تأكيد الاسترجاع والاعتماد فوراً
+            </button>
+            <button 
+              type="button" 
+              onClick={() => setReclaimTarget(null)} 
+              className="btn-ghost"
+            >
+              إلغاء
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

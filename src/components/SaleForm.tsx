@@ -99,7 +99,7 @@ export default function SaleForm() {
   const deliveryMode = normalizeDeliveryMode(plat?.deliveryMode);
   const isInstant = deliveryMode === "INSTANT_INVENTORY";
   const isEmailMode = deliveryMode === "ON_DEMAND_EMAIL";
-  const isLinkMode = deliveryMode === "LINK_ONLY";
+  const isLinkMode = deliveryMode === "LINK_ONLY" || (deliverySource === "MANUAL" && !!manualLink.trim());
   const isLifetime = !!plat?.isLifetime;
   const emailRequired = isEmailMode || (isInstant && !!plat?.requiresCustomerEmail);
 
@@ -273,15 +273,64 @@ export default function SaleForm() {
 
             <div className="relative rounded-2xl border border-white/15 bg-gradient-to-br from-white/[.06] to-white/[.02] p-6 text-center">
               {paymentType === "WALLET" ? (
-                <>
-                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-500/20 backdrop-blur">
-                    <CheckCircle2 size={28} className="text-emerald-400" />
+                <div className="space-y-4 text-right">
+                  <div className="flex items-center gap-3 rounded-2xl bg-emerald-500/10 p-3 text-emerald-300 border border-emerald-500/20">
+                    <CheckCircle2 size={24} className="shrink-0 text-emerald-400" />
+                    <div>
+                      <div className="text-sm font-black text-white">تم الخصم المباشر من المحفظة واعتماد الاشتراك فوراً</div>
+                      <div className="text-xs text-slate-300">تم سحب الحساب بنجاح. يمكنك إرسال البيانات للعميل مباشرة أو نسخها.</div>
+                    </div>
                   </div>
-                  <p className="mt-3 text-base font-black text-white">تم الخصم المباشر من رصيد المحفظة</p>
-                  <p className="mx-auto mt-2 max-w-md text-[13px] font-semibold leading-[1.9] text-slate-300">
-                    تم اعتماد العملية فوراً وسحب الاشتراك دون الحاجة لمراجعة السند البنكي. يمكنك مراجعة البيانات في <b className="text-white">«مبيعاتي»</b>.
-                  </p>
-                </>
+
+                  {result.delivered && (
+                    <div className="space-y-2">
+                      {result.delivered.email && (
+                        <div className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                          <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">📧 الإيميل</div><div dir="ltr" className="truncate text-left font-mono text-[14px] font-bold text-white">{result.delivered.email}</div></div>
+                          <CopyBtn text={result.delivered.email} />
+                        </div>
+                      )}
+                      {result.delivered.password && (
+                        <div className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                          <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">🔑 كلمة المرور</div><div dir="ltr" className="truncate text-left font-mono text-[14px] font-bold text-white">{result.delivered.password}</div></div>
+                          <CopyBtn text={result.delivered.password} />
+                        </div>
+                      )}
+                      {result.delivered.profileName && result.accountType !== "FULL" && (
+                        <div className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                          <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">👤 البروفايل</div><div className="truncate text-right text-[14px] font-black text-amber-300">{result.delivered.profileName}</div></div>
+                        </div>
+                      )}
+                      {result.delivered.pin && result.accountType !== "FULL" && (
+                        <div className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                          <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">🔒 رمز الدخول PIN</div><div dir="ltr" className="truncate text-left font-mono text-[14px] font-bold text-white">{result.delivered.pin}</div></div>
+                          <CopyBtn text={result.delivered.pin} />
+                        </div>
+                      )}
+                      {result.delivered.link && (
+                        <div className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                          <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">🔗 الرابط</div><div dir="ltr" className="truncate text-left font-mono text-[14px] font-bold text-sky-200">{result.delivered.link}</div></div>
+                          <CopyBtn text={result.delivered.link} />
+                        </div>
+                      )}
+                      {result.delivered.code && (
+                        <div className="flex items-center gap-2 rounded-xl bg-white/[.04] px-3 py-2.5">
+                          <div className="min-w-0 flex-1"><div className="text-[11px] font-bold text-slate-400">🎟️ الكود</div><div dir="ltr" className="truncate text-left font-mono text-[14px] font-bold text-white">{result.delivered.code}</div></div>
+                          <CopyBtn text={result.delivered.code} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {result.whatsappMessage && (
+                    <div className="space-y-2 pt-1">
+                      <a href={waLink(result.customer.phone, result.whatsappMessage)} target="_blank" rel="noreferrer" className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#1fa855] px-5 py-3.5 font-extrabold text-white transition hover:bg-[#178a45]">
+                        إرسال البيانات للعميل عبر واتساب
+                      </a>
+                      <div className="flex justify-center"><CopyBtn text={result.whatsappMessage} label="نسخ رسالة الواتساب كاملة" /></div>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <>
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-white/10 backdrop-blur">

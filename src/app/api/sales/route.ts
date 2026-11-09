@@ -4,11 +4,12 @@ import { and, asc, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { deductFromWallet, refundToWallet } from "@/lib/wallet";
 import { requireUser, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
-import { encryptText, hashText } from "@/lib/crypto";
+import { encryptText, decryptText, hashText } from "@/lib/crypto";
 import { ALLOWED_DURATIONS, addDays, cleanPhone, formatDate, renderTemplate } from "@/lib/constants";
 import { getSetting, refreshAccountStatus, runDailyJob } from "@/lib/engine";
 import { normalizeDeliveryMode, lifetimeEndDate, type DeliveryMode } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
+import { buildWhatsAppMessage } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -135,11 +136,11 @@ export async function POST(req: Request) {
     }
 
     const mode: DeliveryMode = normalizeDeliveryMode(platform.deliveryMode);
-    const isLinkMode = mode === "LINK_ONLY";
+    const isLinkMode = mode === "LINK_ONLY" || (b.deliverySource === "MANUAL" && !!b.manualLink) || (b.deliveryKind === "INVITE_LINK");
     const lifetime = !!platform.isLifetime || (isLinkMode && (!durationDays || durationDays <= 0));
     const days = lifetime ? 0 : (durationDays || 0);
     if (!lifetime && !isLinkMode && (!Number.isInteger(days) || days < 1 || days > 3650)) {
-      if (walletDeducted && chargedUserId) await refundToWallet(chargedUserId, chargedAmount, "استرجاع: مدة اشتراك غير صالحة");
+      if (walletDeducted && chargedUserId) await refundToWallet({ userId: chargedUserId, amount: chargedAmount, note: "استرجاع: مدة اشتراك غير صالحة" });
       return jsonError("أدخل مدة الاشتراك بالأيام، من يوم واحد حتى 3650 يوماً");
     }
 
@@ -199,23 +200,24 @@ export async function POST(req: Request) {
 
       await processWalletDeduction(rental.id, `تسليم يدوي: ${platform.name}`);
 
-      const lines = [
-        manualEmail && `📧 الإيميل: ${manualEmail}`,
-        manualPassword && `🔑 كلمة المرور: ${manualPassword}`,
-        saleType === "PROFILE" && manualProfileName && `👤 البروفايل: ${manualProfileName}`,
-        saleType === "PROFILE" && manualPin && `🔒 PIN البروفايل: ${manualPin}`,
-        manualLink && `🔗 الرابط: ${manualLink}`,
-        manualCode && `🎟️ الكود: ${manualCode}`,
-        manualNote && `📝 ${manualNote}`,
-      ].filter(Boolean).join("\n");
-
-      const tpl = await getSetting("whatsapp_activation_template",
-        "مبروك {{name}} 🎉\nاشتراك {{platform}} تم تفعيله بنجاح من متجر مايسترو كي 🔑\n{{credentials}}\n⏳ صالح حتى: {{end_date}}");
-      const message = renderTemplate(tpl, {
-        name: customer.name, platform: platform.name,
-        email: manualEmail, password: manualPassword, link: manualLink, note: manualNote,
-        credentials: lines || "تم تسليم اشتراكك بنجاح ✓",
-        end_date: lifetime ? "دائم ♾️" : formatDate(neededEnd),
+      const message = await buildWhatsAppMessage({
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        platformId: platform.id,
+        platformName: platform.name,
+        accountType: saleType,
+        accountDeliveryKind: manualLink ? "INVITE_LINK" : (manualCode ? "LICENSE_KEY" : "CREDENTIALS"),
+        email: manualEmail,
+        password: manualPassword,
+        profileName: manualProfileName,
+        pin: manualPin,
+        link: manualLink,
+        licenseKey: manualCode,
+        note: manualNote,
+        endDate: neededEnd,
+        isLifetime: lifetime,
+        days,
+        templateType: "SALE",
       });
 
       await notifyAdmin({
@@ -284,8 +286,43 @@ export async function POST(req: Request) {
 
     async function respondWithAccount(rentalId: number, acc: typeof accounts.$inferSelect, prof: typeof profiles.$inferSelect | null, endDate: Date, isRenewal: boolean) {
       const accKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
-      const profileLabel = accKind === "INVITE_LINK" ? "🔗 رابط دعوة" : accKind === "LICENSE_KEY" ? "🎟️ كود ترخيص" : (prof ? `بروفايل ${prof.profileNo}` : (acc.type === "FULL" ? "حساب كامل" : "بروفايل"));
+      const profileLabel = accKind === "INVITE_LINK" ? "🔗 رابط دعوة" : accKind === "LICENSE_KEY" ? "🎟️ كود ترخيص" : (prof ? (prof.profileName || `بروفايل ${prof.profileNo}`) : (acc.type === "FULL" ? "حساب كامل" : "بروفايل"));
       
+      let deliveredData: any = null;
+      let waMessage = "";
+      if (paymentType === "WALLET") {
+        const password = acc.passwordEncrypted ? decryptText(acc.passwordEncrypted) : "";
+        const code = acc.licenseKeyEncrypted ? decryptText(acc.licenseKeyEncrypted) : "";
+        const pin = prof?.pin || (acc.type === "FULL" ? "" : acc.pin) || "";
+        waMessage = await buildWhatsAppMessage({
+          customerName: customer.name,
+          customerPhone: customer.phone,
+          platformId: platform.id,
+          platformName: platform.name,
+          accountType: acc.type,
+          accountDeliveryKind: accKind,
+          email: acc.email || "",
+          password,
+          profileName: prof?.profileName || null,
+          profileNo: prof?.profileNo || null,
+          pin,
+          link: acc.inviteLink || "",
+          licenseKey: code,
+          endDate,
+          isLifetime: lifetime,
+          days,
+          templateType: isRenewal ? "RENEWAL" : "SALE",
+        });
+        deliveredData = {
+          email: acc.email || "",
+          password,
+          profileName: prof?.profileName || (prof ? `بروفايل ${prof.profileNo}` : ""),
+          pin,
+          link: acc.inviteLink || "",
+          code,
+        };
+      }
+
       return Response.json({
         ok: true, rentalId, isRenewal,
         message: paymentType === "WALLET" 
@@ -300,6 +337,8 @@ export async function POST(req: Request) {
         accountLabel: profileLabel,
         endDate: endDate.toISOString(),
         paymentStatus,
+        delivered: deliveredData,
+        whatsappMessage: waMessage,
       });
     }
 

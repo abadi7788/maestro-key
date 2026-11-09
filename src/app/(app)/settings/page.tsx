@@ -18,6 +18,7 @@ export default function SettingsPage() {
   const [data, setData] = useState<any>(null); const [tpl, setTpl] = useState<any>({});
   const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
   const [newPlat, setNewPlat] = useState({ name: "", color: "#0f172a", shortName: "", imageUrl: "" });
+  const [selectedPlatId, setSelectedPlatId] = useState<number | "">("");
   const [editPlat, setEditPlat] = useState<any>(null);
   const [newBank, setNewBank] = useState("");
   const [newUser, setNewUser] = useState({
@@ -85,6 +86,68 @@ export default function SettingsPage() {
               <textarea rows={6} className="field leading-relaxed" value={tpl[f.k] || ""} onChange={(e) => setTpl({ ...tpl, [f.k]: e.target.value })} />
             </div>
           ))}
+
+          {/* تخصيص قالب مستقل لكل منصة */}
+          <div className="card space-y-3 p-4">
+            <div>
+              <h3 className="font-black text-amber-300">📱 تخصيص قالب مستقل لكل منصة (شاهد، نتفليكس، كانفا...)</h3>
+              <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-400">
+                اختر المنصة بالأسفل لتخصيص نص رسالة واتساب مستقل بها. النظام يملأ المتغيرات الذكية تلقائياً (
+                <code className="text-amber-200">{"{{name}}"}</code>, <code className="text-amber-200">{"{{platform}}"}</code>, <code className="text-amber-200">{"{{credentials}}"}</code>, <code className="text-amber-200">{"{{end_date}}"}</code>, <code className="text-amber-200">{"{{email}}"}</code>, <code className="text-amber-200">{"{{password}}"}</code>, <code className="text-amber-200">{"{{profile}}"}</code>
+                )، ويميز تلقائياً بين الحساب الكامل (دون سطر PIN) والبروفايل.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-2">
+              {data?.platforms?.map((p: any) => {
+                const hasCustom = !!tpl[`whatsapp_platform_template_${p.id}`]?.trim();
+                const isSelected = selectedPlatId === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setSelectedPlatId(isSelected ? "" : p.id)}
+                    className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold transition border ${
+                      isSelected
+                        ? "border-amber-400 bg-amber-400/20 text-white shadow-sm"
+                        : hasCustom
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                        : "border-white/10 bg-white/[.03] text-slate-400 hover:border-white/25"
+                    }`}
+                  >
+                    <span>{p.name}</span>
+                    {hasCustom && <span className="h-2 w-2 rounded-full bg-emerald-400" title="مخصص" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedPlatId && (
+              <div className="mt-3 space-y-2.5 rounded-2xl border border-white/10 bg-white/[.02] p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-amber-300">
+                    قالب المنصة: {data?.platforms?.find((p: any) => p.id === selectedPlatId)?.name}
+                  </span>
+                  {tpl[`whatsapp_platform_template_${selectedPlatId}`] && (
+                    <button
+                      type="button"
+                      onClick={() => setTpl({ ...tpl, [`whatsapp_platform_template_${selectedPlatId}`]: "" })}
+                      className="text-[11px] font-bold text-red-400 hover:underline"
+                    >
+                      إلغاء التخصيص والعودة للقالب العام
+                    </button>
+                  )}
+                </div>
+                <textarea
+                  rows={6}
+                  className="field leading-relaxed font-sans"
+                  placeholder="اكتب قالب واتساب مخصص لهذه المنصة..."
+                  value={tpl[`whatsapp_platform_template_${selectedPlatId}`] || ""}
+                  onChange={(e) => setTpl({ ...tpl, [`whatsapp_platform_template_${selectedPlatId}`]: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
           <div className="card space-y-3 p-4">
             <h3 className="font-black">بريد إرسال كود الأدمن</h3>
             <p className="text-xs font-semibold leading-relaxed text-slate-400">حتى يصل الكود إلى almaystrwbady@gmail.com ضع بيانات مرسل البريد هنا. مع جيميل استخدم smtp.gmail.com والمنفذ 587 وكلمة مرور التطبيقات لا كلمة الجيميل العادية.</p>
