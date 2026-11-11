@@ -45,30 +45,45 @@ export default function Shell({ children }: { children: ReactNode }) {
       if (!u) { router.replace("/login"); return; }
       setMe(u); setLoading(false);
       if (isAdminRole(u.role)) {
+        if (pathname === "/inbox") {
+          setInboxCount(0);
+          return;
+        }
         try {
-          const [rent, dash] = await Promise.all([
-            api("/api/rentals?view=all").catch(() => ({ rentals: [] })),
-            api("/api/admin-data?view=dashboard").catch(() => ({ stats: { pendingPayments: 0, needsPasswordChange: 0 } }))
-          ]);
-          const ended = rent.rentals?.filter((r: any) => r.status === "ENDED").length || 0;
-          setInboxCount(ended + (dash.stats?.pendingPayments || 0) + (dash.stats?.needsPasswordChange || 0));
+          const dash = await api("/api/admin-data?view=dashboard").catch(() => ({ stats: { inboxCount: 0 } }));
+          setInboxCount(dash?.stats?.inboxCount ?? 0);
         } catch {}
       }
     });
   }, [pathname, router]);
 
   useEffect(() => {
+    const handleInboxRead = (e: any) => {
+      const cnt = e?.detail?.count;
+      if (pathname === "/inbox") {
+        setInboxCount(0);
+      } else if (typeof cnt === "number") {
+        setInboxCount(cnt);
+      } else {
+        setInboxCount(0);
+      }
+    };
+    window.addEventListener("maestro-inbox-read", handleInboxRead);
+    return () => window.removeEventListener("maestro-inbox-read", handleInboxRead);
+  }, [pathname]);
+
+  useEffect(() => {
     if (!me) return;
     const tick = async () => {
       if (isAdminRole(me.role)) {
-        try {
-          const [rent, dash] = await Promise.all([
-            api("/api/rentals?view=all").catch(() => ({ rentals: [] })),
-            api("/api/admin-data?view=dashboard").catch(() => ({ stats: { pendingPayments: 0, needsPasswordChange: 0 } }))
-          ]);
-          const ended = rent.rentals?.filter((r: any) => r.status === "ENDED").length || 0;
-          setInboxCount(ended + (dash.stats?.pendingPayments || 0) + (dash.stats?.needsPasswordChange || 0));
-        } catch {}
+        if (pathname === "/inbox") {
+          setInboxCount(0);
+        } else {
+          try {
+            const dash = await api("/api/admin-data?view=dashboard").catch(() => ({ stats: { inboxCount: 0 } }));
+            setInboxCount(dash?.stats?.inboxCount ?? 0);
+          } catch {}
+        }
       }
       try { window.dispatchEvent(new Event("maestro-sync")); } catch {}
     };
@@ -76,7 +91,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       if (typeof document === "undefined" || document.visibilityState === "visible") void tick();
     }, 25000);
     return () => clearInterval(t);
-  }, [me]);
+  }, [me, pathname]);
 
 
   if (loading) return (

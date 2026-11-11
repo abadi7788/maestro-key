@@ -94,6 +94,18 @@ export default function AlertWatcher() {
     historyRef.current = history;
   }, [history]);
 
+  useEffect(() => {
+    const onInboxRead = () => {
+      setUnread(0);
+      try {
+        const maxId = Math.max(after.current, ...historyRef.current.map((h) => h.id), 0);
+        localStorage.setItem(READ_KEY, String(maxId));
+      } catch {}
+    };
+    window.addEventListener("maestro-inbox-read", onInboxRead);
+    return () => window.removeEventListener("maestro-inbox-read", onInboxRead);
+  }, []);
+
   async function enable() {
     if (enabling) return;
     setEnabling(true);

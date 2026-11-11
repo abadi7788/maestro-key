@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import { AlarmClock, BellRing, Check, ChevronDown, KeyRound, MessageCircle, Play, ReceiptText, ScanLine, UserMinus, X } from "lucide-react";
+import { AlarmClock, BellRing, Check, CheckCheck, ChevronDown, KeyRound, MessageCircle, Play, ReceiptText, ScanLine, UserMinus, X } from "lucide-react";
 import { api, fmtDate, waLink, daysLeft } from "@/lib/client";
 import { Badge, Empty, Modal, ReceiptButton, Spinner } from "@/components/ui";
 
@@ -22,6 +22,13 @@ export default function InboxPage() {
   useEffect(() => { load(); }, [load]);
   useAutoRefresh(load, 25000);
 
+  // تصفير العداد وتزامن الحالة فور الدخول لصفحة التنبيهات
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("maestro-inbox-read", { detail: { count: 0 } }));
+    try {
+      localStorage.setItem("mk_inbox_viewed_at", String(Date.now()));
+    } catch {}
+  }, []);
 
   async function act(body: any, okMsg: string) {
     setBusy(true); setMsg("");
@@ -31,6 +38,24 @@ export default function InboxPage() {
   async function runJob() {
     const d = await act({ action: "runDailyJob" }, "");
     if (d) setMsg(`✓ المهمة اليومية: انتهى ${d.endedCount} اشتراك، وجهّز ${d.alertsSent} تنبيه انتهاء قبل يومين (يُرسل تلقائياً عبر Meta إن كان مضبوطاً، وإلا سُجّل ويظهر زر واتساب بجانب العميل).`);
+  }
+
+  async function handleMarkAllRead() {
+    setBusy(true);
+    setMsg("");
+    try {
+      await api("/api/actions", {
+        method: "POST",
+        body: JSON.stringify({ action: "markAllInboxRead" }),
+      });
+      setMsg("✓ تم تحديد كافة التنبيهات كمقروءة وتصفير عداد الشارة بنجاح.");
+      window.dispatchEvent(new CustomEvent("maestro-inbox-read", { detail: { count: 0 } }));
+      await load();
+    } catch (e: any) {
+      setMsg("⚠️ " + (e.message || "فشل تصفير التنبيهات"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   const modeOf = (r: any) => r.deliveryMode === "LINK_ONLY" ? "LINK_ONLY" : (r.deliveryMode === "ON_DEMAND_EMAIL" || !r.accountType) ? "ON_DEMAND_EMAIL" : "INSTANT_INVENTORY";
@@ -65,19 +90,28 @@ export default function InboxPage() {
   const pendingActivation = rentals.filter((r) => r.activationStatus === "PENDING" && r.status !== "REJECTED" && r.status !== "CLOSED");
   const endedProfile = rentals.filter((r) => r.status === "ENDED" && r.accountType === "PROFILE");
   const endedFull = rentals.filter((r) => r.status === "ENDED" && r.accountType === "FULL");
+  const endedOther = rentals.filter((r) => r.status === "ENDED" && r.accountType !== "PROFILE" && r.accountType !== "FULL");
   const needsPw = accounts.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE");
   const pendingPays = rentals.flatMap((r) => r.payments.filter((p: any) => p.status === "PENDING").map((p: any) => ({ ...p, rental: r })));
   const endingSoon = rentals.filter((r) => !r.isLifetime && r.status === "ACTIVE" && daysLeft(r.endDate) <= 2 && daysLeft(r.endDate) >= 0);
-  const total = pendingActivation.length + endedProfile.length + endedFull.length + pendingPays.length + needsPw.filter((a) => !endedFull.some((r) => r.accountId === a.id)).length;
+  // إجمالي الإجراءات المعلقة التي تتطلب تدخل يدوي فقط (لا تشمل الاشتراكات الاسترشادية)
+  const total = pendingActivation.length + endedProfile.length + endedFull.length + endedOther.length + pendingPays.length + needsPw.filter((a) => !endedFull.some((r) => r.accountId === a.id)).length;
 
   return (
     <div className="space-y-7">
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex-1">
           <h1 className="flex items-center gap-2 text-2xl font-black"><BellRing className="text-red-300" /> التنبيهات والإجراءات المطلوبة {total > 0 && <Badge tone="red">{total}</Badge>}</h1>
           <p className="mt-1 text-sm font-semibold text-slate-500">كل اشتراك منتهٍ يظهر باسم عميله — حتى لو كان الحساب نفسه مؤجَّراً لعملاء آخرين في بروفايلات أخرى.</p>
         </div>
-        <button onClick={runJob} disabled={busy} className="btn-primary"><Play size={17} /> تشغيل المهمة اليومية</button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={handleMarkAllRead} disabled={busy} className="btn-ghost flex items-center gap-1.5 border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-xs py-2.5 px-4 font-bold">
+            <CheckCheck size={16} /> تحديد الكل كمقروء (تصفير العداد)
+          </button>
+          <button onClick={runJob} disabled={busy} className="btn-primary text-xs py-2.5 px-4">
+            <Play size={16} /> تشغيل المهمة اليومية
+          </button>
+        </div>
       </div>
       {msg && <div className="rounded-2xl bg-emerald-500/10 px-4 py-3 font-bold text-emerald-300">{msg}</div>}
 
@@ -202,6 +236,32 @@ export default function InboxPage() {
           ))}</div>
         )}
       </section>
+
+      {/* Ended other subscriptions (on-demand or links) */}
+      {endedOther.length > 0 && (
+        <section>
+          <h2 className="mb-3 flex items-center gap-2 font-black text-rose-300"><UserMinus className="text-red-300" size={20} /> اشتراكات أخرى انتهت مدتها ({endedOther.length})</h2>
+          <div className="space-y-2.5">
+            {endedOther.map((r) => (
+              <div key={r.id} className="card flex flex-wrap items-center gap-3 border-red-200/40 p-4">
+                <div className="min-w-[180px] flex-1">
+                  <div className="font-extrabold text-white">انتهى اشتراك «{r.customerName}» على {r.platformName}</div>
+                  <div className="text-[13px] font-semibold text-slate-400">
+                    {r.customerEmail ? <>إيميل العميل: <span dir="ltr" className="font-mono text-[#63a8ff]">{r.customerEmail}</span> • </> : null}
+                    انتهى: {fmtDate(r.endDate)}
+                  </div>
+                </div>
+                <a href={waLink(r.customerPhone, `مرحباً ${r.customerName}، انتهى اشتراكك في ${r.platformName}. للتجديد تواصل معنا — مايسترو كي`)} target="_blank" rel="noreferrer" className="btn-ghost text-xs">
+                  <MessageCircle size={15} className="text-[#1fa855]" /> إشعار العميل
+                </a>
+                <button disabled={busy} onClick={() => act({ action: "freeProfile", rentalId: r.id }, `تمت أرشفة اشتراك ${r.customerName}`)} className="btn-danger text-xs">
+                  <Check size={15} /> أرشفة وإغلاق الاشتراك ✓
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Ended - full / password changes */}
       <section>

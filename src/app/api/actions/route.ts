@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { accounts, profiles, rentals, payments, customers, platforms, whatsappLogs } from "@/db/schema";
+import { accounts, profiles, rentals, payments, customers, platforms, whatsappLogs, settings } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { requireUser, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
@@ -47,6 +47,37 @@ export async function POST(req: Request) {
       if (!pay) return jsonError("سند غير موجود", 404);
       await audit(user, "RECEIPT_VIEWED", "payments", pay.id, "عرض صورة سند");
       return Response.json({ image: pay.receiptImageData });
+    }
+
+    // ---------- Mark all inbox as read & reset badge ----------
+    if (action === "markAllInboxRead") {
+      // 1. إغلاق الاشتراكات المنتهية التي لم تعد بحاجة لإجراء معلق
+      const endedList = await db.select().from(rentals).where(eq(rentals.status, "ENDED"));
+      for (const r of endedList) {
+        await db.update(rentals).set({ status: "CLOSED", updatedAt: now }).where(eq(rentals.id, r.id));
+        if (r.profileId) {
+          await db.update(profiles).set({ isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null }).where(eq(profiles.id, r.profileId));
+        }
+        if (r.accountId) {
+          await refreshAccountStatus(r.accountId);
+        }
+      }
+
+      // 2. تحديث حالة تنبيهات الاقتراب من الانتهاء كمراجعة
+      await db.update(rentals).set({ whatsappAlertSent: true, whatsappAlertSentAt: now }).where(
+        and(eq(rentals.status, "ACTIVE"), eq(rentals.whatsappAlertSent, false))
+      );
+
+      // 3. حفظ تاريخ المراجعة في الإعدادات
+      const [existingSetting] = await db.select().from(settings).where(eq(settings.key, "inbox_last_read_at")).limit(1);
+      if (existingSetting) {
+        await db.update(settings).set({ value: now.toISOString() }).where(eq(settings.key, "inbox_last_read_at"));
+      } else {
+        await db.insert(settings).values({ key: "inbox_last_read_at", value: now.toISOString() });
+      }
+
+      await audit(user, "INBOX_MARKED_READ", "inbox", 0, "تحديد كافة التنبيهات كمقروءة وتصفير عداد الشارة");
+      return Response.json({ ok: true, clearedEnded: endedList.length });
     }
 
     // ---------- Confirm payment ----------

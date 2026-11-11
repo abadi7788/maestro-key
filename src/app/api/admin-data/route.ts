@@ -33,6 +33,13 @@ export async function GET(req: Request) {
 
       const allUsers = await db.select({ id: users.id, name: users.displayName, username: users.username, role: users.role }).from(users);
       
+      const pendingActivations = allRentals.filter((r) => r.activationStatus === "PENDING" && r.status !== "REJECTED" && r.status !== "CLOSED").length;
+      const pendingPaymentsCount = pays.filter((p) => p.status === "PENDING").length;
+      const needsPasswordCount = accs.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE").length;
+      const endedRentalsCount = allRentals.filter((r) => r.status === "ENDED").length;
+      // العداد الفعلي للإجراءات المطلوبة فقط (لا يحتسب الاشتراكات الاسترشادية التي تنتهي بعد يومين)
+      const actionableInboxCount = pendingActivations + pendingPaymentsCount + needsPasswordCount + endedRentalsCount;
+
       const staffReconciliation = allUsers.map((u) => {
         const uRentals = todayRentals.filter((r) => r.createdBy === u.id);
         const uRentalIds = new Set(uRentals.map((r) => r.id));
@@ -57,13 +64,16 @@ export async function GET(req: Request) {
           accountsTotal: accs.length,
           accountsAvailable: accs.filter((a) => a.status === "AVAILABLE").length,
           accountsRented: accs.filter((a) => a.status === "RENTED").length,
-          needsPasswordChange: accs.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE").length,
+          needsPasswordChange: needsPasswordCount,
           accountsExpiringSoon: accs.filter((a) => a.expiryDate && new Date(a.expiryDate).getTime() - now < 30 * 86400000 && new Date(a.expiryDate).getTime() > now).length,
           activeRentals: allRentals.filter((r) => r.status === "ACTIVE").length,
-          endedRentals: allRentals.filter((r) => r.status === "ENDED").length,
-          endingIn2Days: allRentals.filter((r) => r.status === "ACTIVE" && new Date(r.endDate).getTime() - now <= 2 * 86400000 && new Date(r.endDate).getTime() >= now).length,
-          pendingPayments: pays.filter((p) => p.status === "PENDING").length,
-          revenueConfirmed, revenuePending, customers: custs.length, todaySales,
+          endedRentals: endedRentalsCount,
+          endingIn2Days: allRentals.filter((r) => r.status === "ACTIVE" && !r.isLifetime && new Date(r.endDate).getTime() - now <= 2 * 86400000 && new Date(r.endDate).getTime() >= now).length,
+          pendingPayments: pendingPaymentsCount,
+          pendingActivations,
+          inboxCount: actionableInboxCount,
+          actionableTotal: actionableInboxCount,
+          revenueConfirmed, revenuePending, customers: custs.length, todaySales: todayRentals.length,
         },
         dailyReconciliation: {
           todayWalletTotal,
