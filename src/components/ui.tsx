@@ -31,14 +31,17 @@ export function Badge({ tone = "slate", children }: { tone?: string; children: R
 
 export function rentalBadge(status: string) {
   if (status === "ACTIVE") return <Badge tone="green">● نشط</Badge>;
+  if (status === "COMPLETED") return <Badge tone="blue">✓ بيع مكتمل</Badge>;
+  if (status === "REFUNDED") return <Badge tone="amber">↩️ مسترجع</Badge>;
   if (status === "ENDED") return <Badge tone="red">منتهي — بانتظار إجراء</Badge>;
-  if (status === "CLOSED") return <Badge tone="slate">مغلق</Badge>;
+  if (status === "CLOSED") return <Badge tone="slate">مغلق ومؤرشف</Badge>;
   if (status === "REJECTED") return <Badge tone="red">ملغي — سند مرفوض</Badge>;
   return <Badge>{status}</Badge>;
 }
 export function paymentBadge(status: string) {
   if (status === "CONFIRMED") return <Badge tone="green">سند مؤكد ✓</Badge>;
   if (status === "PENDING") return <Badge tone="amber">سند بانتظار المراجعة</Badge>;
+  if (status === "REFUNDED") return <Badge tone="slate">مسترجع ↩️</Badge>;
   return <Badge tone="red">سند مرفوض</Badge>;
 }
 export function accountBadge(status: string) {

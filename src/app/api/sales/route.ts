@@ -173,10 +173,12 @@ export async function POST(req: Request) {
       }
       const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
+      const isDirectOneTime = Boolean(lifetime || manualCode);
+      const initialStatus = isDirectOneTime && paymentType === "WALLET" ? "COMPLETED" : "ACTIVE";
       const [rental] = await db.insert(rentals).values({
         accountId: null, profileId: null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
-        durationDays: days, isLifetime: lifetime, status: "ACTIVE", activationStatus: "ACTIVATED",
+        durationDays: days, isLifetime: lifetime, status: initialStatus, activationStatus: "ACTIVATED",
         activatedAt: now, activatedBy: user.id,
         deliverySource: "MANUAL",
         manualEmail: manualEmail || null,
@@ -495,10 +497,12 @@ export async function POST(req: Request) {
 
     try {
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
+      const isDirectOneTime = Boolean(lifetime || accKind === "LICENSE_KEY");
+      const initialStatus = isDirectOneTime && paymentType === "WALLET" ? "COMPLETED" : "ACTIVE";
       const [rental] = await db.insert(rentals).values({
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
-        durationDays: days, isLifetime: lifetime, status: "ACTIVE", passwordUsedEncrypted: claimedAcc.passwordEncrypted,
+        durationDays: days, isLifetime: lifetime, status: initialStatus, passwordUsedEncrypted: claimedAcc.passwordEncrypted,
         customerEmail: customerEmail || null, customerExtra: customerExtra || null,
         activationStatus: (platform.requiresCustomerEmail || platform.extraFieldLabel) ? "PENDING" : "NOT_REQUIRED",
       }).returning();

@@ -72,14 +72,16 @@ export async function GET(req: Request) {
       })),
     })).filter((r) => !paymentStatus || r.payments.some((p) => p.status === paymentStatus));
 
+    const plats = await db.select({ id: platforms.id, name: platforms.name }).from(platforms).orderBy(platforms.id);
+
     if (view === "due") {
       const now = Date.now();
       const threeDays = now + 3 * 86400000;
-      const due = enriched.filter((r) => !r.isLifetime && (
+      const due = enriched.filter((r) => !r.isLifetime && r.status !== "COMPLETED" && (
         (r.status === "ACTIVE" && new Date(r.endDate).getTime() <= threeDays) || r.status === "ENDED"));
-      return Response.json({ rentals: due });
+      return Response.json({ rentals: due, platforms: plats });
     }
-    return Response.json({ rentals: enriched });
+    return Response.json({ rentals: enriched, platforms: plats });
   } catch (e) {
     if (e instanceof Response) return e;
     console.error("[api/rentals] failed:", e instanceof Error ? e.message : e);

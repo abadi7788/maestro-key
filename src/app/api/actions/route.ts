@@ -4,7 +4,8 @@ import { and, eq } from "drizzle-orm";
 import { requireUser, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { decryptText, encryptText } from "@/lib/crypto";
-import { formatDate, renderTemplate } from "@/lib/constants";
+import { formatDate, renderTemplate, cleanPhone } from "@/lib/constants";
+import bcrypt from "bcryptjs";
 import { getSetting, refreshAccountStatus, runDailyJob } from "@/lib/engine";
 import { normalizeDeliveryMode, lifetimeEndDate } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
@@ -87,20 +88,27 @@ export async function POST(req: Request) {
       await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null }).where(eq(payments.id, pay.id));
 
       // المدة تبدأ من لحظة تأكيد المدير (لا من لحظة سحب السند من الموظف)
-      // الاشتراك الدائم: تُحفظ تواريخه كما هي دون إعادة حساب
+      // بيع مباشر / مدى الحياة: تكتمل دورته بمجرد التأكيد دون عدادات انتهاء
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, pay.rentalId)).limit(1);
-      if (rental && rental.isLifetime) {
-        await db.update(rentals).set({
-          status: "ACTIVE", whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
-        }).where(eq(rentals.id, rental.id));
-      } else if (rental) {
-        const days = Math.max(1, Number(pay.durationDays || rental.durationDays || 30));
-        const start = now;
-        const end = new Date(now.getTime() + days * 86400000);
-        await db.update(rentals).set({
-          startDate: start, endDate: end, durationDays: days,
-          status: "ACTIVE", whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
-        }).where(eq(rentals.id, rental.id));
+      if (rental) {
+        let isOneTime = rental.isLifetime;
+        if (rental.accountId) {
+          const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+          if (acc?.deliveryKind === "LICENSE_KEY") isOneTime = true;
+        }
+        if (isOneTime) {
+          await db.update(rentals).set({
+            status: "COMPLETED", whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
+          }).where(eq(rentals.id, rental.id));
+        } else {
+          const days = Math.max(1, Number(pay.durationDays || rental.durationDays || 30));
+          const start = now;
+          const end = new Date(now.getTime() + days * 86400000);
+          await db.update(rentals).set({
+            startDate: start, endDate: end, durationDays: days,
+            status: "ACTIVE", whatsappAlertSent: false, whatsappAlertSentAt: null, updatedAt: now,
+          }).where(eq(rentals.id, rental.id));
+        }
       }
 
       if (rental) {
@@ -161,6 +169,167 @@ export async function POST(req: Request) {
       }
       await audit(user, "PAYMENT_REJECTED", "payments", pay.id, `رفض سند ${pay.transactionRef} — ${reason} — تم إلغاء/تراجع الاشتراك`);
       return Response.json({ ok: true });
+    }
+
+    // ---------- Edit rental details (admin only) ----------
+    if (action === "editRental") {
+      if (!isAdminRole(user.role)) return jsonError("هذه الصلاحية للمدير فقط", 403);
+      const rentalId = Number(b.rentalId);
+      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
+      if (!rental) return jsonError("الاشتراك غير موجود", 404);
+
+      const customerName = String(b.customerName || "").trim();
+      const customerPhone = cleanPhone(String(b.customerPhone || ""));
+      const platformId = b.platformId ? Number(b.platformId) : rental.platformId;
+      const isLifetime = Boolean(b.isLifetime);
+      const customerEmail = b.customerEmail !== undefined ? String(b.customerEmail).trim() : rental.customerEmail;
+      const customerExtra = b.customerExtra !== undefined ? String(b.customerExtra).trim() : rental.customerExtra;
+
+      // تحديث بيانات العميل
+      if (customerName || customerPhone) {
+        const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
+        if (cust) {
+          await db.update(customers).set({
+            name: customerName || cust.name,
+            phone: customerPhone || cust.phone,
+          }).where(eq(customers.id, cust.id));
+        }
+      }
+
+      const updateData: any = { updatedAt: now };
+      if (platformId) updateData.platformId = platformId;
+      updateData.isLifetime = isLifetime;
+      if (isLifetime) {
+        updateData.endDate = lifetimeEndDate();
+        updateData.durationDays = 0;
+        if (rental.status === "ACTIVE") updateData.status = "COMPLETED";
+      } else if (b.endDate) {
+        updateData.endDate = new Date(b.endDate);
+        const diffMs = updateData.endDate.getTime() - new Date(rental.startDate).getTime();
+        updateData.durationDays = Math.max(1, Math.round(diffMs / 86400000));
+        if (rental.status === "COMPLETED") updateData.status = "ACTIVE";
+      }
+      if (b.customerEmail !== undefined) updateData.customerEmail = customerEmail || null;
+      if (b.customerExtra !== undefined) updateData.customerExtra = customerExtra || null;
+
+      await db.update(rentals).set(updateData).where(eq(rentals.id, rental.id));
+      await audit(user, "RENTAL_EDITED", "rentals", rental.id, `تعديل بيانات الاشتراك #${rental.id} للعميل: ${customerName || rental.customerId}`);
+      return Response.json({ ok: true, message: "تم حفظ التعديلات على الاشتراك بنجاح" });
+    }
+
+    // ---------- Rollback rental (admin only) ----------
+    if (action === "rollbackRental") {
+      if (!isAdminRole(user.role)) return jsonError("هذه الصلاحية للمدير فقط", 403);
+      const rentalId = Number(b.rentalId);
+      const reason = String(b.reason || "استرجاع وإلغاء تفعيل الاشتراك من قبل الإدارة").trim();
+      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
+      if (!rental) return jsonError("الاشتراك غير موجود", 404);
+
+      // تحرير البروفايل فوراً ليعود متاحاً
+      if (rental.profileId) {
+        await db.update(profiles).set({
+          isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null
+        }).where(eq(profiles.id, rental.profileId));
+      }
+
+      // تحرير الحساب فوراً
+      if (rental.accountId) {
+        const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+        if (acc) {
+          if (acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY") {
+            const { sql } = await import("drizzle-orm");
+            await db.update(accounts)
+              .set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, status: "AVAILABLE", updatedAt: now })
+              .where(eq(accounts.id, acc.id));
+          } else if (acc.type === "FULL") {
+            await db.update(accounts).set({ status: "AVAILABLE", updatedAt: now }).where(eq(accounts.id, acc.id));
+          }
+          await refreshAccountStatus(acc.id);
+        }
+      }
+
+      // تحديث حالة الاشتراك إلى REFUNDED
+      await db.update(rentals).set({
+        status: "REFUNDED",
+        refundedAt: now,
+        refundReason: reason,
+        updatedAt: now,
+      }).where(eq(rentals.id, rental.id));
+
+      // تسوية السندات وإعادة رصيد المحفظة إن وجد
+      const rentalPayments = await db.select().from(payments).where(eq(payments.rentalId, rental.id));
+      for (const p of rentalPayments) {
+        await db.update(payments).set({
+          status: "REFUNDED",
+          rejectionReason: `استرجاع: ${reason}`,
+        }).where(eq(payments.id, p.id));
+
+        if (p.transactionRef?.startsWith("WALLET-") || !p.paymentMethodId) {
+          try {
+            await refundToWallet({
+              userId: rental.createdBy,
+              amount: p.amount,
+              rentalId: rental.id,
+              note: `استرجاع اشتراك: ${reason}`,
+              createdBy: user.id,
+            });
+          } catch (err) {
+            console.warn("Wallet refund error during rollback:", err);
+          }
+        }
+      }
+
+      await audit(user, "RENTAL_ROLLBACK", "rentals", rental.id, `استرجاع الاشتراك #${rental.id} — السبب: ${reason} — تحرير الحساب وتسوية المبلغ`);
+      return Response.json({ ok: true, message: "تم استرجاع الاشتراك وتحرير الحساب/البروفايل في المخزون وتسوية السجل المالي بنجاح" });
+    }
+
+    // ---------- Hard delete rental (admin only with password check) ----------
+    if (action === "hardDeleteRental") {
+      if (!isAdminRole(user.role)) return jsonError("هذه الصلاحية للمدير فقط", 403);
+      const rentalId = Number(b.rentalId);
+      const adminPassword = String(b.adminPassword || "");
+      if (!adminPassword) return jsonError("يرجى إدخال كلمة مرور المدير لتأكيد الحذف النهائي");
+
+      // التحقق من كلمة مرور المدير
+      const validPw = await bcrypt.compare(adminPassword, user.passwordHash);
+      if (!validPw) {
+        await audit(user, "HARD_DELETE_REJECTED", "rentals", rentalId, "محاولة حذف اشتراك بكلمة مرور مدير خاطئة");
+        return jsonError("كلمة مرور المدير غير صحيحة — تم رفض الحذف النهائي", 403);
+      }
+
+      const [rental] = await db.select().from(rentals).where(eq(rentals.id, rentalId)).limit(1);
+      if (!rental) return jsonError("الاشتراك غير موجود", 404);
+
+      // تحرير البروفايل إن كان مرتبطاً
+      if (rental.profileId) {
+        await db.update(profiles).set({
+          isOccupied: false, currentRentalId: null, status: "AVAILABLE", soldAt: null, soldBy: null
+        }).where(eq(profiles.id, rental.profileId));
+      }
+
+      // تحرير الحساب إن كان مرتبطاً
+      if (rental.accountId) {
+        const [acc] = await db.select().from(accounts).where(eq(accounts.id, rental.accountId)).limit(1);
+        if (acc) {
+          if (acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY") {
+            const { sql } = await import("drizzle-orm");
+            await db.update(accounts)
+              .set({ usedCount: sql`GREATEST(${accounts.usedCount} - 1, 0)`, status: "AVAILABLE", updatedAt: now })
+              .where(eq(accounts.id, acc.id));
+          } else if (acc.type === "FULL") {
+            await db.update(accounts).set({ status: "AVAILABLE", updatedAt: now }).where(eq(accounts.id, acc.id));
+          }
+          await refreshAccountStatus(acc.id);
+        }
+      }
+
+      // حذف السجلات المرتبطة نهائياً
+      await db.delete(payments).where(eq(payments.rentalId, rentalId));
+      await db.delete(whatsappLogs).where(eq(whatsappLogs.rentalId, rentalId));
+      await db.delete(rentals).where(eq(rentals.id, rentalId));
+
+      await audit(user, "RENTAL_HARD_DELETED", "rentals", rentalId, `تم حذف الاشتراك #${rentalId} نهائياً بعد التحقق من كلمة مرور المدير`);
+      return Response.json({ ok: true, message: "تم حذف الاشتراك وسجلاته نهائياً من قاعدة البيانات" });
     }
 
     // ---------- Free a profile (admin removed customer manually on platform) ----------
