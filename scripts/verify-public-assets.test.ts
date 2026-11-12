@@ -15,7 +15,7 @@ async function main() {
     assert.equal(metadata.height, image.height);
     await sharp(path.join(root, image.file)).raw().toBuffer();
   }
-  console.log("PASS all 15 live PNG files decode and match their stated dimensions.");
+  console.log(`PASS all ${report.length} live PNG files decode and match their stated dimensions.`);
   const badge = await sharp(path.join(root, "public/icons/notification-badge-v3-96.png")).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   let clear = 0;
   let visible = 0;
@@ -30,13 +30,13 @@ async function main() {
   console.log("PASS Android notification badge is white-on-transparent, not an opaque square.");
 
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "maestro-assets-test-"));
-  const paths = [...requiredPublicImages.map((entry) => entry.file), "src/app/icon.png", "public/manifest.json", "public/sw.js", "src/components/AlertWatcher.tsx"];
+  const paths = [...requiredPublicImages.map((entry) => entry.file), "src/app/icon.png", "public/manifest.json", "public/sw.js", "src/components/AlertWatcher.tsx", "public/offline.html"];
   try {
     for (const file of paths) {
       await fs.mkdir(path.dirname(path.join(temp, file)), { recursive: true });
       await fs.copyFile(path.join(root, file), path.join(temp, file));
     }
-    assert.equal(verifyPublicAssets(temp).length, 15);
+    assert.equal(verifyPublicAssets(temp).length, requiredPublicImages.length);
     const logo = path.join(temp, "public/logo.png");
     await fs.rename(logo, path.join(temp, "public/Logo.png"));
     assert.throws(() => verifyPublicAssets(temp), /Missing image: public\/logo.png/);
@@ -49,7 +49,7 @@ async function main() {
     await fs.writeFile(logo, original);
     console.log("PASS missing/case-mismatched images, Git LFS pointers and false PNG files fail clearly.");
 
-    const iconFile = path.join(temp, "public/icons/app-white-v3-192.png");
+    const iconFile = path.join(temp, "public/icons/icon-192x192.png");
     const icon = await fs.readFile(iconFile);
     const wrong = Buffer.from(icon);
     wrong.writeUInt32BE(512, 16);
@@ -58,7 +58,7 @@ async function main() {
     await fs.writeFile(iconFile, icon);
     const manifestFile = path.join(temp, "public/manifest.json");
     const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
-    manifest.icons[0].src = "/public/icons/app-white-v3-192.png";
+    manifest.icons[0].src = "/public/icons/icon-192x192.png";
     await fs.writeFile(manifestFile, JSON.stringify(manifest));
     assert.throws(() => verifyPublicAssets(temp), /manifest\.json/);
     console.log("PASS mismatched icon sizes and manifest URLs with /public are rejected.");

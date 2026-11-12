@@ -5,7 +5,14 @@ export async function api<T = any>(url: string, opts?: RequestInit): Promise<T> 
   return data as T;
 }
 
-export type Me = { id: number; username: string; displayName: string; role: "ADMIN" | "EMPLOYEE" };
+export type Me = {
+  id: number;
+  username: string;
+  displayName: string;
+  role: "ADMIN" | "EMPLOYEE" | string;
+  permissions?: string | null;
+  walletBalance?: number;
+};
 
 export async function fetchMe(): Promise<Me | null> {
   try { const d = await api<{ user: Me }>("/api/auth"); return d.user; } catch { return null; }

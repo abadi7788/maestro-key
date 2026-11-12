@@ -497,7 +497,7 @@ export async function POST(req: Request) {
 
     try {
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
-      const isDirectOneTime = Boolean(lifetime || accKind === "LICENSE_KEY");
+      const isDirectOneTime = Boolean(lifetime || claimedAcc.deliveryKind === "LICENSE_KEY");
       const initialStatus = isDirectOneTime && paymentType === "WALLET" ? "COMPLETED" : "ACTIVE";
       const [rental] = await db.insert(rentals).values({
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,

@@ -575,7 +575,45 @@ SELECT v.key, v.value FROM (VALUES
   ('alert_days_before', '2'),
   ('whatsapp_provider', 'WHATSAPP_LINK')
 ) AS v(key, value)
-WHERE NOT EXISTS (SELECT 1 FROM settings s WHERE s.key = v.key);
+-- ============================================================
+-- القسم 8.1: محفظة مايسترو كي (RYE / YER) وتحديثات 2026-01
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS wallet_balances (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type VARCHAR(20) NOT NULL,
+  amount INTEGER NOT NULL,
+  balance_before INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
+  rental_id INTEGER REFERENCES rentals(id),
+  note TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS wallet_balances_user_idx ON wallet_balances(user_id);
+CREATE INDEX IF NOT EXISTS wallet_transactions_user_idx ON wallet_transactions(user_id, created_at);
+CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions(rental_id);
+
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE';
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_by INTEGER REFERENCES users(id);
+CREATE INDEX IF NOT EXISTS profiles_available_idx ON profiles(account_id, status, id);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12, 2) DEFAULT '0.00';
+
+ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP;
+ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refund_reason TEXT;
+ALTER TABLE platforms ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE payments ALTER COLUMN payment_method_id DROP NOT NULL;
 
 COMMIT;
 

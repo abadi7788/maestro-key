@@ -293,8 +293,9 @@ const STATEMENTS: string[] = [
   `UPDATE profiles SET status = 'SOLD', sold_at = created_at WHERE is_occupied = true AND status = 'AVAILABLE'`,
   `UPDATE profiles SET status = 'AVAILABLE' WHERE is_occupied = false AND status = 'SOLD'`,
 
-  // 2026-01: الصلاحيات اليدوية
+  // 2026-01: الصلاحيات اليدوية والرصيد
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12, 2) DEFAULT '0.00'`,
 
   // 2026-01: إرجاع الرصيد
   `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP`,
