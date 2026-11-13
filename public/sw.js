@@ -1,5 +1,5 @@
-// maestro-sw-v10
-const STATIC_CACHE = "maestro-static-v10";
+// maestro-sw-v11
+const STATIC_CACHE = "maestro-static-v11";
 const OFFLINE_URL = "/offline.html";
 
 const PRECACHE_URLS = [
@@ -35,7 +35,7 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
 
-  if (url.pathname.startsWith("/api/")) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/_next/")) return;
 
   if (req.mode === "navigate") {
     event.respondWith(
@@ -67,12 +67,13 @@ self.addEventListener("fetch", (event) => {
 
   if (
     url.origin === self.location.origin &&
-    ["image", "style", "script", "font"].includes(req.destination)
+    ["image", "style", "font"].includes(req.destination)
   ) {
     event.respondWith(
       caches.match(req).then((hit) => {
         const network = fetch(req).then((res) => {
-          if (res && res.ok) {
+          const ct = res.headers.get("content-type") || "";
+          if (res && res.ok && !ct.includes("text/html")) {
             const copy = res.clone();
             caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
           }
