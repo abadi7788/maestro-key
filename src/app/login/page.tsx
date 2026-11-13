@@ -97,7 +97,7 @@ export default function LoginPage() {
           )}
 
           {mode === "admin-email" && (
-            <form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setErr(""); try { await api("/api/auth", { method: "POST", body: JSON.stringify({ email, password }) }); window.location.replace("/dashboard"); } catch (err: any) { setErr(err.message || "تعذر الدخول"); setBusy(false); } }} className="mt-6 space-y-3">
+            <form onSubmit={async (e) => { e.preventDefault(); setBusy(true); setErr(""); try { const d = await api("/api/auth", { method: "POST", body: JSON.stringify({ email, password }) }); goAfterLogin(d?.user?.role || "ADMIN"); } catch (err: any) { setErr(err.message || "تعذر الدخول"); setBusy(false); } }} className="mt-6 space-y-3">
               <div className="relative">
                 <Mail size={18} className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#57c8ff]" />
                 <input className="w-full rounded-2xl border border-white/10 bg-white/[.06] py-4 pr-12 pl-4 text-left text-white outline-none focus:border-[#27c4ff]" dir="ltr" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="البريد" required />

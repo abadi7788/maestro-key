@@ -58,7 +58,7 @@ async function verifySessionEdge(token: string | undefined): Promise<Session> {
  * 2) صفحة الدخول مع جلسة صالحة → الصفحة الرئيسية حسب الدور
  * 3) الموظف ممنوع من صفحات المدير → يُحوَّل لنقطة البيع /sale
  */
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const token = req.cookies.get("maestro_session")?.value;
   const session = await verifySessionEdge(token);

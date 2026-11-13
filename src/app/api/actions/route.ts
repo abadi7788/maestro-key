@@ -13,6 +13,8 @@ import { hasPermission } from "@/lib/permissions";
 import { refundToWallet } from "@/lib/wallet";
 import { isAdminRole } from "@/lib/roles";
 import { buildWhatsAppMessage, buildReplacementMessage } from "@/lib/whatsapp";
+import { deleteReceiptFromStorage, downloadReceiptFromStorage, isStorageRef } from "@/lib/supabase-storage";
+import { archivePaymentReceiptToTelegram, TELEGRAM_ARCHIVED_MARKER } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +49,18 @@ export async function POST(req: Request) {
       const [pay] = await db.select().from(payments).where(eq(payments.id, Number(b.paymentId))).limit(1);
       if (!pay) return jsonError("سند غير موجود", 404);
       await audit(user, "RECEIPT_VIEWED", "payments", pay.id, "عرض صورة سند");
+      if (pay.receiptImageData === TELEGRAM_ARCHIVED_MARKER) {
+        return Response.json({
+          image: null,
+          archived: true,
+          message: "تمت أرشفة صورة السند في قناة تيليجرام وحذفها من التخزين السحابي لتوفير المساحة.",
+        });
+      }
+      if (isStorageRef(pay.receiptImageData)) {
+        const dl = await downloadReceiptFromStorage(pay.receiptImageData!);
+        if (!dl) return jsonError("تعذر جلب صورة السند من التخزين السحابي المؤقت", 404);
+        return Response.json({ image: dl.dataUrl });
+      }
       return Response.json({ image: pay.receiptImageData });
     }
 
@@ -111,6 +125,9 @@ export async function POST(req: Request) {
         }
       }
 
+      // أرشفة صورة السند تلقائياً في قناة تيليجرام وحذفها فوراً من Supabase Storage
+      const archiveRes = await archivePaymentReceiptToTelegram(pay.id, user.displayName || user.username);
+
       if (rental) {
         await notifyAdmin({
           title: "تم تأكيد الطلب",
@@ -120,8 +137,14 @@ export async function POST(req: Request) {
           forUserId: rental.createdBy,
         });
       }
-      await audit(user, "PAYMENT_CONFIRMED", "payments", pay.id, `تأكيد سند ${pay.transactionRef} — تبدأ مدة الاشتراك من اليوم`);
-      return Response.json({ ok: true });
+      await audit(
+        user,
+        "PAYMENT_CONFIRMED",
+        "payments",
+        pay.id,
+        `تأكيد سند ${pay.transactionRef} — تبدأ مدة الاشتراك من اليوم${archiveRes.archived ? " (تمت الأرشفة في تيليجرام وحذف النسخة المؤقتة)" : ""}`
+      );
+      return Response.json({ ok: true, receiptArchived: archiveRes.archived });
     }
 
     // ---------- Reject payment: rollback rental ----------
@@ -129,8 +152,17 @@ export async function POST(req: Request) {
       const reason = String(b.reason || "سند غير مقبول");
       const [pay] = await db.select().from(payments).where(eq(payments.id, Number(b.paymentId))).limit(1);
       if (!pay) return jsonError("سند غير موجود", 404);
+      if (isStorageRef(pay.receiptImageData)) {
+        await deleteReceiptFromStorage(pay.receiptImageData);
+      }
       const [rental] = await db.select().from(rentals).where(eq(rentals.id, pay.rentalId)).limit(1);
-      await db.update(payments).set({ status: "REJECTED", reviewedBy: user.id, reviewedAt: now, rejectionReason: reason }).where(eq(payments.id, pay.id));
+      await db.update(payments).set({
+        status: "REJECTED",
+        reviewedBy: user.id,
+        reviewedAt: now,
+        rejectionReason: reason,
+        receiptImageData: isStorageRef(pay.receiptImageData) ? null : pay.receiptImageData,
+      }).where(eq(payments.id, pay.id));
       if (rental) {
         if (pay.isExtension && pay.previousEndDate) {
           const prevStatus = pay.previousRentalStatus || "ACTIVE";
@@ -323,7 +355,13 @@ export async function POST(req: Request) {
         }
       }
 
-      // حذف السجلات المرتبطة نهائياً
+      // حذف الصور المؤقتة من Supabase Storage إن وجدت ثم حذف السجلات المرتبطة نهائياً
+      const linkedPays = await db.select({ receiptImageData: payments.receiptImageData }).from(payments).where(eq(payments.rentalId, rentalId));
+      for (const lp of linkedPays) {
+        if (isStorageRef(lp.receiptImageData)) {
+          await deleteReceiptFromStorage(lp.receiptImageData);
+        }
+      }
       await db.delete(payments).where(eq(payments.rentalId, rentalId));
       await db.delete(whatsappLogs).where(eq(whatsappLogs.rentalId, rentalId));
       await db.delete(rentals).where(eq(rentals.id, rentalId));
@@ -415,9 +453,14 @@ export async function POST(req: Request) {
       }
       await db.update(rentals).set(patch).where(eq(rentals.id, rental.id));
 
-      // التفعيل اعتماد ضمني: أكّد أي سندات معلقة على نفس الطلب
+      // التفعيل اعتماد ضمني: أكّد أي سندات معلقة على نفس الطلب وأرشفها في تيليجرام مع حذف المؤقتة
+      const pendingPays = await db.select({ id: payments.id }).from(payments)
+        .where(and(eq(payments.rentalId, rental.id), eq(payments.status, "PENDING")));
       await db.update(payments).set({ status: "CONFIRMED", reviewedBy: user.id, reviewedAt: now, rejectionReason: null })
         .where(and(eq(payments.rentalId, rental.id), eq(payments.status, "PENDING")));
+      for (const pp of pendingPays) {
+        await archivePaymentReceiptToTelegram(pp.id, user.displayName || user.username).catch(() => {});
+      }
 
       const [cust] = await db.select().from(customers).where(eq(customers.id, rental.customerId)).limit(1);
       const [plat] = await db.select().from(platforms).where(eq(platforms.id, rental.platformId)).limit(1);

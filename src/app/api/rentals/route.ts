@@ -69,6 +69,7 @@ export async function GET(req: Request) {
         ...p,
         bankName: p.bankName || (p.transactionRef?.startsWith("WALLET-") ? "المحفظة" : "غير محدد"),
         hasReceipt: !!p.hasReceipt,
+        receiptArchived: p.hasReceipt === "tg://archived",
       })),
     })).filter((r) => !paymentStatus || r.payments.some((p) => p.status === paymentStatus));
 

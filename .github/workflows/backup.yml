@@ -1,0 +1,80 @@
+name: Maestro Key Daily Backup & Dual Sync
+
+on:
+  schedule:
+    # يعمل تلقائياً كل 24 ساعة (الساعة 02:00 UTC / 05:00 صباحاً بتوقيت اليمن والسعودية)
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  daily-backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install lightweight runtime dependency (pg)
+        run: npm install --no-save pg@8.20.0
+
+      - name: Run Supabase Backup -> Telegram -> Neon Standby Sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_BACKUP_URL: ${{ secrets.DATABASE_BACKUP_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ARCHIVE_CHAT_ID: ${{ secrets.TELEGRAM_ARCHIVE_CHAT_ID }}
+        run: node scripts/daily-backup-and-sync.mjs
+
+      - name: Save backup snapshot to separate Private GitHub repository (if configured)
+        if: ${{ secrets.BACKUP_GITHUB_REPO != '' && secrets.BACKUP_REPO_TOKEN != '' }}
+        env:
+          BACKUP_GITHUB_REPO: ${{ secrets.BACKUP_GITHUB_REPO }}
+          BACKUP_REPO_TOKEN: ${{ secrets.BACKUP_REPO_TOKEN }}
+        run: |
+          rm -rf /tmp/backup-repo
+          git clone "https://x-access-token:${BACKUP_REPO_TOKEN}@github.com/${BACKUP_GITHUB_REPO}.git" /tmp/backup-repo
+          mkdir -p /tmp/backup-repo/backups
+          cp backups/maestro-key-backup-latest.json.gz /tmp/backup-repo/backups/maestro-key-backup-latest.json.gz
+          cd /tmp/backup-repo
+          git config user.name "Maestro Key Backup Bot"
+          git config user.email "backup-bot@users.noreply.github.com"
+          git add -f backups/maestro-key-backup-latest.json.gz
+          if git diff --cached --quiet; then
+            echo "No changes to backup snapshot."
+          else
+            git commit -m "chore(backup): daily lightweight snapshot $(date -u +'%Y-%m-%d')"
+            git push origin HEAD
+          fi
+
+      - name: Save backup snapshot to dedicated 'backups' branch (default fallback)
+        if: ${{ secrets.BACKUP_GITHUB_REPO == '' || secrets.BACKUP_REPO_TOKEN == '' }}
+        run: |
+          mkdir -p /tmp/maestro-backup
+          cp backups/maestro-key-backup-latest.json.gz /tmp/maestro-backup/maestro-key-backup-latest.json.gz
+          git config user.name "Maestro Key Backup Bot"
+          git config user.email "backup-bot@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin backups >/dev/null 2>&1; then
+            git fetch origin backups
+            git checkout -B backups origin/backups
+          else
+            git checkout --orphan backups
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p backups
+          cp /tmp/maestro-backup/maestro-key-backup-latest.json.gz backups/maestro-key-backup-latest.json.gz
+          git add -f backups/maestro-key-backup-latest.json.gz
+          if git diff --cached --quiet; then
+            echo "No changes in daily backup snapshot."
+          else
+            git commit -m "chore(backup): daily lightweight snapshot $(date -u +'%Y-%m-%d')"
+            git push origin backups
+          fi

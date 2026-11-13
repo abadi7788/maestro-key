@@ -91,15 +91,28 @@ export function Modal({ open, onClose, title, children, wide }: { open: boolean;
 }
 
 export function ReceiptButton({ paymentId, refText }: { paymentId: number; refText?: string }) {
-  const [open, setOpen] = useState(false); const [img, setImg] = useState(""); const [loading, setLoading] = useState(false); const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false); const [img, setImg] = useState(""); const [loading, setLoading] = useState(false); const [err, setErr] = useState(""); const [archivedMsg, setArchivedMsg] = useState("");
   return (
     <>
       <button type="button" className="text-xs font-extrabold text-sky-700 underline decoration-dotted underline-offset-4 hover:text-sky-900"
-        onClick={async () => { setOpen(true); setLoading(true); setErr(""); try { const d = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "receipt", paymentId }) }); setImg(d.image || ""); if (!d.image) setErr("لا توجد صورة مرفقة"); } catch (e: any) { setErr(e.message || "للمدير فقط"); } finally { setLoading(false); } }}>
+        onClick={async () => {
+          setOpen(true); setLoading(true); setErr(""); setArchivedMsg(""); setImg("");
+          try {
+            const d = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "receipt", paymentId }) });
+            if (d.archived) setArchivedMsg(d.message || "تمت أرشفة السند في قناة تيليجرام وحذفه من التخزين.");
+            else if (d.image) setImg(d.image);
+            else setErr("لا توجد صورة مرفقة");
+          } catch (e: any) { setErr(e.message || "للمدير فقط"); } finally { setLoading(false); }
+        }}>
         🧾 عرض السند {refText ? `(${refText})` : ""}
       </button>
       <Modal open={open} onClose={() => setOpen(false)} title="صورة سند الدفع" wide>
-        {loading ? <Spinner /> : err ? <p className="py-8 text-center font-bold text-red-600">{err}</p> : img ? <img src={img} alt="سند دفع" className="mx-auto max-h-[70dvh] w-auto rounded-xl border" /> : null}
+        {loading ? <Spinner /> : archivedMsg ? (
+          <div className="rounded-2xl border border-sky-500/30 bg-sky-500/10 p-6 text-center">
+            <p className="text-base font-black text-sky-200">✈️ {archivedMsg}</p>
+            <p className="mt-2 text-xs font-semibold text-slate-400">يمكنك مراجعة صورة السند مباشرة داخل قناة أرشيف تيليجرام الخاصة بالمتجر.</p>
+          </div>
+        ) : err ? <p className="py-8 text-center font-bold text-red-600">{err}</p> : img ? <img src={img} alt="سند دفع" className="mx-auto max-h-[70dvh] w-auto rounded-xl border" /> : null}
         <p className="mt-3 text-center text-xs text-slate-400">صورة حساسة — تُعرض للمدير فقط عند الطلب ويُسجَّل عرضها في سجل التدقيق.</p>
       </Modal>
     </>

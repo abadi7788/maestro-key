@@ -10,6 +10,7 @@ import { getSetting, refreshAccountStatus, runDailyJob } from "@/lib/engine";
 import { normalizeDeliveryMode, lifetimeEndDate, type DeliveryMode } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
 import { buildWhatsAppMessage } from "@/lib/whatsapp";
+import { uploadTempReceipt, deleteReceiptFromStorage } from "@/lib/supabase-storage";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +39,7 @@ export async function POST(req: Request) {
   let walletDeducted = false;
   let chargedUserId: number | null = null;
   let chargedAmount = 0;
+  let storedReceiptRef: string | null = null;
 
   try {
     await ensureSeeded();
@@ -95,6 +97,14 @@ export async function POST(req: Request) {
       const receiptHash = hashText(receipt);
       const dupImg = await db.select({ id: payments.id }).from(payments).where(eq(payments.receiptHash, receiptHash)).limit(1);
       if (dupImg.length) return jsonError("صورة السند هذه مُستخدمة سابقاً في عملية أخرى", 409);
+    }
+
+    const receiptHashValue = receipt ? hashText(receipt) : null;
+    async function getStoredReceiptRef(): Promise<string | null> {
+      if (!receipt || paymentType === "WALLET") return null;
+      if (storedReceiptRef) return storedReceiptRef;
+      storedReceiptRef = await uploadTempReceipt(receipt, transactionRef);
+      return storedReceiptRef;
     }
 
     let effectivePaymentMethodId = paymentMethodId ?? null;
@@ -175,6 +185,7 @@ export async function POST(req: Request) {
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
       const isDirectOneTime = Boolean(lifetime || manualCode);
       const initialStatus = isDirectOneTime && paymentType === "WALLET" ? "COMPLETED" : "ACTIVE";
+      const uploadedReceipt = await getStoredReceiptRef();
       const [rental] = await db.insert(rentals).values({
         accountId: null, profileId: null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
@@ -193,8 +204,8 @@ export async function POST(req: Request) {
         paymentMethodId: effectivePaymentMethodId, 
         transactionRef, 
         amount, 
-        receiptImageData: receipt || null, 
-        receiptHash: receipt ? hashText(receipt) : null,
+        receiptImageData: uploadedReceipt, 
+        receiptHash: receiptHashValue,
         status: paymentStatus, 
         reviewedBy: paymentType === "WALLET" ? user.id : null,
         reviewedAt: paymentType === "WALLET" ? now : null,
@@ -250,6 +261,7 @@ export async function POST(req: Request) {
     if (mode !== "INSTANT_INVENTORY") {
       const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
+      const uploadedReceipt = await getStoredReceiptRef();
       const [rental] = await db.insert(rentals).values({
         accountId: null, profileId: null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
@@ -262,8 +274,8 @@ export async function POST(req: Request) {
         paymentMethodId: effectivePaymentMethodId, 
         transactionRef, 
         amount, 
-        receiptImageData: receipt || null, 
-        receiptHash: receipt ? hashText(receipt) : null,
+        receiptImageData: uploadedReceipt, 
+        receiptHash: receiptHashValue,
         status: paymentStatus, 
         durationDays: days, 
         createdBy: user.id,
@@ -370,6 +382,7 @@ export async function POST(req: Request) {
           if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < newEnd) {
             return jsonError("الحساب الحالي للعميل ينتهي قبل نهاية مدة التجديد. اختر «بيع جديد» لسحب حساب آخر يغطي المدة.", 409);
           }
+          const uploadedReceipt = await getStoredReceiptRef();
           await db.update(rentals).set({
             status: "ACTIVE", startDate: renewable.status === "ACTIVE" ? renewable.startDate : now,
             endDate: newEnd, durationDays: lifetime ? 0 : days, isLifetime: lifetime,
@@ -381,8 +394,8 @@ export async function POST(req: Request) {
             paymentMethodId: effectivePaymentMethodId, 
             transactionRef, 
             amount, 
-            receiptImageData: receipt || null, 
-            receiptHash: receipt ? hashText(receipt) : null,
+            receiptImageData: uploadedReceipt, 
+            receiptHash: receiptHashValue,
             status: paymentStatus, 
             isExtension: true, 
             durationDays: days, 
@@ -499,6 +512,7 @@ export async function POST(req: Request) {
       const prior = await db.select({ id: rentals.id }).from(rentals).where(eq(rentals.customerId, customer.id)).limit(1);
       const isDirectOneTime = Boolean(lifetime || claimedAcc.deliveryKind === "LICENSE_KEY");
       const initialStatus = isDirectOneTime && paymentType === "WALLET" ? "COMPLETED" : "ACTIVE";
+      const uploadedReceipt = await getStoredReceiptRef();
       const [rental] = await db.insert(rentals).values({
         accountId: claimedAcc.id, profileId: claimedProfile?.id ?? null, customerId: customer.id, platformId,
         createdBy: user.id, rentalType: prior.length ? "RENEWAL" : "NEW", startDate: now, endDate: neededEnd,
@@ -526,8 +540,8 @@ export async function POST(req: Request) {
         paymentMethodId: effectivePaymentMethodId, 
         transactionRef, 
         amount, 
-        receiptImageData: receipt || null, 
-        receiptHash: receipt ? hashText(receipt) : null,
+        receiptImageData: uploadedReceipt, 
+        receiptHash: receiptHashValue,
         status: paymentStatus, 
         reviewedBy: paymentType === "WALLET" ? user.id : null,
         reviewedAt: paymentType === "WALLET" ? now : null,
@@ -610,6 +624,10 @@ export async function POST(req: Request) {
       throw err;
     }
   } catch (e: any) {
+    const refToCleanup = storedReceiptRef as string | null;
+    if (refToCleanup && refToCleanup.startsWith("sb://")) {
+      await deleteReceiptFromStorage(refToCleanup).catch(() => {});
+    }
     if (walletDeducted && chargedUserId && chargedAmount > 0) {
       try {
         await refundToWallet({
