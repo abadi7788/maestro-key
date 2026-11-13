@@ -2,12 +2,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { AlarmClock, BellRing, Check, CheckCheck, ChevronDown, KeyRound, MessageCircle, Play, ReceiptText, ScanLine, UserMinus, X } from "lucide-react";
-import { api, fmtDate, waLink, daysLeft } from "@/lib/client";
+import { api, cachedApi, fmtDate, getCached, invalidateCache, setCached, waLink, daysLeft } from "@/lib/client";
 import { Badge, Empty, Modal, ReceiptButton, Spinner } from "@/components/ui";
 
+const RENTALS_URL = "/api/rentals?view=all";
+const ACCOUNTS_URL = "/api/accounts";
+
 export default function InboxPage() {
-  const [rentals, setRentals] = useState<any[] | null>(null);
-  const [accounts, setAccounts] = useState<any[]>([]);
+  const [rentals, setRentals] = useState<any[] | null>(() => getCached<any>(RENTALS_URL)?.rentals ?? null);
+  const [accounts, setAccounts] = useState<any[]>(() => getCached<any>(ACCOUNTS_URL)?.accounts ?? []);
   const [pwFor, setPwFor] = useState<any>(null); const [newPw, setNewPw] = useState("");
   const [rejectFor, setRejectFor] = useState<any>(null); const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState("");
@@ -15,12 +18,17 @@ export default function InboxPage() {
   const [actForm, setActForm] = useState({ email: "", password: "", link: "", pin: "", note: "" });
   const [lastActivation, setLastActivation] = useState<any>(null);
 
-  const load = useCallback(async () => {
-    const [r, a] = await Promise.all([api("/api/rentals?view=all").catch(() => ({ rentals: [] })), api("/api/accounts").catch(() => ({ accounts: [] }))]);
-    setRentals(r.rentals); setAccounts(a.accounts);
+  const load = useCallback(async (force = false) => {
+    const [r, a] = await Promise.all([
+      cachedApi(RENTALS_URL, undefined, { force }).catch(() => null),
+      cachedApi(ACCOUNTS_URL, undefined, { force }).catch(() => null),
+    ]);
+    if (r?.rentals) setRentals(r.rentals);
+    else if (!rentals) setRentals([]);
+    if (a?.accounts) setAccounts(a.accounts);
   }, []);
-  useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 25000);
+  useEffect(() => { void load(false); }, [load]);
+  useAutoRefresh(() => load(true), 25000);
 
   // تصفير العداد وتزامن الحالة فور الدخول لصفحة التنبيهات
   useEffect(() => {
@@ -32,8 +40,59 @@ export default function InboxPage() {
 
   async function act(body: any, okMsg: string) {
     setBusy(true); setMsg("");
-    try { const d = await api("/api/actions", { method: "POST", body: JSON.stringify(body) }); setMsg("✓ " + okMsg); setPwFor(null); setNewPw(""); await load(); return d; }
-    catch (e: any) { setMsg("⚠️ " + e.message); } finally { setBusy(false); }
+    const prevRentals = rentals ? [...rentals] : null;
+    const prevAccounts = [...accounts];
+
+    // Optimistic updates per action
+    if (body.action === "freeProfile" && rentals) {
+      const next = rentals.map((r) => r.id === body.rentalId ? { ...r, status: "CLOSED" } : r);
+      setRentals(next);
+      setCached(RENTALS_URL, { rentals: next });
+    } else if (body.action === "confirmPayment" && rentals) {
+      const next = rentals.map((r) => ({
+        ...r,
+        payments: (r.payments || []).map((p: any) => p.id === body.paymentId ? { ...p, status: "CONFIRMED" } : p),
+      }));
+      setRentals(next);
+      setCached(RENTALS_URL, { rentals: next });
+    } else if (body.action === "rejectPayment" && rentals) {
+      const next = rentals.map((r) => {
+        const hasPay = (r.payments || []).some((p: any) => p.id === body.paymentId);
+        if (!hasPay) return r;
+        return {
+          ...r,
+          status: "REJECTED",
+          payments: (r.payments || []).map((p: any) => p.id === body.paymentId ? { ...p, status: "REJECTED", rejectionReason: body.reason } : p),
+        };
+      });
+      setRentals(next);
+      setCached(RENTALS_URL, { rentals: next });
+    } else if (body.action === "confirmPasswordChange") {
+      const nextAccs = accounts.map((a) => a.id === body.accountId ? { ...a, status: "AVAILABLE" } : a);
+      setAccounts(nextAccs);
+      setCached(ACCOUNTS_URL, { accounts: nextAccs });
+      setPwFor(null); setNewPw("");
+    }
+
+    try {
+      const d = await api("/api/actions", { method: "POST", body: JSON.stringify(body) });
+      setMsg("✓ " + okMsg);
+      setPwFor(null); setNewPw("");
+      invalidateCache("/api/admin-data");
+      invalidateCache("/api/meta");
+      void load(true);
+      return d;
+    } catch (e: any) {
+      if (prevRentals) {
+        setRentals(prevRentals);
+        setCached(RENTALS_URL, { rentals: prevRentals });
+      }
+      setAccounts(prevAccounts);
+      setCached(ACCOUNTS_URL, { accounts: prevAccounts });
+      setMsg("⚠️ " + e.message);
+    } finally {
+      setBusy(false);
+    }
   }
   async function runJob() {
     const d = await act({ action: "runDailyJob" }, "");
@@ -43,15 +102,26 @@ export default function InboxPage() {
   async function handleMarkAllRead() {
     setBusy(true);
     setMsg("");
+    const prevRentals = rentals ? [...rentals] : null;
+    if (rentals) {
+      const next = rentals.map((r) => r.status === "ENDED" ? { ...r, status: "CLOSED" } : r);
+      setRentals(next);
+      setCached(RENTALS_URL, { rentals: next });
+    }
+    window.dispatchEvent(new CustomEvent("maestro-inbox-read", { detail: { count: 0 } }));
     try {
       await api("/api/actions", {
         method: "POST",
         body: JSON.stringify({ action: "markAllInboxRead" }),
       });
       setMsg("✓ تم تحديد كافة التنبيهات كمقروءة وتصفير عداد الشارة بنجاح.");
-      window.dispatchEvent(new CustomEvent("maestro-inbox-read", { detail: { count: 0 } }));
-      await load();
+      invalidateCache("/api/admin-data");
+      void load(true);
     } catch (e: any) {
+      if (prevRentals) {
+        setRentals(prevRentals);
+        setCached(RENTALS_URL, { rentals: prevRentals });
+      }
       setMsg("⚠️ " + (e.message || "فشل تصفير التنبيهات"));
     } finally {
       setBusy(false);
@@ -67,19 +137,35 @@ export default function InboxPage() {
     }
     setBusy(true);
     setMsg("");
+    const prevRentals = rentals ? [...rentals] : null;
+    const formSnapshot = { ...actForm };
+
+    // Optimistic update: mark rental activated immediately
+    if (rentals) {
+      const next = rentals.map((x) => x.id === r.id ? { ...x, activationStatus: "ACTIVATED", activatedAt: new Date().toISOString() } : x);
+      setRentals(next);
+      setCached(RENTALS_URL, { rentals: next });
+    }
+    setActivating(null);
+
     try {
       const d = await api("/api/actions", {
         method: "POST",
-        body: JSON.stringify({ action: "activateRental", rentalId: r.id, ...actForm }),
+        body: JSON.stringify({ action: "activateRental", rentalId: r.id, ...formSnapshot }),
       });
-      setMsg(modeOf(r) === "LINK_ONLY" || actForm.link.trim()
+      setMsg(modeOf(r) === "LINK_ONLY" || formSnapshot.link.trim()
         ? `✓ تم إرسال رابط اشتراك ${r.customerName} — وصله إشعار واتساب بالرابط، وأُشعر الموظف.`
         : `✓ تم تفعيل اشتراك ${r.customerName} — وصل إشعار واتساب، وأُشعر الموظف.`);
       setLastActivation({ customerPhone: d.customerPhone, whatsappMessage: d.whatsappMessage });
-      setActivating(null);
       setActForm({ email: "", password: "", link: "", pin: "", note: "" });
-      await load();
+      invalidateCache("/api/admin-data");
+      void load(true);
     } catch (e: any) {
+      if (prevRentals) {
+        setRentals(prevRentals);
+        setCached(RENTALS_URL, { rentals: prevRentals });
+      }
+      setActivating(r.id);
       setMsg("⚠️ " + e.message);
     } finally {
       setBusy(false);

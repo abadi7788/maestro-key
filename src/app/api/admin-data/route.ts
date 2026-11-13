@@ -1,9 +1,11 @@
 import { db } from "@/db";
-import { accounts, rentals, payments, customers, platforms, users, auditLogs, whatsappLogs, settings, paymentMethods } from "@/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { accounts, rentals, payments, customers, platforms, users, auditLogs, whatsappLogs, settings, paymentMethods, walletBalances } from "@/db/schema";
+import { and, count, desc, eq, notInArray } from "drizzle-orm";
 import { requireAdmin, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { runDailyJob } from "@/lib/engine";
+import { getLastTelegramBackupAt } from "@/lib/backup";
+import { resolveTelegramArchiveConfig } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
@@ -13,48 +15,160 @@ export async function GET(req: Request) {
     await requireAdmin();
     const view = new URL(req.url).searchParams.get("view") || "dashboard";
 
-    if (view === "dashboard") {
-      const job = await runDailyJob({ sendAlerts: false });
-      const accs = await db.select().from(accounts).where(eq(accounts.isDeleted, false));
-      const allRentals = await db.select().from(rentals);
-      const pays = await db.select().from(payments);
-      const custs = await db.select({ id: customers.id }).from(customers);
-      const now = Date.now();
-      const revenueConfirmed = pays.filter((p) => p.status === "CONFIRMED").reduce((s, p) => s + (p.amount || 0), 0);
-      const revenuePending = pays.filter((p) => p.status === "PENDING").reduce((s, p) => s + (p.amount || 0), 0);
-      const isToday = (d: any) => new Date(d).toDateString() === new Date().toDateString();
-      const todayRentals = allRentals.filter((r) => isToday(r.createdAt));
-      const todayPayments = pays.filter((p) => isToday(p.createdAt) && p.status !== "REJECTED");
+    if (view === "badge") {
+      const [[pAct], [pPay], [nPw], [ended]] = await Promise.all([
+        db.select({ c: count() }).from(rentals).where(
+          and(eq(rentals.activationStatus, "PENDING"), notInArray(rentals.status, ["REJECTED", "CLOSED"]))
+        ),
+        db.select({ c: count() }).from(payments).where(eq(payments.status, "PENDING")),
+        db.select({ c: count() }).from(accounts).where(
+          and(eq(accounts.isDeleted, false), eq(accounts.status, "NEEDS_PASSWORD_CHANGE"))
+        ),
+        db.select({ c: count() }).from(rentals).where(eq(rentals.status, "ENDED")),
+      ]);
+      const pendingActivations = Number(pAct?.c || 0);
+      const pendingPayments = Number(pPay?.c || 0);
+      const needsPasswordChange = Number(nPw?.c || 0);
+      const endedRentals = Number(ended?.c || 0);
+      const inboxCount = pendingActivations + pendingPayments + needsPasswordChange + endedRentals;
+      return Response.json({
+        inboxCount,
+        pendingActivations,
+        pendingPayments,
+        needsPasswordChange,
+        endedRentals,
+      });
+    }
 
-      const isWalletPay = (p: any) => p.transactionRef?.startsWith("WALLET-") || !p.paymentMethodId;
-      const todayWalletTotal = todayPayments.filter(isWalletPay).reduce((s, p) => s + (p.amount || 0), 0);
-      const todayReceiptTotal = todayPayments.filter((p) => !isWalletPay(p)).reduce((s, p) => s + (p.amount || 0), 0);
+    if (view === "dashboard") {
+      const [job, accs, allRentals, pays, [custCountRow], allUsers] = await Promise.all([
+        runDailyJob({ sendAlerts: false }),
+        db.select({
+          id: accounts.id,
+          status: accounts.status,
+          expiryDate: accounts.expiryDate,
+        }).from(accounts).where(eq(accounts.isDeleted, false)),
+        db.select({
+          id: rentals.id,
+          status: rentals.status,
+          isLifetime: rentals.isLifetime,
+          endDate: rentals.endDate,
+          createdAt: rentals.createdAt,
+          createdBy: rentals.createdBy,
+          activationStatus: rentals.activationStatus,
+        }).from(rentals),
+        db.select({
+          id: payments.id,
+          rentalId: payments.rentalId,
+          amount: payments.amount,
+          status: payments.status,
+          createdAt: payments.createdAt,
+          createdBy: payments.createdBy,
+          paymentMethodId: payments.paymentMethodId,
+          transactionRef: payments.transactionRef,
+        }).from(payments),
+        db.select({ c: count() }).from(customers),
+        db.select({
+          id: users.id,
+          name: users.displayName,
+          username: users.username,
+          role: users.role,
+        }).from(users),
+      ]);
+
+      const now = Date.now();
+      const todayStr = new Date().toDateString();
+      const isToday = (d: Date | string) => new Date(d).toDateString() === todayStr;
+
+      let revenueConfirmed = 0;
+      let revenuePending = 0;
+      let pendingPaymentsCount = 0;
+      let todayWalletTotal = 0;
+      let todayReceiptTotal = 0;
+
+      const isWalletPay = (p: { transactionRef: string | null; paymentMethodId: number | null }) =>
+        Boolean(p.transactionRef?.startsWith("WALLET-") || !p.paymentMethodId);
+
+      const todayPayments: typeof pays = [];
+      for (const p of pays) {
+        const amt = p.amount || 0;
+        if (p.status === "CONFIRMED") revenueConfirmed += amt;
+        else if (p.status === "PENDING") {
+          revenuePending += amt;
+          pendingPaymentsCount++;
+        }
+        if (p.status !== "REJECTED" && isToday(p.createdAt)) {
+          todayPayments.push(p);
+          if (isWalletPay(p)) todayWalletTotal += amt;
+          else todayReceiptTotal += amt;
+        }
+      }
       const todayTotalAmount = todayWalletTotal + todayReceiptTotal;
 
-      const allUsers = await db.select({ id: users.id, name: users.displayName, username: users.username, role: users.role }).from(users);
-      
-      const pendingActivations = allRentals.filter((r) => r.activationStatus === "PENDING" && r.status !== "REJECTED" && r.status !== "CLOSED").length;
-      const pendingPaymentsCount = pays.filter((p) => p.status === "PENDING").length;
-      const needsPasswordCount = accs.filter((a) => a.status === "NEEDS_PASSWORD_CHANGE").length;
-      const endedRentalsCount = allRentals.filter((r) => r.status === "ENDED").length;
-      // العداد الفعلي للإجراءات المطلوبة فقط (لا يحتسب الاشتراكات الاسترشادية التي تنتهي بعد يومين)
+      let accountsAvailable = 0;
+      let accountsRented = 0;
+      let needsPasswordCount = 0;
+      let accountsExpiringSoon = 0;
+      for (const a of accs) {
+        if (a.status === "AVAILABLE") accountsAvailable++;
+        else if (a.status === "RENTED") accountsRented++;
+        else if (a.status === "NEEDS_PASSWORD_CHANGE") needsPasswordCount++;
+        if (a.expiryDate) {
+          const diff = new Date(a.expiryDate).getTime() - now;
+          if (diff > 0 && diff < 30 * 86400000) accountsExpiringSoon++;
+        }
+      }
+
+      let activeRentals = 0;
+      let completedDigitalSales = 0;
+      let endedRentalsCount = 0;
+      let endingIn2Days = 0;
+      let pendingActivations = 0;
+      const todayRentals: typeof allRentals = [];
+      const rentalOwnerMap = new Map<number, number>();
+
+      for (const r of allRentals) {
+        rentalOwnerMap.set(r.id, r.createdBy);
+        if (r.status === "ACTIVE" && !r.isLifetime) {
+          activeRentals++;
+          const diff = new Date(r.endDate).getTime() - now;
+          if (diff >= 0 && diff <= 2 * 86400000) endingIn2Days++;
+        }
+        if (r.status === "COMPLETED" || r.isLifetime) completedDigitalSales++;
+        if (r.status === "ENDED") endedRentalsCount++;
+        if (r.activationStatus === "PENDING" && r.status !== "REJECTED" && r.status !== "CLOSED") pendingActivations++;
+        if (isToday(r.createdAt)) todayRentals.push(r);
+      }
+
       const actionableInboxCount = pendingActivations + pendingPaymentsCount + needsPasswordCount + endedRentalsCount;
 
+      const salesCountByUser = new Map<number, number>();
+      for (const r of todayRentals) {
+        salesCountByUser.set(r.createdBy, (salesCountByUser.get(r.createdBy) || 0) + 1);
+      }
+      const walletByUser = new Map<number, number>();
+      const receiptByUser = new Map<number, number>();
+      for (const p of todayPayments) {
+        const uid = p.createdBy ?? rentalOwnerMap.get(p.rentalId);
+        if (!uid) continue;
+        const amt = p.amount || 0;
+        if (isWalletPay(p)) walletByUser.set(uid, (walletByUser.get(uid) || 0) + amt);
+        else receiptByUser.set(uid, (receiptByUser.get(uid) || 0) + amt);
+      }
+
       const staffReconciliation = allUsers.map((u) => {
-        const uRentals = todayRentals.filter((r) => r.createdBy === u.id);
-        const uRentalIds = new Set(uRentals.map((r) => r.id));
-        const uPays = todayPayments.filter((p) => uRentalIds.has(p.rentalId) || p.createdBy === u.id);
-        const walletAmt = uPays.filter(isWalletPay).reduce((s, p) => s + (p.amount || 0), 0);
-        const receiptAmt = uPays.filter((p) => !isWalletPay(p)).reduce((s, p) => s + (p.amount || 0), 0);
+        const salesCount = salesCountByUser.get(u.id) || 0;
+        const walletAmount = walletByUser.get(u.id) || 0;
+        const receiptAmount = receiptByUser.get(u.id) || 0;
         return {
           userId: u.id,
           name: u.name,
           username: u.username,
           role: u.role,
-          salesCount: uRentals.length,
-          walletAmount: walletAmt,
-          receiptAmount: receiptAmt,
-          totalAmount: walletAmt + receiptAmt,
+          salesCount,
+          walletAmount,
+          receiptAmount,
+          totalAmount: walletAmount + receiptAmount,
         };
       }).filter((s) => s.salesCount > 0 || s.totalAmount > 0 || s.role === "STAFF" || s.role === "EMPLOYEE");
 
@@ -62,19 +176,22 @@ export async function GET(req: Request) {
         job,
         stats: {
           accountsTotal: accs.length,
-          accountsAvailable: accs.filter((a) => a.status === "AVAILABLE").length,
-          accountsRented: accs.filter((a) => a.status === "RENTED").length,
+          accountsAvailable,
+          accountsRented,
           needsPasswordChange: needsPasswordCount,
-          accountsExpiringSoon: accs.filter((a) => a.expiryDate && new Date(a.expiryDate).getTime() - now < 30 * 86400000 && new Date(a.expiryDate).getTime() > now).length,
-          activeRentals: allRentals.filter((r) => r.status === "ACTIVE" && !r.isLifetime).length,
-          completedDigitalSales: allRentals.filter((r) => r.status === "COMPLETED" || r.isLifetime).length,
+          accountsExpiringSoon,
+          activeRentals,
+          completedDigitalSales,
           endedRentals: endedRentalsCount,
-          endingIn2Days: allRentals.filter((r) => r.status === "ACTIVE" && !r.isLifetime && new Date(r.endDate).getTime() - now <= 2 * 86400000 && new Date(r.endDate).getTime() >= now).length,
+          endingIn2Days,
           pendingPayments: pendingPaymentsCount,
           pendingActivations,
           inboxCount: actionableInboxCount,
           actionableTotal: actionableInboxCount,
-          revenueConfirmed, revenuePending, customers: custs.length, todaySales: todayRentals.length,
+          revenueConfirmed,
+          revenuePending,
+          customers: Number(custCountRow?.c || 0),
+          todaySales: todayRentals.length,
         },
         dailyReconciliation: {
           todayWalletTotal,
@@ -87,22 +204,65 @@ export async function GET(req: Request) {
     }
 
     if (view === "customers") {
-      const custs = await db.select().from(customers).orderBy(desc(customers.createdAt));
-      const rel = await db.select({
-        id: rentals.id, customerId: rentals.customerId, status: rentals.status, rentalType: rentals.rentalType,
-        startDate: rentals.startDate, endDate: rentals.endDate, durationDays: rentals.durationDays,
-        platformName: platforms.name, accountEmail: accounts.email, whatsappAlertSent: rentals.whatsappAlertSent,
-        activationStatus: rentals.activationStatus,
-      }).from(rentals).innerJoin(platforms, eq(rentals.platformId, platforms.id))
-        .leftJoin(accounts, eq(rentals.accountId, accounts.id)).orderBy(desc(rentals.createdAt));
-      const pays = await db.select({ rentalId: payments.rentalId, amount: payments.amount, status: payments.status }).from(payments);
-      const logs = await db.select().from(whatsappLogs).orderBy(desc(whatsappLogs.createdAt)).limit(300);
+      const [custs, rel, pays, logs] = await Promise.all([
+        db.select().from(customers).orderBy(desc(customers.createdAt)),
+        db.select({
+          id: rentals.id,
+          customerId: rentals.customerId,
+          status: rentals.status,
+          rentalType: rentals.rentalType,
+          startDate: rentals.startDate,
+          endDate: rentals.endDate,
+          durationDays: rentals.durationDays,
+          isLifetime: rentals.isLifetime,
+          platformName: platforms.name,
+          accountEmail: accounts.email,
+          whatsappAlertSent: rentals.whatsappAlertSent,
+          activationStatus: rentals.activationStatus,
+        }).from(rentals)
+          .innerJoin(platforms, eq(rentals.platformId, platforms.id))
+          .leftJoin(accounts, eq(rentals.accountId, accounts.id))
+          .orderBy(desc(rentals.createdAt)),
+        db.select({
+          rentalId: payments.rentalId,
+          amount: payments.amount,
+          status: payments.status,
+        }).from(payments),
+        db.select().from(whatsappLogs).orderBy(desc(whatsappLogs.createdAt)).limit(300),
+      ]);
+
+      const rentalsByCust = new Map<number, typeof rel>();
+      const rentalToCust = new Map<number, number>();
+      for (const r of rel) {
+        rentalToCust.set(r.id, r.customerId);
+        const list = rentalsByCust.get(r.customerId);
+        if (list) list.push(r);
+        else rentalsByCust.set(r.customerId, [r]);
+      }
+
+      const paidByCust = new Map<number, number>();
+      for (const p of pays) {
+        if (p.status === "REJECTED") continue;
+        const cid = rentalToCust.get(p.rentalId);
+        if (cid !== undefined) {
+          paidByCust.set(cid, (paidByCust.get(cid) || 0) + (p.amount || 0));
+        }
+      }
+
+      const waByCust = new Map<number, typeof logs>();
+      for (const l of logs) {
+        if (!l.customerId) continue;
+        const list = waByCust.get(l.customerId);
+        if (list) list.push(l);
+        else waByCust.set(l.customerId, [l]);
+      }
+
       return Response.json({
         customers: custs.map((c) => ({
           ...c,
-          rentals: rel.filter((r) => r.customerId === c.id),
-          totalPaid: pays.filter((p) => p.status !== "REJECTED" && rel.some((r) => r.customerId === c.id && r.id === p.rentalId)).reduce((s, p) => s + (p.amount || 0), 0),
-          whatsapp: logs.filter((l) => l.customerId === c.id),
+          rentals: rentalsByCust.get(c.id) || [],
+          totalPaid: paidByCust.get(c.id) || 0,
+          whatsapp: waByCust.get(c.id) || [],
         })),
       });
     }
@@ -113,30 +273,45 @@ export async function GET(req: Request) {
     }
 
     if (view === "settings") {
-      const rows = await db.select().from(settings);
-      const allUsers = await db.select({
-        id: users.id,
-        username: users.username,
-        email: users.email,
-        displayName: users.displayName,
-        role: users.role,
-        permissions: users.permissions,
-        isActive: users.isActive,
-        lastLoginAt: users.lastLoginAt,
-        createdAt: users.createdAt,
-      }).from(users).orderBy(users.id);
-      const { walletBalances } = await import("@/db/schema");
-      const balances = await db.select().from(walletBalances);
+      const [rows, allUsers, balances, plats, banks, logs, lastTelegramBackupAt, tgCfg] = await Promise.all([
+        db.select({ key: settings.key, value: settings.value }).from(settings),
+        db.select({
+          id: users.id,
+          username: users.username,
+          email: users.email,
+          displayName: users.displayName,
+          role: users.role,
+          permissions: users.permissions,
+          isActive: users.isActive,
+          lastLoginAt: users.lastLoginAt,
+          createdAt: users.createdAt,
+        }).from(users).orderBy(users.id),
+        db.select({ userId: walletBalances.userId, balance: walletBalances.balance }).from(walletBalances),
+        db.select().from(platforms).orderBy(platforms.id),
+        db.select().from(paymentMethods).orderBy(paymentMethods.id),
+        db.select().from(whatsappLogs).orderBy(desc(whatsappLogs.createdAt)).limit(100),
+        getLastTelegramBackupAt(),
+        resolveTelegramArchiveConfig(),
+      ]);
+
       const balanceMap = new Map(balances.map((b) => [b.userId, b.balance]));
       const enrichedUsers = allUsers.map((u) => ({
         ...u,
         walletBalance: balanceMap.get(u.id) ?? 0,
       }));
-      const plats = await db.select().from(platforms).orderBy(platforms.id);
-      const banks = await db.select().from(paymentMethods).orderBy(paymentMethods.id);
-      const logs = await db.select().from(whatsappLogs).orderBy(desc(whatsappLogs.createdAt)).limit(100);
-      const map: Record<string, string> = {}; rows.forEach((r) => (map[r.key] = r.value));
-      return Response.json({ settings: map, users: enrichedUsers, platforms: plats, paymentMethods: banks, whatsappLogs: logs });
+      const map: Record<string, string> = {};
+      for (const r of rows) map[r.key] = r.value;
+      return Response.json({
+        settings: map,
+        users: enrichedUsers,
+        platforms: plats,
+        paymentMethods: banks,
+        whatsappLogs: logs,
+        backupStatus: {
+          lastTelegramBackupAt,
+          telegramConfigured: Boolean(tgCfg.token && tgCfg.archiveChatId),
+        },
+      });
     }
 
     return jsonError("عرض غير معروف");

@@ -1,13 +1,18 @@
 "use client";
 import { useEffect, useState } from "react";
 import { RefreshCcw } from "lucide-react";
-import { api } from "@/lib/client";
+import { cachedApi, getCached } from "@/lib/client";
 import { Empty, Spinner, DueCard } from "@/components/ui";
 
+const DUE_URL = "/api/rentals?view=due";
 
 export default function RenewalsPage() {
-  const [due, setDue] = useState<any[] | null>(null);
-  useEffect(() => { api("/api/rentals?view=due").then((d) => setDue(d.rentals)).catch(() => setDue([])); }, []);
+  const [due, setDue] = useState<any[] | null>(() => getCached<any>(DUE_URL)?.rentals ?? null);
+  useEffect(() => {
+    cachedApi<{ rentals: any[] }>(DUE_URL)
+      .then((d) => { if (d?.rentals) setDue(d.rentals); })
+      .catch(() => { if (!due) setDue([]); });
+  }, []);
   return (
     <div>
       <h1 className="mb-1 flex items-center gap-2 text-2xl font-black"><RefreshCcw className="text-[#2563eb]" /> تجديدات مستحقة</h1>

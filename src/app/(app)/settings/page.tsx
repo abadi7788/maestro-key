@@ -1,20 +1,25 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, ArrowUpRight, CheckCircle2, ShieldCheck, KeyRound, Sparkles, UserCheck } from "lucide-react";
-import { api, fetchMe, fileToDataUrl, fmtDateTime } from "@/lib/client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, KeyRound, UserCheck, DatabaseBackup, Download, Upload, FileSpreadsheet, FileJson, Send, CheckCircle2, Clock, AlertTriangle } from "lucide-react";
+import { api, cachedApi, fetchMe, fileToDataUrl, fmtDateTime, getCached, getCachedMe, invalidateCache, setCached } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner } from "@/components/ui";
 import { isAdminRole } from "@/lib/roles";
+
+const SETTINGS_URL = "/api/admin-data?view=settings";
 
 const TABS = [
   { id: "whatsapp", label: "قوالب واتساب", icon: <MessageCircle size={18} /> },
   { id: "platforms", label: "المنصات", icon: <MonitorPlay size={18} /> },
   { id: "banks", label: "البنوك والدفع", icon: <Building2 size={18} /> },
   { id: "users", label: "المستخدمون والصلاحيات", icon: <Users size={18} /> },
+  { id: "backup", label: "النسخ الاحتياطي", icon: <DatabaseBackup size={18} /> },
 ];
 
 export default function SettingsPage() {
+  const cachedSettings = getCached<any>(SETTINGS_URL);
   const [tab, setTab] = useState("whatsapp");
-  const [data, setData] = useState<any>(null); const [tpl, setTpl] = useState<any>({});
+  const [data, setData] = useState<any>(() => cachedSettings);
+  const [tpl, setTpl] = useState<any>(() => cachedSettings?.settings || {});
   const [msg, setMsg] = useState(""); const [busy, setBusy] = useState(false);
   const [newPlat, setNewPlat] = useState({ name: "", color: "#0f172a", shortName: "", imageUrl: "" });
   const [selectedPlatId, setSelectedPlatId] = useState<number | "">("");
@@ -39,20 +44,202 @@ export default function SettingsPage() {
   const [quickTopUpUser, setQuickTopUpUser] = useState<any | null>(null);
   const [quickAmount, setQuickAmount] = useState("");
   const [quickNote, setQuickNote] = useState("");
-  const [meId, setMeId] = useState<number | null>(null);
+  const [meId, setMeId] = useState<number | null>(() => getCachedMe()?.id ?? null);
+  const [backupBusy, setBackupBusy] = useState<"" | "json" | "csv_customers" | "csv_rentals" | "telegram" | "restore">("");
+  const [backupNotice, setBackupNotice] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{
+    filename: string;
+    exportedAt?: string;
+    counts: Record<string, number>;
+    payload: any;
+  } | null>(null);
+  const [restoreResult, setRestoreResult] = useState<{
+    inserted: Record<string, number>;
+    skipped: Record<string, number>;
+  } | null>(null);
+  const [showTgConfig, setShowTgConfig] = useState(false);
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
 
 
-  const load = useCallback(async () => {
-    const d = await api("/api/admin-data?view=settings").catch(() => null);
-    setData(d); if (d) setTpl(d.settings || {});
+  const load = useCallback(async (force = false) => {
+    const d = await cachedApi(SETTINGS_URL, undefined, { force }).catch(() => null);
+    if (d) {
+      setData(d);
+      setTpl(d.settings || {});
+    }
     fetchMe().then((u) => setMeId(u?.id ?? null)).catch(() => {});
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(false); }, [load]);
 
   async function manage(body: any, ok: string): Promise<boolean> {
     setBusy(true); setMsg("");
-    try { await api("/api/manage", { method: "POST", body: JSON.stringify(body) }); setMsg("✓ " + ok); await load(); return true; }
-    catch (e: any) { setMsg("⚠️ " + e.message); return false; } finally { setBusy(false); }
+    const prevData = data ? structuredClone(data) : null;
+
+    if (data) {
+      let next = { ...data };
+      if (body.action === "saveSettings") {
+        next.settings = { ...body.settings };
+      } else if (body.action === "upsertPlatform" && body.id) {
+        next.platforms = data.platforms.map((p: any) => p.id === body.id ? { ...p, ...body } : p);
+      } else if (body.action === "deletePlatform") {
+        next.platforms = data.platforms.filter((p: any) => p.id !== body.id);
+      } else if (body.action === "deleteBank") {
+        next.paymentMethods = data.paymentMethods.filter((b: any) => b.id !== body.id);
+      } else if (body.action === "updateUser") {
+        next.users = data.users.map((u: any) => u.id === body.id ? {
+          ...u,
+          ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+          ...(body.role !== undefined ? { role: body.role } : {}),
+        } : u);
+      } else if (body.action === "deleteUser") {
+        next.users = data.users.filter((u: any) => u.id !== body.id);
+      } else if (body.action === "topUpWallet") {
+        next.users = data.users.map((u: any) => u.id === body.userId ? {
+          ...u,
+          walletBalance: Number(u.walletBalance || 0) + Number(body.amount || 0),
+        } : u);
+      }
+      setData(next);
+      setCached(SETTINGS_URL, next);
+    }
+
+    try {
+      await api("/api/manage", { method: "POST", body: JSON.stringify(body) });
+      setMsg("✓ " + ok);
+      invalidateCache("/api/meta");
+      void load(true);
+      return true;
+    } catch (e: any) {
+      if (prevData) {
+        setData(prevData);
+        setCached(SETTINGS_URL, prevData);
+      }
+      setMsg("⚠️ " + e.message);
+      return false;
+    } finally { setBusy(false); }
+  }
+
+  async function downloadBackupFile(
+    url: string,
+    fallbackName: string,
+    kind: "json" | "csv_customers" | "csv_rentals"
+  ) {
+    setBackupBusy(kind);
+    setBackupNotice(null);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "تعذر تحميل الملف");
+      }
+      const cd = res.headers.get("content-disposition") || "";
+      const match = cd.match(/filename="([^"]+)"/);
+      const filename = match?.[1] || fallbackName;
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objUrl);
+      setBackupNotice({ tone: "ok", text: `تم تحميل الملف بنجاح: ${filename}` });
+    } catch (e: any) {
+      setBackupNotice({ tone: "err", text: e?.message || "حدث خطأ أثناء التحميل" });
+    } finally {
+      setBackupBusy("");
+    }
+  }
+
+  async function sendBackupToTelegramNow() {
+    setBackupBusy("telegram");
+    setBackupNotice(null);
+    try {
+      const res = await api<{ ok: boolean; filename?: string; sentAt?: string; counts?: Record<string, number> }>("/api/backup", {
+        method: "POST",
+        body: JSON.stringify({ action: "sendTelegram" }),
+      });
+      if (data) {
+        const next = {
+          ...data,
+          backupStatus: {
+            ...(data.backupStatus || {}),
+            lastTelegramBackupAt: res.sentAt || new Date().toISOString(),
+            telegramConfigured: true,
+          },
+        };
+        setData(next);
+        setCached(SETTINGS_URL, next);
+      }
+      setBackupNotice({
+        tone: "ok",
+        text: `تم إرسال النسخة الاحتياطية إلى تيليجرام بنجاح (${res.filename || "JSON"}) — العملاء: ${res.counts?.customers ?? 0}، الاشتراكات: ${res.counts?.rentals ?? 0}`,
+      });
+    } catch (e: any) {
+      setBackupNotice({ tone: "err", text: e?.message || "تعذر إرسال النسخة الاحتياطية إلى تيليجرام" });
+    } finally {
+      setBackupBusy("");
+    }
+  }
+
+  async function handleSelectRestoreFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setBackupNotice(null);
+    setRestoreResult(null);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || !parsed.tables || typeof parsed.tables !== "object") {
+        throw new Error("ملف JSON غير صالح — يجب أن يكون ملف نسخة احتياطية صادر من النظام.");
+      }
+      const t = parsed.tables;
+      const counts = {
+        customers: Array.isArray(t.customers) ? t.customers.length : 0,
+        rentals: Array.isArray(t.rentals) ? t.rentals.length : 0,
+        platforms: Array.isArray(t.platforms) ? t.platforms.length : 0,
+        accounts: Array.isArray(t.accounts) ? t.accounts.length : 0,
+        payments: Array.isArray(t.payments) ? t.payments.length : 0,
+      };
+      setPendingRestore({
+        filename: file.name,
+        exportedAt: parsed.exportedAt,
+        counts,
+        payload: parsed,
+      });
+    } catch (err: any) {
+      setPendingRestore(null);
+      setBackupNotice({ tone: "err", text: err?.message || "تعذر قراءة ملف JSON" });
+    }
+  }
+
+  async function confirmRestoreBackup() {
+    if (!pendingRestore) return;
+    setBackupBusy("restore");
+    setBackupNotice(null);
+    try {
+      const res = await api<{
+        ok: boolean;
+        summary: { inserted: Record<string, number>; skipped: Record<string, number> };
+      }>("/api/backup", {
+        method: "POST",
+        body: JSON.stringify({ action: "restore", backup: pendingRestore.payload }),
+      });
+      setRestoreResult(res.summary);
+      setPendingRestore(null);
+      invalidateCache();
+      void load(true);
+      setBackupNotice({
+        tone: "ok",
+        text: `تمت استعادة ودمج النسخة الاحتياطية بأمان (+${res.summary.inserted.customers} عملاء، +${res.summary.inserted.rentals} اشتراكات، +${res.summary.inserted.accounts} حسابات) دون أي تكرار.`,
+      });
+    } catch (e: any) {
+      setBackupNotice({ tone: "err", text: e?.message || "فشلت عملية استعادة النسخة الاحتياطية" });
+    } finally {
+      setBackupBusy("");
+    }
   }
 
   if (!data) return <Spinner />;
@@ -749,6 +936,299 @@ export default function SettingsPage() {
           )}
 
           <p className="text-sm font-semibold text-slate-500">المستخدمون من نوع «مستخدم/عميل» أو «موظف» لا يرون المخزون ولا المحذوفات ولا التدقيق. يتم الشحن والخصم من المحفظة بمعاملات مسجلة وموثقة في سجل التدقيق.</p>
+        </div>
+      )}
+
+      {tab === "backup" && (
+        <div className="space-y-5">
+          {/* حالة النسخ الاحتياطي التلقائي */}
+          <div className="card flex flex-wrap items-center justify-between gap-4 border border-white/10 p-5">
+            <div className="flex items-start gap-3">
+              <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${data.backupStatus?.telegramConfigured ? "bg-emerald-500/15 text-emerald-400" : "bg-amber-500/15 text-amber-400"}`}>
+                <Clock size={22} />
+              </span>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-black text-white">النسخ الاحتياطي التلقائي لقناة تيليجرام (كل 12 ساعة)</h3>
+                  {data.backupStatus?.telegramConfigured ? (
+                    <Badge tone="green">متصل وجاهز</Badge>
+                  ) : (
+                    <Badge tone="amber">يحتاج ضبط القناة</Badge>
+                  )}
+                </div>
+                <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-400">
+                  يرسل النظام نسخة احتياطية نصية كاملة (JSON) إلى قناة تيليجرام تلقائياً في الخلفية كل 12 ساعة عند تنفيذ أي عملية إضافة أو تعديل، دون أي تأثير على سرعة الواجهة.
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs font-bold text-slate-300">
+                  <span>
+                    آخر نسخة مرسلة لتيليجرام:{" "}
+                    <strong className="text-amber-300">
+                      {data.backupStatus?.lastTelegramBackupAt ? fmtDateTime(data.backupStatus.lastTelegramBackupAt) : "لم تُرسل نسخة بعد"}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowTgConfig((v) => !v)}
+              className="btn-ghost px-3 py-2 text-xs"
+            >
+              {showTgConfig ? "إخفاء إعدادات البوت" : "إعدادات بوت وقناة تيليجرام"}
+            </button>
+          </div>
+
+          {showTgConfig && (
+            <div className="card space-y-3 border border-sky-500/20 bg-sky-500/[.03] p-5">
+              <div className="text-sm font-black text-sky-300">ربط بوت وقناة الأرشيف في تيليجرام (اختياري إذا كانت مضبوطة في متغيرات الخادم)</div>
+              <p className="text-xs font-semibold text-slate-400">
+                في حال لم تُضف <span dir="ltr" className="font-mono">TELEGRAM_BOT_TOKEN</span> و<span dir="ltr" className="font-mono">TELEGRAM_ARCHIVE_CHAT_ID</span> في إعدادات Vercel، يمكنك حفظهما هنا مباشرة.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="label">رمز البوت (Bot Token)</label>
+                  <input
+                    className="field text-xs"
+                    dir="ltr"
+                    type="password"
+                    placeholder="123456789:ABC..."
+                    value={tpl.telegram_bot_token || ""}
+                    onChange={(e) => setTpl({ ...tpl, telegram_bot_token: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="label">معرّف القناة الخاصة (Archive Chat ID)</label>
+                  <input
+                    className="field text-xs"
+                    dir="ltr"
+                    placeholder="-100xxxxxxxxxx"
+                    value={tpl.telegram_archive_chat_id || ""}
+                    onChange={(e) => setTpl({ ...tpl, telegram_archive_chat_id: e.target.value })}
+                  />
+                </div>
+              </div>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  const ok = await manage({ action: "saveSettings", settings: tpl }, "تم حفظ إعدادات تيليجرام للنسخ الاحتياطي");
+                  if (ok) setShowTgConfig(false);
+                }}
+                className="btn-gold px-4 py-2 text-xs"
+              >
+                <Save size={15} /> حفظ إعدادات تيليجرام
+              </button>
+            </div>
+          )}
+
+          {backupNotice && (
+            <div className={`flex items-center gap-2.5 rounded-2xl border px-4 py-3 text-sm font-bold ${
+              backupNotice.tone === "ok"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                : "border-red-500/30 bg-red-500/10 text-red-300"
+            }`}>
+              {backupNotice.tone === "ok" ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
+              <span>{backupNotice.text}</span>
+            </div>
+          )}
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* 1. تحميل على جهاز المستخدم (JSON + CSV/Excel) */}
+            <div className="card flex flex-col justify-between space-y-4 p-5">
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-400">
+                    <Download size={20} />
+                  </span>
+                  <div>
+                    <h3 className="font-black text-white">تحميل نسخة احتياطية وتصدير CSV / Excel</h3>
+                    <p className="text-xs font-semibold text-slate-400">تنزيل فوري على جهازك للبيانات النصية الكاملة أو كجداول إكسل.</p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={backupBusy !== ""}
+                  onClick={() => downloadBackupFile("/api/backup?format=json", `maestro-key-backup-${new Date().toISOString().slice(0, 10)}.json`, "json")}
+                  className="btn-gold w-full py-3.5 text-sm font-black shadow-lg"
+                >
+                  <FileJson size={18} />
+                  {backupBusy === "json" ? "جارٍ تجهيز النسخة الشاملة..." : "تحميل نسخة احتياطية كاملة (JSON)"}
+                </button>
+
+                <p className="text-[11px] font-semibold leading-relaxed text-slate-400">
+                  تشمل النسخة الكاملة جميع الجداول: العملاء، الاشتراكات، الطلبات، المنصات، الحسابات، البروفايلات، المدفوعات، المستخدمين، المحافظ، والإعدادات (بدون صور ثقيلة).
+                </p>
+              </div>
+
+              <div className="border-t border-white/10 pt-3">
+                <div className="mb-2 text-xs font-black text-slate-300">تصدير بصيغة Excel / CSV (يدعم العربية):</div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    disabled={backupBusy !== ""}
+                    onClick={() => downloadBackupFile("/api/backup?format=csv&type=customers", `maestro-key-customers-${new Date().toISOString().slice(0, 10)}.csv`, "csv_customers")}
+                    className="btn-ghost justify-center py-2.5 text-xs font-extrabold"
+                  >
+                    <FileSpreadsheet size={15} />
+                    {backupBusy === "csv_customers" ? "جارٍ التصدير..." : "تصدير العملاء (CSV)"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={backupBusy !== ""}
+                    onClick={() => downloadBackupFile("/api/backup?format=csv&type=rentals", `maestro-key-subscriptions-${new Date().toISOString().slice(0, 10)}.csv`, "csv_rentals")}
+                    className="btn-ghost justify-center py-2.5 text-xs font-extrabold"
+                  >
+                    <FileSpreadsheet size={15} />
+                    {backupBusy === "csv_rentals" ? "جارٍ التصدير..." : "تصدير الاشتراكات (CSV)"}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. إرسال فوري إلى قناة تيليجرام الخاصة */}
+            <div className="card flex flex-col justify-between space-y-4 border border-sky-500/20 bg-gradient-to-b from-sky-500/[.04] to-transparent p-5">
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-500/15 text-sky-400">
+                    <Send size={20} />
+                  </span>
+                  <div>
+                    <h3 className="font-black text-white">الأرشفة السحابية في تيليجرام</h3>
+                    <p className="text-xs font-semibold text-slate-400">إرسال ملف JSON شامل كـ Document مرفق بتاريخ اليوم إلى قناة الأرشيف الخاصة.</p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/[.03] p-3.5 text-xs font-semibold leading-relaxed text-slate-300">
+                  <div>• صيغة الملف: <span dir="ltr" className="font-mono text-sky-300">maestro-key-backup-YYYY-MM-DD.json</span></div>
+                  <div>• يحتوي الملخص المرفق على أعداد العملاء، المنصات، الحسابات، الاشتراكات، والسندات.</div>
+                  <div>• يعمل تلقائياً كل 12 ساعة + يمكنك الإرسال الفوري في أي لحظة.</div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={backupBusy !== ""}
+                onClick={sendBackupToTelegramNow}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-l from-sky-600 to-blue-600 py-3.5 text-sm font-black text-white shadow-lg transition hover:brightness-110 disabled:opacity-50"
+              >
+                <Send size={18} />
+                {backupBusy === "telegram" ? "جارٍ الإرسال إلى تيليجرام..." : "إرسال نسخة احتياطية الآن إلى تيليجرام"}
+              </button>
+            </div>
+          </div>
+
+          {/* 3. استعادة نسخة احتياطية (رفع ملف JSON) */}
+          <div className="card space-y-4 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-500/15 text-emerald-400">
+                  <Upload size={20} />
+                </span>
+                <div>
+                  <h3 className="font-black text-white">استعادة نسخة احتياطية (رفع ملف JSON)</h3>
+                  <p className="text-xs font-semibold text-slate-400">
+                    يقرأ الملف ويدمج السجلات الناقصة في قاعدة البيانات بأمان تام مع تجنب التكرار والمحافظة على البيانات الحالية.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <input
+                  ref={restoreInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={handleSelectRestoreFile}
+                />
+                <button
+                  type="button"
+                  disabled={backupBusy !== ""}
+                  onClick={() => restoreInputRef.current?.click()}
+                  className="btn-ghost border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm font-black text-emerald-300 hover:bg-emerald-500/20"
+                >
+                  <Upload size={17} /> استعادة نسخة احتياطية (رفع ملف JSON)
+                </button>
+              </div>
+            </div>
+
+            {pendingRestore && (
+              <div className="space-y-3 rounded-2xl border border-amber-400/30 bg-amber-500/[.06] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-black text-amber-300">معاينة ملف النسخة الاحتياطية: <span dir="ltr" className="font-mono">{pendingRestore.filename}</span></div>
+                  {pendingRestore.exportedAt && (
+                    <span className="text-xs font-bold text-slate-400">تاريخ التصدير: {fmtDateTime(pendingRestore.exportedAt)}</span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:grid-cols-5">
+                  <div className="rounded-xl bg-white/[.04] p-2.5 text-center">
+                    <div className="text-slate-400">العملاء</div>
+                    <div className="mt-0.5 text-base font-black text-white">{pendingRestore.counts.customers}</div>
+                  </div>
+                  <div className="rounded-xl bg-white/[.04] p-2.5 text-center">
+                    <div className="text-slate-400">الاشتراكات</div>
+                    <div className="mt-0.5 text-base font-black text-white">{pendingRestore.counts.rentals}</div>
+                  </div>
+                  <div className="rounded-xl bg-white/[.04] p-2.5 text-center">
+                    <div className="text-slate-400">المنصات</div>
+                    <div className="mt-0.5 text-base font-black text-white">{pendingRestore.counts.platforms}</div>
+                  </div>
+                  <div className="rounded-xl bg-white/[.04] p-2.5 text-center">
+                    <div className="text-slate-400">الحسابات</div>
+                    <div className="mt-0.5 text-base font-black text-white">{pendingRestore.counts.accounts}</div>
+                  </div>
+                  <div className="rounded-xl bg-white/[.04] p-2.5 text-center">
+                    <div className="text-slate-400">المدفوعات</div>
+                    <div className="mt-0.5 text-base font-black text-white">{pendingRestore.counts.payments}</div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={backupBusy !== ""}
+                    onClick={confirmRestoreBackup}
+                    className="btn-gold px-5 py-2.5 text-sm font-black"
+                  >
+                    <CheckCircle2 size={17} />
+                    {backupBusy === "restore" ? "جارٍ الدمج والاستعادة..." : "تأكيد الدمج والاستعادة الآن"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={backupBusy !== ""}
+                    onClick={() => setPendingRestore(null)}
+                    className="btn-ghost px-4 py-2.5 text-xs"
+                  >
+                    إلغاء
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {restoreResult && (
+              <div className="rounded-2xl border border-emerald-500/25 bg-emerald-500/[.05] p-4 text-xs font-bold">
+                <div className="mb-2 text-sm font-black text-emerald-300">ملخص عملية الدمج والاستعادة:</div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {[
+                    ["customers", "العملاء"],
+                    ["rentals", "الاشتراكات والطلبات"],
+                    ["accounts", "الحسابات"],
+                    ["platforms", "المنصات"],
+                    ["payments", "المدفوعات"],
+                    ["settings", "الإعدادات"],
+                  ].map(([k, label]) => (
+                    <div key={k} className="flex items-center justify-between rounded-xl bg-white/[.04] px-3 py-2">
+                      <span className="text-slate-300">{label}</span>
+                      <span>
+                        <span className="text-emerald-300">+{restoreResult.inserted[k] || 0} مضاف</span>
+                        <span className="mx-1 text-slate-600">/</span>
+                        <span className="text-slate-400">{restoreResult.skipped[k] || 0} موجود</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

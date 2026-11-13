@@ -1,8 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
 import { ScrollText, Search, Trash2 } from "lucide-react";
-import { api, fmtDateTime } from "@/lib/client";
+import { api, cachedApi, fmtDateTime, getCached, setCached } from "@/lib/client";
 import { Badge, Empty, Spinner } from "@/components/ui";
+
+const AUDIT_URL = "/api/admin-data?view=audit";
 
 const LABELS: Record<string, { t: string; tone: string }> = {
   LOGIN: { t: "دخول", tone: "blue" }, LOGIN_FAILED: { t: "دخول فاشل", tone: "red" },
@@ -16,8 +18,13 @@ const LABELS: Record<string, { t: string; tone: string }> = {
 };
 
 export default function AuditPage() {
-  const [rows, setRows] = useState<any[] | null>(null); const [q, setQ] = useState("");
-  useEffect(() => { api("/api/admin-data?view=audit").then((d) => setRows(d.audit)).catch(() => setRows([])); }, []);
+  const [rows, setRows] = useState<any[] | null>(() => getCached<any>(AUDIT_URL)?.audit ?? null);
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    cachedApi<{ audit: any[] }>(AUDIT_URL)
+      .then((d) => { if (d?.audit) setRows(d.audit); })
+      .catch(() => { if (!rows) setRows([]); });
+  }, []);
   const filtered = (rows || []).filter((r) => !q || `${r.action}${r.username || ""}${r.details || ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
     <div>
@@ -26,7 +33,18 @@ export default function AuditPage() {
           <h1 className="text-2xl font-black">📜 سجل التدقيق</h1>
           <p className="mt-1 text-sm font-semibold text-slate-500">يمكنك حذف سجل واحد أو مسح السجل كاملاً.</p>
         </div>
-        <button onClick={async () => { if (!confirm("مسح سجل التدقيق بالكامل؟")) return; await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "deleteAudit", all: true }) }); setRows([]); }} className="btn-danger text-xs"><Trash2 size={14} /> مسح الكل</button>
+        <button onClick={async () => {
+          if (!confirm("مسح سجل التدقيق بالكامل؟")) return;
+          const prev = rows ? [...rows] : null;
+          setRows([]);
+          setCached(AUDIT_URL, { audit: [] });
+          try {
+            await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "deleteAudit", all: true }) });
+          } catch (e: any) {
+            if (prev) { setRows(prev); setCached(AUDIT_URL, { audit: prev }); }
+            alert(e.message || "فشل مسح السجل");
+          }
+        }} className="btn-danger text-xs"><Trash2 size={14} /> مسح الكل</button>
       </div>
       <div className="card relative mb-4 p-4"><Search size={17} className="absolute right-7 top-1/2 -translate-y-1/2 text-slate-400" /><input className="field pr-10" placeholder="بحث بالمستخدم أو الإجراء أو التفاصيل…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
       {!rows ? <Spinner /> : filtered.length === 0 ? <Empty icon={<ScrollText size={44} />} title="لا سجلات مطابقة" /> : (
@@ -39,7 +57,18 @@ export default function AuditPage() {
                 <span className="font-extrabold text-slate-700">{r.username || "النظام"}</span>
                 <span className="min-w-[180px] flex-1 font-semibold text-slate-500">{r.details || "—"}</span>
                 <span className="text-xs font-bold text-slate-400">{fmtDateTime(r.createdAt)}</span>
-                <button onClick={async () => { await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "deleteAudit", id: r.id }) }); setRows((rows || []).filter((x) => x.id !== r.id)); }} className="btn-danger px-2 py-1 text-xs"><Trash2 size={13} /></button>
+                <button onClick={async () => {
+                  const prev = rows ? [...rows] : null;
+                  const next = (rows || []).filter((x) => x.id !== r.id);
+                  setRows(next);
+                  setCached(AUDIT_URL, { audit: next });
+                  try {
+                    await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "deleteAudit", id: r.id }) });
+                  } catch (e: any) {
+                    if (prev) { setRows(prev); setCached(AUDIT_URL, { audit: prev }); }
+                    alert(e.message || "فشل الحذف");
+                  }
+                }} className="btn-danger px-2 py-1 text-xs"><Trash2 size={13} /></button>
               </div>
             );
           })}

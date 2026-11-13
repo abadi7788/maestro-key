@@ -15,6 +15,7 @@ import { isAdminRole } from "@/lib/roles";
 import { buildWhatsAppMessage, buildReplacementMessage } from "@/lib/whatsapp";
 import { deleteReceiptFromStorage, downloadReceiptFromStorage, isStorageRef } from "@/lib/supabase-storage";
 import { archivePaymentReceiptToTelegram, TELEGRAM_ARCHIVED_MARKER } from "@/lib/telegram";
+import { triggerAutoTelegramBackupIfDue } from "@/lib/backup";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +25,9 @@ export async function POST(req: Request) {
     const user = await requireUser();
     const b = await req.json().catch(() => ({}));
     const action = String(b.action || "");
+    if (action && !["revealPassword", "receipt", "runDailyJob"].includes(action)) {
+      triggerAutoTelegramBackupIfDue(`نسخة احتياطية تلقائية كل 12 ساعة (بعد ${action})`);
+    }
     const canManageInventory = isAdminRole(user.role) || hasPermission(user, "INVENTORY_MANAGE");
     const canConfirmOrders = isAdminRole(user.role) || hasPermission(user, "CONFIRM_LINK_ACTIVATION");
     const now = new Date();

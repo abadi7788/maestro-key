@@ -11,6 +11,7 @@ import { normalizeDeliveryMode, lifetimeEndDate, type DeliveryMode } from "@/lib
 import { notifyAdmin } from "@/lib/notify";
 import { buildWhatsAppMessage } from "@/lib/whatsapp";
 import { uploadTempReceipt, deleteReceiptFromStorage } from "@/lib/supabase-storage";
+import { triggerAutoTelegramBackupIfDue } from "@/lib/backup";
 
 export const dynamic = "force-dynamic";
 
@@ -243,6 +244,7 @@ export async function POST(req: Request) {
       });
 
       await audit(user, "MANUAL_SALE", "rentals", rental.id, `تسليم يدوي ${platform.name} — ${customer.name} (${customerPhone}) — ${paymentType}`);
+      triggerAutoTelegramBackupIfDue("نسخة احتياطية تلقائية كل 12 ساعة (بعد تسليم يدوي)");
 
       return Response.json({
         ok: true, rentalId: rental.id, manual: true,
@@ -289,6 +291,7 @@ export async function POST(req: Request) {
         kind: "ACTIVATION",
         href: "/inbox",
       });
+      triggerAutoTelegramBackupIfDue("نسخة احتياطية تلقائية كل 12 ساعة (بعد طلب جديد)");
 
       return Response.json({
         ok: true, rentalId: rental.id, onDemand: true, pendingActivation: true,
@@ -339,6 +342,7 @@ export async function POST(req: Request) {
         };
       }
 
+      triggerAutoTelegramBackupIfDue("نسخة احتياطية تلقائية كل 12 ساعة (بعد عملية بيع/تجديد)");
       return Response.json({
         ok: true, rentalId, isRenewal,
         message: paymentType === "WALLET" 

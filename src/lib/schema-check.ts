@@ -371,6 +371,8 @@ const UPGRADE_STATEMENTS: string[] = [
 
 const SCHEMA_META_VERSION = 2;
 
+let isSchemaChecked = false;
+
 const globalForSchema = globalThis as typeof globalThis & {
   __maestroSchemaEnsured?: boolean;
   __maestroSchemaPromise?: Promise<void> | null;
@@ -384,11 +386,29 @@ async function getExistingPublicTables(queryable: { query: (sql: string) => Prom
 }
 
 export async function ensureSchema(): Promise<void> {
-  if (globalForSchema.__maestroSchemaEnsured) return;
-  if (!process.env.DATABASE_URL?.trim()) return;
+  if (isSchemaChecked || globalForSchema.__maestroSchemaEnsured) return;
+  if (!process.env.DATABASE_URL?.trim()) {
+    isSchemaChecked = true;
+    return;
+  }
   if (globalForSchema.__maestroSchemaPromise) return globalForSchema.__maestroSchemaPromise;
 
   globalForSchema.__maestroSchemaPromise = (async () => {
+    // 0) فحص فائق السرعة (استعلام واحد فقط): إذا كان المخطط مؤسساً مسبقاً نخرج فوراً
+    try {
+      const fastCheck = await pool.query(
+        `SELECT version FROM _schema_meta WHERE version = $1 LIMIT 1`,
+        [SCHEMA_META_VERSION]
+      );
+      if (fastCheck.rows?.length) {
+        isSchemaChecked = true;
+        globalForSchema.__maestroSchemaEnsured = true;
+        return;
+      }
+    } catch {
+      // الجدول غير موجود أو القاعدة جديدة — نتابع التهيئة الكاملة
+    }
+
     const client = await pool.connect();
     try {
       // ضمان العمل داخل public schema في Supabase / Postgres
@@ -396,28 +416,12 @@ export async function ensureSchema(): Promise<void> {
         await client.query(`CREATE SCHEMA IF NOT EXISTS public`);
         await client.query(`SET search_path TO public`);
       } catch {
-        // تجاهل إذا كانت الصلاحية مقيدة على مستوى إنشاء schema وكان public موجوداً بالفعل
+        // تجاهل إذا كانت الصلاحية مقيدة وكان public موجوداً بالفعل
       }
 
-      // 1) فحص سريع: هل كل الجداول الـ 16 موجودة والترقية version=2 مطبقة؟
+      // 1) فحص الجداول الموجودة حالياً
       const initialTables = await getExistingPublicTables(client);
       const missingBefore = REQUIRED_TABLES.filter((t) => !initialTables.has(t));
-
-      if (missingBefore.length === 0 && initialTables.has("_schema_meta")) {
-        try {
-          const metaCheck = await client.query(
-            `SELECT version FROM _schema_meta WHERE version = $1 LIMIT 1`,
-            [SCHEMA_META_VERSION]
-          );
-          if (metaCheck.rows?.length) {
-            globalForSchema.__maestroSchemaEnsured = true;
-            return;
-          }
-        } catch {
-          // نتابع التهيئة الكاملة
-        }
-      }
-
       const isFreshDatabase = missingBefore.length === REQUIRED_TABLES.length;
       const errors: string[] = [];
 
@@ -473,6 +477,7 @@ export async function ensureSchema(): Promise<void> {
         [SCHEMA_META_VERSION]
       );
 
+      isSchemaChecked = true;
       globalForSchema.__maestroSchemaEnsured = true;
       console.log(
         `[schema-check] ${isFreshDatabase ? "Fresh database initialized (16 tables created)" : "Schema verified & upgraded"} successfully.`
@@ -482,6 +487,7 @@ export async function ensureSchema(): Promise<void> {
     }
   })().catch((e) => {
     console.error("[schema-check] error:", e?.message || e);
+    isSchemaChecked = false;
     globalForSchema.__maestroSchemaEnsured = false;
     globalForSchema.__maestroSchemaPromise = null;
     throw e;

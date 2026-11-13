@@ -1,12 +1,13 @@
 import { db } from "@/db";
 import { accounts, profiles, platforms, rentals, customers } from "@/db/schema";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { requireAdmin, audit, jsonError } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { encryptText } from "@/lib/crypto";
 import { refreshAccountStatus, runDailyJob } from "@/lib/engine";
 import { normalizeAccountDelivery, ACCOUNT_DELIVERY_LABELS } from "@/lib/delivery";
 import { notifyAdmin } from "@/lib/notify";
+import { triggerAutoTelegramBackupIfDue } from "@/lib/backup";
 
 export const dynamic = "force-dynamic";
 
@@ -14,38 +15,67 @@ export async function GET(req: Request) {
   try {
     await ensureSeeded();
     await requireAdmin();
-    await runDailyJob({ sendAlerts: false });
     const trash = new URL(req.url).searchParams.get("trash") === "1";
-    const rows = await db.select({
-      id: accounts.id, platformId: accounts.platformId, type: accounts.type, maxProfiles: accounts.maxProfiles,
-      deliveryKind: accounts.deliveryKind,
-      email: accounts.email, pin: accounts.pin, expiryDate: accounts.expiryDate, status: accounts.status,
-      inviteLink: accounts.inviteLink, maxUses: accounts.maxUses, usedCount: accounts.usedCount,
-      hasLicenseKey: accounts.licenseKeyEncrypted,
-      notes: accounts.notes, salePrice: accounts.salePrice,
-      isDeleted: accounts.isDeleted, deletedAt: accounts.deletedAt, deletedReason: accounts.deletedReason,
-      createdAt: accounts.createdAt, platformName: platforms.name, platformColor: platforms.color, platformShort: platforms.shortName, platformImage: platforms.imageUrl,
-    }).from(accounts).innerJoin(platforms, eq(accounts.platformId, platforms.id))
-      .where(eq(accounts.isDeleted, trash)).orderBy(desc(accounts.createdAt));
+
+    const [, rows] = await Promise.all([
+      runDailyJob({ sendAlerts: false }),
+      db.select({
+        id: accounts.id, platformId: accounts.platformId, type: accounts.type, maxProfiles: accounts.maxProfiles,
+        deliveryKind: accounts.deliveryKind,
+        email: accounts.email, pin: accounts.pin, expiryDate: accounts.expiryDate, status: accounts.status,
+        inviteLink: accounts.inviteLink, maxUses: accounts.maxUses, usedCount: accounts.usedCount,
+        hasLicenseKey: sql<boolean>`(${accounts.licenseKeyEncrypted} IS NOT NULL AND ${accounts.licenseKeyEncrypted} <> '')`,
+        notes: accounts.notes, salePrice: accounts.salePrice,
+        isDeleted: accounts.isDeleted, deletedAt: accounts.deletedAt, deletedReason: accounts.deletedReason,
+        createdAt: accounts.createdAt, platformName: platforms.name, platformColor: platforms.color, platformShort: platforms.shortName, platformImage: platforms.imageUrl,
+      }).from(accounts).innerJoin(platforms, eq(accounts.platformId, platforms.id))
+        .where(eq(accounts.isDeleted, trash)).orderBy(desc(accounts.createdAt)),
+    ]);
 
     const ids = rows.map((r) => r.id);
-    const profs = ids.length ? await db.select().from(profiles).where(inArray(profiles.accountId, ids)).orderBy(profiles.profileNo) : [];
-    const relRentals = ids.length ? await db.select({
-      id: rentals.id, accountId: rentals.accountId, profileId: rentals.profileId, status: rentals.status,
-      endDate: rentals.endDate, customerName: customers.name, customerPhone: customers.phone,
-    }).from(rentals).innerJoin(customers, eq(rentals.customerId, customers.id))
-      .where(and(inArray(rentals.accountId, ids), inArray(rentals.status, ["ACTIVE", "ENDED"]))) : [];
-    const allRentalsCount = ids.length ? await db.select({ accountId: rentals.accountId, id: rentals.id }).from(rentals).where(inArray(rentals.accountId, ids)) : [];
+    const [profs, relRentals, allRentalsCount] = ids.length
+      ? await Promise.all([
+          db.select().from(profiles).where(inArray(profiles.accountId, ids)).orderBy(profiles.profileNo),
+          db.select({
+            id: rentals.id, accountId: rentals.accountId, profileId: rentals.profileId, status: rentals.status,
+            endDate: rentals.endDate, customerName: customers.name, customerPhone: customers.phone,
+          }).from(rentals).innerJoin(customers, eq(rentals.customerId, customers.id))
+            .where(and(inArray(rentals.accountId, ids), inArray(rentals.status, ["ACTIVE", "ENDED"]))),
+          db.select({ accountId: rentals.accountId }).from(rentals).where(inArray(rentals.accountId, ids)),
+        ])
+      : [[], [], []];
+
+    const relByProfile = new Map<number, (typeof relRentals)[number]>();
+    const relByAccount = new Map<number, typeof relRentals>();
+    for (const x of relRentals) {
+      if (x.profileId != null) relByProfile.set(x.profileId, x);
+      if (x.accountId != null) {
+        const list = relByAccount.get(x.accountId);
+        if (list) list.push(x);
+        else relByAccount.set(x.accountId, [x]);
+      }
+    }
+
+    const profsByAccount = new Map<number, any[]>();
+    for (const p of profs) {
+      const enrichedProf = { ...p, rental: relByProfile.get(p.id) || null };
+      const list = profsByAccount.get(p.accountId);
+      if (list) list.push(enrichedProf);
+      else profsByAccount.set(p.accountId, [enrichedProf]);
+    }
+
+    const totalRentalsByAcc = new Map<number, number>();
+    for (const r of allRentalsCount) {
+      if (r.accountId != null) totalRentalsByAcc.set(r.accountId, (totalRentalsByAcc.get(r.accountId) || 0) + 1);
+    }
 
     return Response.json({
       accounts: rows.map((r) => ({
         ...r,
-        hasLicenseKey: !!r.hasLicenseKey,
-        profiles: profs.filter((p) => p.accountId === r.id).map((p) => ({
-          ...p, rental: relRentals.find((x) => x.profileId === p.id) || null,
-        })),
-        currentRentals: relRentals.filter((x) => x.accountId === r.id),
-        totalRentals: allRentalsCount.filter((x) => x.accountId === r.id).length,
+        hasLicenseKey: Boolean(r.hasLicenseKey),
+        profiles: profsByAccount.get(r.id) || [],
+        currentRentals: relByAccount.get(r.id) || [],
+        totalRentals: totalRentalsByAcc.get(r.id) || 0,
       })),
     });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
@@ -141,6 +171,7 @@ export async function POST(req: Request) {
       href: "/accounts",
     });
     await audit(user, "ACCOUNT_CREATED", "accounts", acc.id, `إضافة ${ACCOUNT_DELIVERY_LABELS[deliveryKind]} ${email || inviteLink ? `(${email || "رابط"})` : ""} (${type})`);
+    triggerAutoTelegramBackupIfDue("نسخة احتياطية تلقائية كل 12 ساعة (بعد إضافة حساب)");
     return Response.json({ ok: true, id: acc.id });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }
@@ -214,6 +245,7 @@ export async function PUT(req: Request) {
 
     await refreshAccountStatus(id);
     await audit(user, "ACCOUNT_UPDATED", "accounts", id, `تعديل حساب ${acc.email || `#${id}`}${b.password ? " (مع كلمة المرور)" : ""}${Array.isArray(b.profilesList) ? " (تحديث البروفايلات والـ PIN)" : ""}`);
+    triggerAutoTelegramBackupIfDue("نسخة احتياطية تلقائية كل 12 ساعة (بعد تعديل حساب)");
     return Response.json({ ok: true });
   } catch (e) { if (e instanceof Response) return e; return jsonError("خطأ في الخادم", 500); }
 }

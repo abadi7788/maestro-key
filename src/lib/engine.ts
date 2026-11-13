@@ -39,69 +39,103 @@ export async function refreshAccountStatus(accountId: number) {
   await db.update(accounts).set({ status, updatedAt: new Date() }).where(eq(accounts.id, accountId));
 }
 
-/** Daily job: mark ended rentals, queue expiry warnings (2 days before). Runs on demand / dashboard load. */
-export async function runDailyJob(opts: { sendAlerts?: boolean } = {}) {
+let lastDailySilentRunAt = 0;
+
+/** Daily job: mark ended rentals, queue expiry warnings (2 days before). Runs on demand / throttled on page load. */
+export async function runDailyJob(opts: { sendAlerts?: boolean; force?: boolean } = {}) {
   const now = new Date();
   const sendAlerts = opts.sendAlerts !== false;
+  const nowMs = now.getTime();
 
-  // A) Ended rentals (معزولة: فشلها لا يسقط المسار الذي استدعاها)
-  let ended: (typeof rentals.$inferSelect)[] = [];
+  // تخطي الفحص الصامت المتكرر خلال 60 ثانية لتسريع التنقل بين الصفحات
+  if (!sendAlerts && !opts.force && nowMs - lastDailySilentRunAt < 60_000) {
+    return { endedCount: 0, alertsSent: 0, ranAt: now.toISOString(), throttled: true };
+  }
+  if (!sendAlerts) lastDailySilentRunAt = nowMs;
+
+  // A) Ended rentals (استعلام واحد فقط بدلاً من حلقة تحديث صفاً بصف)
+  let endedCount = 0;
   try {
-    ended = await db.select().from(rentals)
-      .where(and(eq(rentals.status, "ACTIVE"), lt(rentals.endDate, now)));
-    for (const r of ended) {
-      try {
-        await db.update(rentals).set({ status: "ENDED", updatedAt: now }).where(eq(rentals.id, r.id));
-        if (r.accountId) await refreshAccountStatus(r.accountId);
-      } catch (e) {
-        console.error("[daily-job] ended-rental update skipped:", r.id, e instanceof Error ? e.message : e);
-      }
+    const ended = await db
+      .update(rentals)
+      .set({ status: "ENDED", updatedAt: now })
+      .where(and(eq(rentals.status, "ACTIVE"), eq(rentals.isLifetime, false), lt(rentals.endDate, now)))
+      .returning({ id: rentals.id, accountId: rentals.accountId });
+
+    endedCount = ended.length;
+    if (ended.length > 0) {
+      const uniqueAccountIds = Array.from(
+        new Set(ended.map((r) => r.accountId).filter((id): id is number => typeof id === "number" && id > 0))
+      );
+      await Promise.all(uniqueAccountIds.map((accId) => refreshAccountStatus(accId).catch(() => {})));
     }
   } catch (e) {
     console.error("[daily-job] ended-mark section failed:", e instanceof Error ? e.message : e);
   }
 
-  // B) Expiry warnings: within next 2 days, not sent (معزولة كذلك)
+  // B) Expiry warnings: within next 2 days, not sent
   let alertsSent = 0;
   if (sendAlerts) {
     try {
       const windowEnd = addDays(now, 2);
-      const soon = await db.select().from(rentals)
-        .where(and(eq(rentals.status, "ACTIVE"), eq(rentals.isLifetime, false), eq(rentals.whatsappAlertSent, false)));
-    const tpl = await getSetting("whatsapp_expiry_template", "مرحباً {{name}}، اشتراكك في {{platform}} ينتهي {{end_date}}.");
-    for (const r of soon) {
-      if (new Date(r.endDate) > windowEnd || new Date(r.endDate) < now) continue;
-      const [cust] = await db.select().from(customers).where(eq(customers.id, r.customerId)).limit(1);
-      const [plat] = await db.select().from(platforms).where(eq(platforms.id, r.platformId)).limit(1);
-      if (!cust) continue;
-      const days = String(Math.max(0, Math.ceil((new Date(r.endDate).getTime() - now.getTime()) / 86400000)));
-      const message = renderTemplate(tpl, { name: cust.name, platform: plat?.name ?? "", end_date: formatDate(r.endDate), days });
+      const [soon, tpl] = await Promise.all([
+        db.select().from(rentals).where(
+          and(eq(rentals.status, "ACTIVE"), eq(rentals.isLifetime, false), eq(rentals.whatsappAlertSent, false))
+        ),
+        getSetting("whatsapp_expiry_template", "مرحباً {{name}}، اشتراكك في {{platform}} ينتهي {{end_date}}."),
+      ]);
 
-      let status = "SIMULATED";
-      // If Meta Cloud API credentials exist, send for real.
-      const token = process.env.WHATSAPP_TOKEN; const phoneId = process.env.WHATSAPP_PHONE_ID;
-      if (token && phoneId) {
-        try {
-          let to = cust.phone.replace(/\D/g, "");
-          if (to.length === 9 && to.startsWith("7")) to = "967" + to;
-          const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-            method: "POST", headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
-          });
-          status = res.ok ? "SENT" : "FAILED";
-        } catch { status = "FAILED"; }
-      }
-        await db.insert(whatsappLogs).values({ rentalId: r.id, customerId: cust.id, phone: cust.phone, message, kind: "EXPIRY_WARNING", status });
-        if (status !== "FAILED") {
-          await db.update(rentals).set({ whatsappAlertSent: true, whatsappAlertSentAt: now }).where(eq(rentals.id, r.id));
-          alertsSent++;
+      const dueSoon = soon.filter((r) => {
+        const endMs = new Date(r.endDate).getTime();
+        return endMs <= windowEnd.getTime() && endMs >= now.getTime();
+      });
+
+      if (dueSoon.length > 0) {
+        const custIds = Array.from(new Set(dueSoon.map((r) => r.customerId)));
+        const platIds = Array.from(new Set(dueSoon.map((r) => r.platformId)));
+        const [custRows, platRows] = await Promise.all([
+          db.select().from(customers).where(inArray(customers.id, custIds)),
+          db.select().from(platforms).where(inArray(platforms.id, platIds)),
+        ]);
+        const custMap = new Map(custRows.map((c) => [c.id, c]));
+        const platMap = new Map(platRows.map((p) => [p.id, p]));
+
+        for (const r of dueSoon) {
+          const cust = custMap.get(r.customerId);
+          const plat = platMap.get(r.platformId);
+          if (!cust) continue;
+          const days = String(Math.max(0, Math.ceil((new Date(r.endDate).getTime() - now.getTime()) / 86400000)));
+          const message = renderTemplate(tpl, { name: cust.name, platform: plat?.name ?? "", end_date: formatDate(r.endDate), days });
+
+          let status = "SIMULATED";
+          const token = process.env.WHATSAPP_TOKEN;
+          const phoneId = process.env.WHATSAPP_PHONE_ID;
+          if (token && phoneId) {
+            try {
+              let to = cust.phone.replace(/\D/g, "");
+              if (to.length === 9 && to.startsWith("7")) to = "967" + to;
+              const res = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+                body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
+              });
+              status = res.ok ? "SENT" : "FAILED";
+            } catch {
+              status = "FAILED";
+            }
+          }
+          await db.insert(whatsappLogs).values({ rentalId: r.id, customerId: cust.id, phone: cust.phone, message, kind: "EXPIRY_WARNING", status });
+          if (status !== "FAILED") {
+            await db.update(rentals).set({ whatsappAlertSent: true, whatsappAlertSentAt: now }).where(eq(rentals.id, r.id));
+            alertsSent++;
+          }
         }
       }
     } catch (e) {
       console.error("[daily-job] expiry-warnings section failed:", e instanceof Error ? e.message : e);
     }
   }
-  return { endedCount: ended.length, alertsSent, ranAt: now.toISOString() };
+  return { endedCount, alertsSent, ranAt: now.toISOString() };
 }
 
 export async function accountOccupancy(accountId: number) {

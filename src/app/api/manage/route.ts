@@ -7,6 +7,7 @@ import { normalizeRole, isAdminRole } from "@/lib/roles";
 import { encryptText } from "@/lib/crypto";
 import { ensureSeeded } from "@/lib/seed";
 import { notifyAdmin } from "@/lib/notify";
+import { triggerAutoTelegramBackupIfDue } from "@/lib/backup";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,9 @@ export async function POST(req: Request) {
     const admin = await requireAdmin();
     const b = await req.json().catch(() => ({}));
     const action = String(b.action || "");
+    if (action && action !== "deleteAudit") {
+      triggerAutoTelegramBackupIfDue(`نسخة احتياطية تلقائية كل 12 ساعة (بعد ${action})`);
+    }
 
     if (action === "upsertPlatform") {
       const name = String(b.name || "").trim(); if (!name) return jsonError("اسم المنصة مطلوب");

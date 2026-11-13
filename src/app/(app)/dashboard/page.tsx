@@ -6,35 +6,60 @@ import {
   AlarmClock, ArrowLeft, BellRing, Boxes, CheckCircle2, CreditCard, KeyRound, Landmark, Play, ReceiptText,
   RefreshCcw, ShieldAlert, ShoppingCart, TrendingUp, Users, Wallet,
 } from "lucide-react";
-import { api, fetchMe, fmtDate, money, daysLeft, type Me } from "@/lib/client";
+import { api, cachedApi, fetchMe, fmtDate, getCached, getCachedMe, money, daysLeft, setCached, type Me } from "@/lib/client";
 import { isAdminRole, isEmployeeRole } from "@/lib/roles";
 import { Badge, PlatformLogo, Spinner, StatCard, DueCard, rentalBadge, paymentBadge } from "@/components/ui";
 
 export default function DashboardPage() {
 
-  const [me, setMe] = useState<Me | null>(null);
-  const [data, setData] = useState<any>(null); const [meta, setMeta] = useState<any>(null);
-  const [rentals, setRentals] = useState<any[]>([]); const [due, setDue] = useState<any[]>([]);
+  const [me, setMe] = useState<Me | null>(() => getCachedMe());
+  const [data, setData] = useState<any>(() => getCached("/api/admin-data?view=dashboard"));
+  const [meta, setMeta] = useState<any>(() => getCached("/api/meta"));
+  const [rentals, setRentals] = useState<any[]>(() => {
+    const u = getCachedMe();
+    const cached = getCached<any>(u && isAdminRole(u.role) ? "/api/rentals?view=all" : "/api/rentals?view=mine");
+    return cached?.rentals || [];
+  });
+  const [due, setDue] = useState<any[]>(() => getCached<any>("/api/rentals?view=due")?.rentals || []);
   const [jobMsg, setJobMsg] = useState(""); const [busy, setBusy] = useState(false);
 
-  async function load(user: Me) {
-    const m = await api("/api/meta").catch(() => null); setMeta(m);
+  async function load(user: Me, force = false) {
     if (isAdminRole(user.role)) {
-      const [d, r] = await Promise.all([api("/api/admin-data?view=dashboard"), api("/api/rentals?view=all")]);
-      setData(d); setRentals(r.rentals);
+      const [m, d, r] = await Promise.all([
+        cachedApi("/api/meta", undefined, { force }).catch(() => null),
+        cachedApi("/api/admin-data?view=dashboard", undefined, { force }).catch(() => null),
+        cachedApi("/api/rentals?view=all", undefined, { force }).catch(() => null),
+      ]);
+      if (m) setMeta(m);
+      if (d) setData(d);
+      if (r?.rentals) setRentals(r.rentals);
     } else {
-      const [d2, mine] = await Promise.all([api("/api/rentals?view=due"), api("/api/rentals?view=mine")]);
-      setDue(d2.rentals); setRentals(mine.rentals);
+      const [m, d2, mine] = await Promise.all([
+        cachedApi("/api/meta", undefined, { force }).catch(() => null),
+        cachedApi("/api/rentals?view=due", undefined, { force }).catch(() => null),
+        cachedApi("/api/rentals?view=mine", undefined, { force }).catch(() => null),
+      ]);
+      if (m) setMeta(m);
+      if (d2?.rentals) setDue(d2.rentals);
+      if (mine?.rentals) setRentals(mine.rentals);
     }
   }
-  useEffect(() => { fetchMe().then((u) => { setMe(u); if (u) load(u); }); }, []);
-  // مزامنة تلقائية كل 25 ثانية لتفادي استنزاف موارد السيرفر وقاعدة البيانات
-  useAutoRefresh(() => { if (me) return load(me); }, 25000);
+  useEffect(() => {
+    fetchMe().then((u) => {
+      setMe(u);
+      if (u) void load(u);
+    });
+  }, []);
+  useAutoRefresh(() => { if (me) return load(me, true); }, 25000);
 
 
   async function runJob() {
     setBusy(true);
-    try { const d = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "runDailyJob" }) }); setJobMsg(`تم: انتهى ${d.endedCount} اشتراك، وأُرسل/جُهّز ${d.alertsSent} تنبيه واتساب قبل الانتهاء بيومين.`); if (me) load(me); }
+    try {
+      const d = await api("/api/actions", { method: "POST", body: JSON.stringify({ action: "runDailyJob" }) });
+      setJobMsg(`تم: انتهى ${d.endedCount} اشتراك، وأُرسل/جُهّز ${d.alertsSent} تنبيه واتساب قبل الانتهاء بيومين.`);
+      if (me) void load(me, true);
+    }
     catch (e: any) { setJobMsg(e.message); } finally { setBusy(false); }
   }
 

@@ -59,20 +59,29 @@ async function doSeed() {
   ]).onConflictDoNothing();
 }
 
+let isSeedChecked = false;
+
 const globalForSeed = globalThis as typeof globalThis & {
   __maestroSeededDone?: boolean;
   __maestroSeedingPromise?: Promise<void> | null;
 };
 
 export async function ensureSeeded() {
-  if (globalForSeed.__maestroSeededDone) return;
+  if (isSeedChecked || globalForSeed.__maestroSeededDone) return;
+  if (!process.env.DATABASE_URL?.trim()) {
+    isSeedChecked = true;
+    return;
+  }
   if (globalForSeed.__maestroSeedingPromise) return globalForSeed.__maestroSeedingPromise;
 
   globalForSeed.__maestroSeedingPromise = (async () => {
     await doSeed();
+    isSeedChecked = true;
     globalForSeed.__maestroSeededDone = true;
   })().catch((e) => {
     console.error("[seed failed]", e);
+    isSeedChecked = false;
+    globalForSeed.__maestroSeededDone = false;
     globalForSeed.__maestroSeedingPromise = null;
   });
 

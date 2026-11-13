@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { platforms, paymentMethods, accounts, profiles } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { requireUser } from "@/lib/auth";
 import { ensureSeeded } from "@/lib/seed";
 import { ALLOWED_DURATIONS } from "@/lib/constants";
@@ -12,14 +12,33 @@ export async function GET() {
   try {
     await ensureSeeded();
     await requireUser();
-    const plats = await db.select().from(platforms).where(eq(platforms.isActive, true)).orderBy(platforms.id);
-    const banks = await db.select().from(paymentMethods).where(eq(paymentMethods.isActive, true)).orderBy(paymentMethods.id);
-    const accs = await db.select().from(accounts).where(eq(accounts.isDeleted, false));
+
+    const [plats, banks, accs, availProfs] = await Promise.all([
+      db.select().from(platforms).where(eq(platforms.isActive, true)).orderBy(platforms.id),
+      db.select().from(paymentMethods).where(eq(paymentMethods.isActive, true)).orderBy(paymentMethods.id),
+      db.select({
+        id: accounts.id,
+        platformId: accounts.platformId,
+        type: accounts.type,
+        status: accounts.status,
+        expiryDate: accounts.expiryDate,
+        maxUses: accounts.maxUses,
+        usedCount: accounts.usedCount,
+        salePrice: accounts.salePrice,
+      }).from(accounts).where(eq(accounts.isDeleted, false)),
+      db.select({ accountId: profiles.accountId }).from(profiles).where(eq(profiles.status, "AVAILABLE")),
+    ]);
+
+    const availCountByAcc = new Map<number, number>();
+    for (const p of availProfs) {
+      availCountByAcc.set(p.accountId, (availCountByAcc.get(p.accountId) || 0) + 1);
+    }
 
     type Slots = { slots: number; accounts: number };
     const availability: Record<number, Slots> = {};
     const availabilityByType: Record<number, { FULL: Slots; PROFILE: Slots }> = {};
     const priceByType: Record<number, { FULL: number | null; PROFILE: number | null }> = {};
+    const now = new Date();
 
     const ensure = (pid: number, type: "FULL" | "PROFILE") => {
       if (!availabilityByType[pid]) availabilityByType[pid] = { FULL: { slots: 0, accounts: 0 }, PROFILE: { slots: 0, accounts: 0 } };
@@ -28,15 +47,13 @@ export async function GET() {
 
     for (const acc of accs) {
       if (acc.status === "NEEDS_PASSWORD_CHANGE") continue;
-      if (acc.expiryDate && new Date(acc.expiryDate) <= new Date()) continue;
-      // روابط/أكواد مستنفدة الاستخدامات لا تُحتسب متاحة
+      if (acc.expiryDate && new Date(acc.expiryDate) <= now) continue;
       if (acc.maxUses != null && (acc.usedCount ?? 0) >= acc.maxUses) continue;
-      let slots = 0;
-      if (acc.type === "FULL") slots = acc.status === "AVAILABLE" ? 1 : 0;
-      else {
-        const profs = await db.select().from(profiles).where(and(eq(profiles.accountId, acc.id), eq(profiles.status, "AVAILABLE")));
-        slots = profs.length;
-      }
+
+      const slots = acc.type === "FULL"
+        ? (acc.status === "AVAILABLE" ? 1 : 0)
+        : (availCountByAcc.get(acc.id) || 0);
+
       if (slots > 0) {
         const key: "FULL" | "PROFILE" = acc.type === "FULL" ? "FULL" : "PROFILE";
 

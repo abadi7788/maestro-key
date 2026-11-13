@@ -15,8 +15,10 @@ export async function GET(req: Request) {
     const mine = isAdminRole(user.role)
       ? or(isNull(alerts.forUserId), eq(alerts.forUserId, user.id))
       : eq(alerts.forUserId, user.id);
-    const rows = await db.select().from(alerts).where(and(gt(alerts.id, after), mine)).orderBy(desc(alerts.id)).limit(20);
-    const latest = await db.select({ id: alerts.id }).from(alerts).where(mine).orderBy(desc(alerts.id)).limit(1);
+    const [rows, latest] = await Promise.all([
+      db.select().from(alerts).where(and(gt(alerts.id, after), mine)).orderBy(desc(alerts.id)).limit(20),
+      db.select({ id: alerts.id }).from(alerts).where(mine).orderBy(desc(alerts.id)).limit(1),
+    ]);
     return Response.json({ alerts: rows.reverse(), latestId: latest[0]?.id || 0 });
   } catch (e) {
     if (e instanceof Response) return e;

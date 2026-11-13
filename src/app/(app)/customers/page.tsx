@@ -3,31 +3,63 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { ChevronDown, MessageCircle, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
-import { api, fmtDate, money, waLink } from "@/lib/client";
+import { api, cachedApi, fmtDate, getCached, invalidateCache, money, setCached, waLink } from "@/lib/client";
 import { Badge, Empty, Modal, Spinner, rentalBadge } from "@/components/ui";
 
+const CUSTOMERS_URL = "/api/admin-data?view=customers";
+
 export default function CustomersPage() {
-  const [rows, setRows] = useState<any[] | null>(null); const [q, setQ] = useState(""); const [open, setOpen] = useState<number | null>(null);
+  const [rows, setRows] = useState<any[] | null>(() => getCached<any>(CUSTOMERS_URL)?.customers ?? null);
+  const [q, setQ] = useState(""); const [open, setOpen] = useState<number | null>(null);
   // Add / edit modal
   const [editing, setEditing] = useState<any | null>(null); // null = closed, {} = add new, {id,...} = edit
   const [fName, setFName] = useState(""); const [fPhone, setFPhone] = useState(""); const [fNotes, setFNotes] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [ok, setOk] = useState("");
 
-  const load = useCallback(() => { api("/api/admin-data?view=customers").then((d) => setRows(d.customers)).catch(() => setRows([])); }, []);
-  useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 15000);
+  const load = useCallback((force = false) => {
+    return cachedApi<{ customers: any[] }>(CUSTOMERS_URL, undefined, { force })
+      .then((d) => { if (d?.customers) setRows(d.customers); })
+      .catch(() => { if (!rows) setRows([]); });
+  }, []);
+  useEffect(() => { void load(false); }, [load]);
+  useAutoRefresh(() => load(true), 25000);
   const filtered = (rows || []).filter((c) => !q || `${c.name}${c.phone}`.includes(q));
 
   function openAdd() { setEditing({}); setFName(""); setFPhone(""); setFNotes(""); setErr(""); setOk(""); }
   function openEdit(c: any) { setEditing(c); setFName(c.name); setFPhone(c.phone); setFNotes(c.notes || ""); setErr(""); setOk(""); }
 
   async function save(e: React.FormEvent) {
-    e.preventDefault(); setBusy(true); setErr("");
+    e.preventDefault();
+    setErr("");
+    const snapshot = rows ? [...rows] : null;
+    const isEdit = Boolean(editing?.id);
+    const trimmedName = fName.trim();
+    const trimmedPhone = fPhone.trim();
+    const trimmedNotes = fNotes.trim();
+    const tempId = -Date.now();
+
+    // Optimistic update
+    const nextRows = isEdit
+      ? (rows || []).map((c) => c.id === editing.id ? { ...c, name: trimmedName, phone: trimmedPhone, notes: trimmedNotes } : c)
+      : [{ id: tempId, name: trimmedName, phone: trimmedPhone, notes: trimmedNotes, rentals: [], totalPaid: 0, whatsapp: [] }, ...(rows || [])];
+    setRows(nextRows);
+    setCached(CUSTOMERS_URL, { customers: nextRows });
+    setEditing(null);
+
     try {
-      await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "upsertCustomer", id: editing?.id || undefined, name: fName, phone: fPhone, notes: fNotes }) });
-      setOk(editing?.id ? "تم تحديث بيانات العميل بنجاح ✓" : "تمت إضافة العميل بنجاح ✓");
-      load();
-    } catch (e: any) { setErr(e.message || "حدث خطأ"); } finally { setBusy(false); }
+      await api("/api/manage", {
+        method: "POST",
+        body: JSON.stringify({ action: "upsertCustomer", id: isEdit ? editing.id : undefined, name: trimmedName, phone: trimmedPhone, notes: trimmedNotes }),
+      });
+      invalidateCache("/api/admin-data?view=dashboard");
+      void load(true);
+    } catch (e: any) {
+      if (snapshot) {
+        setRows(snapshot);
+        setCached(CUSTOMERS_URL, { customers: snapshot });
+      }
+      setErr(e.message || "حدث خطأ");
+    }
   }
 
   return (
@@ -60,7 +92,23 @@ export default function CustomersPage() {
                     </span>
                   </button>
                   <button onClick={() => openEdit(c)} title="تعديل بيانات العميل" className="mr-1 rounded-lg bg-white/[.06] p-2 text-slate-200 transition hover:bg-[#eaf3ff] hover:text-[#174ea6]"><Pencil size={16} /></button>
-                  <button onClick={async () => { if (!confirm(`حذف العميل ${c.name}؟`)) return; try { await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "deleteCustomer", id: c.id }) }); setRows((rows || []).filter((x) => x.id !== c.id)); } catch (e: any) { alert(e.message); } }} title="حذف العميل" className="rounded-lg bg-red-500/15 p-2 text-red-300"><Trash2 size={16} /></button>
+                  <button onClick={async () => {
+                    if (!confirm(`حذف العميل ${c.name}؟`)) return;
+                    const snapshot = rows ? [...rows] : null;
+                    const next = (rows || []).filter((x) => x.id !== c.id);
+                    setRows(next);
+                    setCached(CUSTOMERS_URL, { customers: next });
+                    try {
+                      await api("/api/manage", { method: "POST", body: JSON.stringify({ action: "deleteCustomer", id: c.id }) });
+                      invalidateCache("/api/admin-data?view=dashboard");
+                    } catch (e: any) {
+                      if (snapshot) {
+                        setRows(snapshot);
+                        setCached(CUSTOMERS_URL, { customers: snapshot });
+                      }
+                      alert(e.message);
+                    }
+                  }} title="حذف العميل" className="rounded-lg bg-red-500/15 p-2 text-red-300"><Trash2 size={16} /></button>
                   <button onClick={() => setOpen(isOpen ? null : c.id)} className="rounded-lg p-2 text-slate-400"><ChevronDown size={19} className={`transition ${isOpen ? "rotate-180" : ""}`} /></button>
                 </div>
                 {isOpen && (

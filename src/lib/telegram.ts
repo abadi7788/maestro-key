@@ -1,6 +1,6 @@
 import { db } from "@/db";
-import { customers, paymentMethods, payments, platforms, rentals } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { customers, paymentMethods, payments, platforms, rentals, settings } from "@/db/schema";
+import { eq, inArray } from "drizzle-orm";
 import {
   deleteReceiptFromStorage,
   downloadReceiptFromStorage,
@@ -17,6 +17,26 @@ function getTelegramConfig() {
   return { token, archiveChatId, adminChatId };
 }
 
+export async function resolveTelegramArchiveConfig(): Promise<{ token: string; archiveChatId: string }> {
+  const envCfg = getTelegramConfig();
+  if (envCfg.token && envCfg.archiveChatId) {
+    return { token: envCfg.token, archiveChatId: envCfg.archiveChatId };
+  }
+  try {
+    const rows = await db
+      .select({ key: settings.key, value: settings.value })
+      .from(settings)
+      .where(inArray(settings.key, ["telegram_bot_token", "telegram_archive_chat_id"]));
+    const map = new Map(rows.map((r) => [r.key, r.value.trim()]));
+    return {
+      token: envCfg.token || map.get("telegram_bot_token") || "",
+      archiveChatId: envCfg.archiveChatId || map.get("telegram_archive_chat_id") || "",
+    };
+  } catch {
+    return { token: envCfg.token, archiveChatId: envCfg.archiveChatId };
+  }
+}
+
 export function isTelegramArchiveConfigured(): boolean {
   const { token, archiveChatId } = getTelegramConfig();
   return Boolean(token && archiveChatId);
@@ -28,7 +48,7 @@ export async function sendPhotoToTelegramArchive(opts: {
   filename: string;
   caption: string;
 }): Promise<{ ok: boolean; messageId?: number; error?: string }> {
-  const { token, archiveChatId } = getTelegramConfig();
+  const { token, archiveChatId } = await resolveTelegramArchiveConfig();
   if (!token || !archiveChatId) {
     return { ok: false, error: "TELEGRAM_BOT_TOKEN or TELEGRAM_ARCHIVE_CHAT_ID not configured" };
   }
@@ -55,8 +75,9 @@ export async function sendDocumentToTelegramArchive(opts: {
   buffer: Buffer;
   filename: string;
   caption?: string;
+  mimeType?: string;
 }): Promise<{ ok: boolean; messageId?: number; error?: string }> {
-  const { token, archiveChatId } = getTelegramConfig();
+  const { token, archiveChatId } = await resolveTelegramArchiveConfig();
   if (!token || !archiveChatId) {
     return { ok: false, error: "TELEGRAM_BOT_TOKEN or TELEGRAM_ARCHIVE_CHAT_ID not configured" };
   }
@@ -64,7 +85,7 @@ export async function sendDocumentToTelegramArchive(opts: {
   const form = new FormData();
   form.append("chat_id", archiveChatId);
   if (opts.caption) form.append("caption", opts.caption.slice(0, 1024));
-  const blob = new Blob([new Uint8Array(opts.buffer)], { type: "application/gzip" });
+  const blob = new Blob([new Uint8Array(opts.buffer)], { type: opts.mimeType || "application/gzip" });
   form.append("document", blob, opts.filename);
 
   const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
