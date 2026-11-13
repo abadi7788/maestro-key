@@ -1,37 +1,55 @@
 import { pool } from "@/db";
 
 /**
- * ترقية ذاتية وآمنة لقاعدة البيانات (Self-Healing Schema).
+ * ترقية وتأسيس ذاتي لقاعدة البيانات (Auto-Create & Self-Healing Schema).
  *
- * المشكلة التي تحلها: عند نشر نسخة جديدة على Vercel/Neon قبل تنفيذ
- * ملف الـ SQL يدوياً، تنهار المسارات التي تستعلم أعمدة جديدة بخطأ 500
- * (مثل: column "is_lifetime" does not exist).
- *
- * الحل: قبل أي استعلام، نتأكد من وجود كل الجداول والأعمدة.
- *  • كل عبارة مستقلة (بدون معاملة واحدة) — فشل عبارة لا يلغي البقية
- *  • كل العبارات بصيغة IF NOT EXISTS — آمنة للتكرار
- *  • لا يوجد أي حذف بيانات إطلاقاً (لا DROP ولا DELETE)
- *  • تعمل مرة واحدة لكل نسخة سيرفر (تُحفظ في الذاكرة)
+ * عند الاتصال بقاعدة Supabase جديدة وفارغة تماماً:
+ *  1) يستخدم اتصالاً واحداً من الـ Pool (client = await pool.connect) بدلاً من فتح 122 اتصالاً
+ *  2) ينشئ جميع الجداول الـ 16 كاملة بجميع أعمدتها وقيودها وفهارسها دفعة واحدة
+ *  3) يُجري الترقية الآمنة (ADD COLUMN IF NOT EXISTS) فقط عند الحاجة لقواعد البيانات القديمة
+ *  4) يتحقق فعلياً من وجود الجداول الـ 16 في information_schema قبل اعتماد _schema_meta
+ *  5) في حال فشل الاتصال أو تعذر إنشاء جدول، لا يُعلّم المخطط كمكتمل ويُسجّل سبب الخطأ الحقيقي
  */
 
-const STATEMENTS: string[] = [
-  // ---------- 1) الجداول (يُنشأ الناقص فقط) ----------
+const REQUIRED_TABLES = [
+  "users",
+  "platforms",
+  "payment_methods",
+  "customers",
+  "accounts",
+  "profiles",
+  "rentals",
+  "payments",
+  "alerts",
+  "push_subscriptions",
+  "email_codes",
+  "audit_logs",
+  "settings",
+  "whatsapp_logs",
+  "wallet_balances",
+  "wallet_transactions",
+] as const;
+
+// ---------- 1) إنشاء الجداول الـ 16 كاملة من الصفر (قواعد البيانات الفارغة والجديدة) ----------
+const CREATE_TABLE_STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
-    username VARCHAR(80) NOT NULL,
+    username VARCHAR(80) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     display_name VARCHAR(120) NOT NULL,
-    role VARCHAR(20) NOT NULL DEFAULT 'EMPLOYEE',
+    role VARCHAR(20) NOT NULL DEFAULT 'USER',
+    wallet_balance NUMERIC(12, 2) DEFAULT '0.00',
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     failed_attempts INTEGER NOT NULL DEFAULT 0,
     locked_until TIMESTAMP,
     last_login_at TIMESTAMP,
     email VARCHAR(180),
+    permissions TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS platforms (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(120) NOT NULL,
+    name VARCHAR(120) NOT NULL UNIQUE,
     color VARCHAR(20) NOT NULL DEFAULT '#0f172a',
     short_name VARCHAR(10) NOT NULL DEFAULT '▶',
     image_url TEXT,
@@ -40,18 +58,19 @@ const STATEMENTS: string[] = [
     extra_field_label VARCHAR(200),
     is_lifetime BOOLEAN NOT NULL DEFAULT FALSE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    low_stock_threshold INTEGER NOT NULL DEFAULT 3,
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS payment_methods (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(120) NOT NULL,
+    name VARCHAR(120) NOT NULL UNIQUE,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS customers (
     id SERIAL PRIMARY KEY,
     name VARCHAR(160) NOT NULL,
-    phone VARCHAR(40) NOT NULL,
+    phone VARCHAR(40) NOT NULL UNIQUE,
     notes TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
@@ -86,6 +105,9 @@ const STATEMENTS: string[] = [
     pin VARCHAR(40),
     is_occupied BOOLEAN NOT NULL DEFAULT FALSE,
     current_rental_id INTEGER,
+    status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE',
+    sold_at TIMESTAMP,
+    sold_by INTEGER REFERENCES users(id),
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
   `CREATE TABLE IF NOT EXISTS rentals (
@@ -120,6 +142,8 @@ const STATEMENTS: string[] = [
     manual_link TEXT,
     manual_code_encrypted TEXT,
     manual_note TEXT,
+    refunded_at TIMESTAMP,
+    refund_reason TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT now(),
     updated_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
@@ -154,7 +178,7 @@ const STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS push_subscriptions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
-    endpoint TEXT NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
     p256dh TEXT NOT NULL,
     auth TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT now()
@@ -179,7 +203,7 @@ const STATEMENTS: string[] = [
   )`,
   `CREATE TABLE IF NOT EXISTS settings (
     id SERIAL PRIMARY KEY,
-    key VARCHAR(120) NOT NULL,
+    key VARCHAR(120) NOT NULL UNIQUE,
     value TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
@@ -193,20 +217,57 @@ const STATEMENTS: string[] = [
     status VARCHAR(40) NOT NULL DEFAULT 'QUEUED',
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
+  `CREATE TABLE IF NOT EXISTS wallet_balances (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(20) NOT NULL,
+    amount INTEGER NOT NULL,
+    balance_before INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
+    rental_id INTEGER REFERENCES rentals(id),
+    note TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+  )`,
+];
 
-  // ---------- 2) الأعمدة الناقصة ----------
+// ---------- 2) الفهارس الأساسية ----------
+const INDEX_STATEMENTS: string[] = [
+  `CREATE INDEX IF NOT EXISTS accounts_platform_idx ON accounts(platform_id)`,
+  `CREATE INDEX IF NOT EXISTS accounts_status_idx ON accounts(status)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS profiles_account_no_idx ON profiles(account_id, profile_no)`,
+  `CREATE INDEX IF NOT EXISTS profiles_available_idx ON profiles(account_id, status, id)`,
+  `CREATE INDEX IF NOT EXISTS rentals_customer_idx ON rentals(customer_id)`,
+  `CREATE INDEX IF NOT EXISTS rentals_status_idx ON rentals(status)`,
+  `CREATE INDEX IF NOT EXISTS rentals_account_idx ON rentals(account_id)`,
+  `CREATE INDEX IF NOT EXISTS payments_rental_idx ON payments(rental_id)`,
+  `CREATE INDEX IF NOT EXISTS wallet_balances_user_idx ON wallet_balances(user_id)`,
+  `CREATE INDEX IF NOT EXISTS wallet_transactions_user_idx ON wallet_transactions(user_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions(rental_id)`,
+];
+
+// ---------- 3) ترقية الأعمدة الناقصة لقواعد البيانات القديمة فقط ----------
+const UPGRADE_STATEMENTS: string[] = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(180)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_attempts INTEGER DEFAULT 0`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMP`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`,
-  `ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'EMPLOYEE'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'USER'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12, 2) DEFAULT '0.00'`,
 
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS image_url TEXT`,
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS delivery_mode VARCHAR(20) NOT NULL DEFAULT 'INSTANT_INVENTORY'`,
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS requires_customer_email BOOLEAN NOT NULL DEFAULT FALSE`,
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS extra_field_label VARCHAR(200)`,
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS is_lifetime BOOLEAN NOT NULL DEFAULT FALSE`,
+  `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 3`,
 
   `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS pin VARCHAR(40)`,
   `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS notes TEXT`,
@@ -228,6 +289,9 @@ const STATEMENTS: string[] = [
   `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS pin VARCHAR(40)`,
   `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS is_occupied BOOLEAN DEFAULT FALSE`,
   `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS current_rental_id INTEGER`,
+  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'`,
+  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP`,
+  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_by INTEGER REFERENCES users(id)`,
 
   `ALTER TABLE customers ADD COLUMN IF NOT EXISTS notes TEXT`,
 
@@ -252,6 +316,8 @@ const STATEMENTS: string[] = [
   `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS manual_link TEXT`,
   `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS manual_code_encrypted TEXT`,
   `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS manual_note TEXT`,
+  `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP`,
+  `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refund_reason TEXT`,
   `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()`,
 
   `ALTER TABLE payments ADD COLUMN IF NOT EXISTS receipt_image_data TEXT`,
@@ -285,47 +351,6 @@ const STATEMENTS: string[] = [
   `ALTER TABLE alerts ADD COLUMN IF NOT EXISTS href VARCHAR(200)`,
   `ALTER TABLE alerts ADD COLUMN IF NOT EXISTS for_user_id INTEGER`,
 
-  // 2026-01: حالة البروفايلات
-  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'`,
-  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP`,
-  `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_by INTEGER REFERENCES users(id)`,
-  `CREATE INDEX IF NOT EXISTS profiles_available_idx ON profiles(account_id, status, id)`,
-  `UPDATE profiles SET status = 'SOLD', sold_at = created_at WHERE is_occupied = true AND status = 'AVAILABLE'`,
-  `UPDATE profiles SET status = 'AVAILABLE' WHERE is_occupied = false AND status = 'SOLD'`,
-
-  // 2026-01: الصلاحيات اليدوية والرصيد
-  `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
-  `ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12, 2) DEFAULT '0.00'`,
-
-  // 2026-01: إرجاع الرصيد
-  `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMP`,
-  `ALTER TABLE rentals ADD COLUMN IF NOT EXISTS refund_reason TEXT`,
-
-  // 2026-01: تنبيه انخفاض المخزون
-  `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 3`,
-
-  // 2026-01: محفظة مايسترو كي (RYE / YER)
-  `CREATE TABLE IF NOT EXISTS wallet_balances (
-    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    balance INTEGER NOT NULL DEFAULT 0 CHECK (balance >= 0),
-    updated_at TIMESTAMP NOT NULL DEFAULT now()
-  )`,
-  `CREATE TABLE IF NOT EXISTS wallet_transactions (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type VARCHAR(20) NOT NULL,
-    amount INTEGER NOT NULL,
-    balance_before INTEGER NOT NULL,
-    balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
-    rental_id INTEGER REFERENCES rentals(id),
-    note TEXT,
-    created_by INTEGER REFERENCES users(id),
-    created_at TIMESTAMP NOT NULL DEFAULT now()
-  )`,
-  `CREATE INDEX IF NOT EXISTS wallet_transactions_user_idx ON wallet_transactions(user_id, created_at)`,
-  `CREATE INDEX IF NOT EXISTS wallet_transactions_rental_idx ON wallet_transactions(rental_id)`,
-
-  // ---------- 3) ترخية قيود قديمة + ضمان الافتراضيات + توحيد القيم ----------
   `ALTER TABLE accounts ALTER COLUMN expiry_date DROP NOT NULL`,
   `ALTER TABLE accounts ALTER COLUMN email DROP NOT NULL`,
   `ALTER TABLE accounts ALTER COLUMN password_encrypted DROP NOT NULL`,
@@ -338,61 +363,129 @@ const STATEMENTS: string[] = [
   `ALTER TABLE platforms ALTER COLUMN is_lifetime SET DEFAULT FALSE`,
   `ALTER TABLE rentals ALTER COLUMN is_lifetime SET DEFAULT FALSE`,
   `ALTER TABLE rentals ALTER COLUMN activation_status SET DEFAULT 'NOT_REQUIRED'`,
+  `UPDATE profiles SET status = 'SOLD', sold_at = created_at WHERE is_occupied = true AND status = 'AVAILABLE'`,
+  `UPDATE profiles SET status = 'AVAILABLE' WHERE is_occupied = false AND status = 'SOLD'`,
   `UPDATE platforms SET delivery_mode = 'INSTANT_INVENTORY' WHERE delivery_mode = 'INVENTORY'`,
   `UPDATE platforms SET delivery_mode = 'ON_DEMAND_EMAIL' WHERE delivery_mode = 'ON_DEMAND'`,
 ];
+
+const SCHEMA_META_VERSION = 2;
 
 const globalForSchema = globalThis as typeof globalThis & {
   __maestroSchemaEnsured?: boolean;
   __maestroSchemaPromise?: Promise<void> | null;
 };
 
+async function getExistingPublicTables(queryable: { query: (sql: string) => Promise<{ rows: any[] }> }): Promise<Set<string>> {
+  const res = await queryable.query(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`
+  );
+  return new Set((res.rows || []).map((r: any) => String(r.table_name)));
+}
+
 export async function ensureSchema(): Promise<void> {
   if (globalForSchema.__maestroSchemaEnsured) return;
+  if (!process.env.DATABASE_URL?.trim()) return;
   if (globalForSchema.__maestroSchemaPromise) return globalForSchema.__maestroSchemaPromise;
 
   globalForSchema.__maestroSchemaPromise = (async () => {
-    // 1) فحص سريع جداً: إذا كانت قاعدة البيانات محدثة مسبقاً نخرج فوراً بعد استعلام واحد فقط (10ms بدلاً من 115 استعلام)
+    const client = await pool.connect();
     try {
-      const check = await pool.query(
-        "SELECT version FROM _schema_meta WHERE version = 1 LIMIT 1"
-      );
-      if (check.rows?.length) {
-        globalForSchema.__maestroSchemaEnsured = true;
-        return;
-      }
-    } catch {
-      // جدول البيانات الوصفية غير موجود بعد — سينشأ الآن في أول تشغيل
-    }
-
-    let failed = 0;
-    for (const sql of STATEMENTS) {
+      // ضمان العمل داخل public schema في Supabase / Postgres
       try {
-        await pool.query(sql);
+        await client.query(`CREATE SCHEMA IF NOT EXISTS public`);
+        await client.query(`SET search_path TO public`);
       } catch {
-        failed++;
+        // تجاهل إذا كانت الصلاحية مقيدة على مستوى إنشاء schema وكان public موجوداً بالفعل
       }
-    }
 
-    try {
-      await pool.query(
-        "CREATE TABLE IF NOT EXISTS _schema_meta (version INT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT NOW())"
-      );
-      await pool.query(
-        "INSERT INTO _schema_meta (version) VALUES (1) ON CONFLICT (version) DO NOTHING"
-      );
-    } catch {}
+      // 1) فحص سريع: هل كل الجداول الـ 16 موجودة والترقية version=2 مطبقة؟
+      const initialTables = await getExistingPublicTables(client);
+      const missingBefore = REQUIRED_TABLES.filter((t) => !initialTables.has(t));
 
-    globalForSchema.__maestroSchemaEnsured = true;
-    if (failed > 0) {
-      console.log(`[schema-check] initial schema check finished (${failed} skipped)`);
+      if (missingBefore.length === 0 && initialTables.has("_schema_meta")) {
+        try {
+          const metaCheck = await client.query(
+            `SELECT version FROM _schema_meta WHERE version = $1 LIMIT 1`,
+            [SCHEMA_META_VERSION]
+          );
+          if (metaCheck.rows?.length) {
+            globalForSchema.__maestroSchemaEnsured = true;
+            return;
+          }
+        } catch {
+          // نتابع التهيئة الكاملة
+        }
+      }
+
+      const isFreshDatabase = missingBefore.length === REQUIRED_TABLES.length;
+      const errors: string[] = [];
+
+      // 2) إنشاء جميع الجداول الـ 16 بالترتيب (CREATE TABLE IF NOT EXISTS)
+      for (const sql of CREATE_TABLE_STATEMENTS) {
+        try {
+          await client.query(sql);
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          errors.push(msg);
+          console.error("[schema-check] CREATE TABLE error:", msg);
+        }
+      }
+
+      // 3) إذا كانت قاعدة بيانات قديمة (ليست فارغة)، ننفذ ترقية الأعمدة الناقصة
+      if (!isFreshDatabase) {
+        for (const sql of UPGRADE_STATEMENTS) {
+          try {
+            await client.query(sql);
+          } catch (err: any) {
+            const msg = err?.message || String(err);
+            if (errors.length < 5) errors.push(msg);
+          }
+        }
+      }
+
+      // 4) إنشاء الفهارس الأساسية (حتى على القاعدة الجديدة)
+      for (const sql of INDEX_STATEMENTS) {
+        try {
+          await client.query(sql);
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          if (errors.length < 5) errors.push(msg);
+        }
+      }
+
+      // 5) تحقق فعلي من وجود جميع الجداول الـ 16 في القاعدة قبل اعتماد المخطط
+      const finalTables = await getExistingPublicTables(client);
+      const stillMissing = REQUIRED_TABLES.filter((t) => !finalTables.has(t));
+
+      if (stillMissing.length > 0) {
+        throw new Error(
+          `تعذر إنشاء الجداول التالية (${stillMissing.join(", ")}): ${errors[0] || "خطأ غير معروف"}`
+        );
+      }
+
+      // 6) تسجيل اكتمال المخطط بنجاح
+      await client.query(
+        `CREATE TABLE IF NOT EXISTS _schema_meta (version INT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT NOW())`
+      );
+      await client.query(
+        `INSERT INTO _schema_meta (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+        [SCHEMA_META_VERSION]
+      );
+
+      globalForSchema.__maestroSchemaEnsured = true;
+      console.log(
+        `[schema-check] ${isFreshDatabase ? "Fresh database initialized (16 tables created)" : "Schema verified & upgraded"} successfully.`
+      );
+    } finally {
+      client.release();
     }
   })().catch((e) => {
-    console.error("[schema-check] error:", e);
+    console.error("[schema-check] error:", e?.message || e);
+    globalForSchema.__maestroSchemaEnsured = false;
     globalForSchema.__maestroSchemaPromise = null;
+    throw e;
   });
 
   return globalForSchema.__maestroSchemaPromise;
 }
-
-

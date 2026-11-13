@@ -30,7 +30,7 @@ async function doSeed() {
       displayName: "مدير مايسترو كي",
       role: "ADMIN",
     },
-  ]);
+  ]).onConflictDoNothing();
 
   await db.insert(platforms).values([
     { name: "نتفليكس Netflix", color: "#b91c1c", shortName: "N", imageUrl: "/platforms/netflix.png" },
@@ -39,14 +39,14 @@ async function doSeed() {
     { name: "يوتيوب بريميوم", color: "#dc2626", shortName: "▶", imageUrl: "/platforms/youtube.png" },
     { name: "OSN+", color: "#0f766e", shortName: "O", imageUrl: "/platforms/osn.png" },
     { name: "TOD / beIN", color: "#7c2d12", shortName: "T", imageUrl: "/platforms/tod.png" },
-  ]);
+  ]).onConflictDoNothing();
 
   await db.insert(paymentMethods).values([
     { name: "بنك الكريمي" },
     { name: "بنك عدن" },
     { name: "بنك القطيبي" },
     { name: "حواله عبر الشبكة الموحدة" },
-  ]);
+  ]).onConflictDoNothing();
 
   await db.insert(settings).values([
     { key: "whatsapp_expiry_template", value: "مرحباً {{name}} 👋\nتنبيه من متجر مايسترو كي 🔑\nاشتراكك في {{platform}} سينتهي بتاريخ {{end_date}} (بعد {{days}} يوم).\nللتجديد بدون انقطاع، حوّل مبلغ التجديد وأرسل السند هنا وسنمدّد اشتراكك فوراً.\nشكراً لثقتك بنا." },
@@ -56,7 +56,7 @@ async function doSeed() {
     { key: "store_name", value: "متجر مايسترو كي" },
     { key: "alert_days_before", value: "2" },
     { key: "whatsapp_provider", value: "WHATSAPP_LINK" },
-  ]);
+  ]).onConflictDoNothing();
 }
 
 const globalForSeed = globalThis as typeof globalThis & {
