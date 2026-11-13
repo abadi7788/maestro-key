@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 
-import { api, fetchMe, type Me } from "@/lib/client";
+import { api, clearClientCache, fetchMe, getCached, getCachedMe, setCached, type Me } from "@/lib/client";
 import { isAdminRole } from "@/lib/roles";
 import BrandLogo from "@/components/BrandLogo";
 import AlertWatcher from "@/components/AlertWatcher";
@@ -30,10 +30,14 @@ const NAV: NavItem[] = [
   { href: "/settings", label: "الإعدادات", icon: <Settings size={20} />, adminOnly: true },
 ];
 
+const BADGE_URL = "/api/admin-data?view=badge";
+
 export default function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname(); const router = useRouter();
-  const [me, setMe] = useState<any>(null); const [loading, setLoading] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false); const [inboxCount, setInboxCount] = useState(0);
+  const [me, setMe] = useState<Me | null>(() => getCachedMe());
+  const [loading, setLoading] = useState<boolean>(() => !getCachedMe());
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [inboxCount, setInboxCount] = useState<number>(() => getCached<{ inboxCount: number }>(BADGE_URL)?.inboxCount ?? 0);
   const [pwOpen, setPwOpen] = useState(false);
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
@@ -41,32 +45,42 @@ export default function Shell({ children }: { children: ReactNode }) {
   const [pwMsg, setPwMsg] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     fetchMe().then(async (u) => {
-      if (!u) { router.replace("/login"); return; }
-      setMe(u); setLoading(false);
-      if (isAdminRole(u.role)) {
-        if (pathname === "/inbox") {
-          setInboxCount(0);
-          return;
-        }
+      if (cancelled) return;
+      if (!u) {
+        clearClientCache();
+        router.replace("/login");
+        return;
+      }
+      setMe(u);
+      setLoading(false);
+      if (isAdminRole(u.role) && pathname !== "/inbox") {
         try {
-          const dash = await api("/api/admin-data?view=dashboard").catch(() => ({ stats: { inboxCount: 0 } }));
-          setInboxCount(dash?.stats?.inboxCount ?? 0);
+          const badge = await api<{ inboxCount: number }>(BADGE_URL);
+          if (!cancelled) {
+            const cnt = badge?.inboxCount ?? 0;
+            setCached(BADGE_URL, { inboxCount: cnt });
+            setInboxCount(cnt);
+          }
         } catch {}
       }
     });
-  }, [pathname, router]);
+    return () => { cancelled = true; };
+    // Run on mount only — avoids re-querying /api/auth + dashboard on every tab navigation
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (pathname === "/inbox") setInboxCount(0);
+  }, [pathname]);
 
   useEffect(() => {
     const handleInboxRead = (e: any) => {
       const cnt = e?.detail?.count;
-      if (pathname === "/inbox") {
-        setInboxCount(0);
-      } else if (typeof cnt === "number") {
-        setInboxCount(cnt);
-      } else {
-        setInboxCount(0);
-      }
+      const next = pathname === "/inbox" ? 0 : (typeof cnt === "number" ? cnt : 0);
+      setInboxCount(next);
+      setCached(BADGE_URL, { inboxCount: next });
     };
     window.addEventListener("maestro-inbox-read", handleInboxRead);
     return () => window.removeEventListener("maestro-inbox-read", handleInboxRead);
@@ -80,8 +94,10 @@ export default function Shell({ children }: { children: ReactNode }) {
           setInboxCount(0);
         } else {
           try {
-            const dash = await api("/api/admin-data?view=dashboard").catch(() => ({ stats: { inboxCount: 0 } }));
-            setInboxCount(dash?.stats?.inboxCount ?? 0);
+            const badge = await api<{ inboxCount: number }>(BADGE_URL);
+            const cnt = badge?.inboxCount ?? 0;
+            setCached(BADGE_URL, { inboxCount: cnt });
+            setInboxCount(cnt);
           } catch {}
         }
       }
@@ -118,9 +134,10 @@ export default function Shell({ children }: { children: ReactNode }) {
     ? visibleItems.filter((n) => ["/sale", "/renewals", "/my-sales"].includes(n.href))
     : visibleItems.filter((n) => ["/sale", "/renewals", "/my-sales", "/dashboard"].includes(n.href));
 
-  async function logout() { 
-    await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "logout" }) }); 
-    router.replace("/login"); 
+  async function logout() {
+    clearClientCache();
+    await api("/api/auth", { method: "POST", body: JSON.stringify({ action: "logout" }) }).catch(() => {});
+    router.replace("/login");
   }
 
   const linkCls = (href: string) =>

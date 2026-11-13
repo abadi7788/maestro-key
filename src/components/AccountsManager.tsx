@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { Boxes, Eye, EyeOff, KeyRound, Link2, Pencil, Plus, RotateCcw, Search, Ticket, Trash2, XOctagon } from "lucide-react";
-import { api, fmtDate, daysLeft } from "@/lib/client";
+import { api, cachedApi, fmtDate, daysLeft, getCached, invalidateCache, setCached } from "@/lib/client";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, Spinner, accountBadge } from "@/components/ui";
 
 interface ProfileItem {
@@ -13,8 +13,9 @@ interface ProfileItem {
 }
 
 export default function AccountsManager({ trash = false }: { trash?: boolean }) {
-  const [rows, setRows] = useState<any[] | null>(null);
-  const [meta, setMeta] = useState<any>(null);
+  const accountsUrl = `/api/accounts${trash ? "?trash=1" : ""}`;
+  const [rows, setRows] = useState<any[] | null>(() => getCached<any>(accountsUrl)?.accounts ?? null);
+  const [meta, setMeta] = useState<any>(() => getCached("/api/meta"));
   const [q, setQ] = useState(""); const [platFilter, setPlatFilter] = useState("");
   const [showForm, setShowForm] = useState(false); const [editing, setEditing] = useState<any>(null);
 
@@ -57,31 +58,62 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
   const [pwFor, setPwFor] = useState<any>(null); const [newPw, setNewPw] = useState("");
   const [busy, setBusy] = useState(false); const [msg, setMsg] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     const [a, m] = await Promise.all([
-      api(`/api/accounts${trash ? "?trash=1" : ""}`).catch(() => ({ accounts: [] })),
-      api("/api/meta").catch(() => null)
+      cachedApi(accountsUrl, undefined, { force }).catch(() => null),
+      cachedApi("/api/meta", undefined, { force }).catch(() => null)
     ]);
-    setRows(a.accounts); setMeta(m);
-  }, [trash]);
+    if (a?.accounts) setRows(a.accounts);
+    else if (!rows) setRows([]);
+    if (m) setMeta(m);
+  }, [accountsUrl]);
 
-  useEffect(() => { load(); }, [load]);
-  useAutoRefresh(load, 25000);
+  useEffect(() => { void load(false); }, [load]);
+  useAutoRefresh(() => load(true), 25000);
 
 
   async function act(body: any, okMsg: string, retryForce = false): Promise<boolean> {
     setBusy(true); setMsg("");
+    const prevRows = rows ? [...rows] : null;
+
+    if (rows) {
+      let next = rows;
+      if (body.action === "moveToTrash" || body.action === "restore" || body.action === "permanentDelete" || body.action === "deleteExpired") {
+        next = rows.filter((a) => a.id !== body.accountId);
+      } else if (body.action === "emptyTrash") {
+        next = rows.filter((a) => a.totalRentals > 0);
+      } else if (body.action === "confirmPasswordChange") {
+        next = rows.map((a) => a.id === body.accountId ? { ...a, status: "AVAILABLE" } : a);
+      } else if (body.action === "restoreAccount") {
+        next = rows.map((a) => a.id === body.accountId ? { ...a, status: "AVAILABLE", currentRentals: [] } : a);
+      } else if (body.action === "restoreProfile") {
+        next = rows.map((a) => ({
+          ...a,
+          profiles: (a.profiles || []).map((p: any) => p.id === body.profileId ? { ...p, isOccupied: false, status: "AVAILABLE", pin: body.newPin ?? p.pin, rental: null } : p),
+        }));
+      }
+      setRows(next);
+      setCached(accountsUrl, { accounts: next });
+    }
+
     try { 
       await api("/api/actions", { method: "POST", body: JSON.stringify(body) }); 
-      setMsg("✓ " + okMsg); 
-      await load(); 
+      setMsg("✓ " + okMsg);
+      invalidateCache("/api/admin-data");
+      invalidateCache("/api/meta");
+      invalidateCache("/api/accounts");
+      void load(true); 
       return true; 
     } catch (e: any) {
+      if (prevRows) {
+        setRows(prevRows);
+        setCached(accountsUrl, { accounts: prevRows });
+      }
       if (e.status === 409 && e.data?.needsConfirmation && !retryForce) {
         if (confirm(e.data.error)) return act({ ...body, force: true }, okMsg, true);
       }
       setMsg("⚠️ " + e.message); 
-      return false;
+      return false; 
     } finally { setBusy(false); }
   }
 
@@ -104,6 +136,7 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
 
   async function saveForm() {
     setBusy(true); setMsg("");
+    const prevRows = rows ? [...rows] : null;
     try {
       const kind = form.deliveryKind === "INVITE_LINK" || form.deliveryKind === "LICENSE_KEY" ? form.deliveryKind : "CREDENTIALS";
       if (!editing) {
@@ -118,15 +151,35 @@ export default function AccountsManager({ trash = false }: { trash?: boolean }) 
         delete payload.profilesList;
       }
 
+      if (editing && rows) {
+        const next = rows.map((a) => a.id === editing.id ? {
+          ...a,
+          email: payload.email || null,
+          inviteLink: payload.inviteLink || null,
+          notes: payload.notes || null,
+          salePrice: payload.salePrice ? Number(payload.salePrice) : null,
+          expiryDate: payload.expiryMode === "DATE" && payload.expiryDate ? payload.expiryDate : null,
+          deliveryKind: kind,
+        } : a);
+        setRows(next);
+        setCached(accountsUrl, { accounts: next });
+      }
+
       if (editing) await api("/api/accounts", { method: "PUT", body: JSON.stringify({ id: editing.id, ...payload }) });
       else await api("/api/accounts", { method: "POST", body: JSON.stringify(payload) });
 
       setMsg(editing ? "✓ تم حفظ التعديلات" : "✓ تمت إضافة الحساب للمخزون"); 
       setShowForm(false); 
       setEditing(null); 
-      setForm(emptyForm); 
-      await load();
-    } catch (e: any) { 
+      setForm(emptyForm);
+      invalidateCache("/api/admin-data");
+      invalidateCache("/api/meta");
+      void load(true);
+    } catch (e: any) {
+      if (prevRows) {
+        setRows(prevRows);
+        setCached(accountsUrl, { accounts: prevRows });
+      }
       setMsg("⚠️ " + e.message); 
     } finally { 
       setBusy(false); 

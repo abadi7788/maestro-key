@@ -3,14 +3,22 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import { Check, Copy, ExternalLink, KeyRound, Loader2, Lock, MessageCircle, Pencil, ReceiptText, RotateCcw, Search, ShieldAlert, Trash2, Undo2, X } from "lucide-react";
-import { api, fetchMe, fmtDate, fmtDateTime, money, waLink, daysLeft, type Me } from "@/lib/client";
+import { api, cachedApi, fetchMe, fmtDate, fmtDateTime, getCached, getCachedMe, invalidateCache, money, setCached, waLink, daysLeft, type Me } from "@/lib/client";
 import { isAdminRole } from "@/lib/roles";
 import { Badge, CopyBtn, Empty, Modal, PlatformLogo, ReceiptButton, Spinner, paymentBadge, rentalBadge } from "@/components/ui";
 
 export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
-  const [me, setMe] = useState<Me | null>(null);
-  const [rows, setRows] = useState<any[] | null>(null);
-  const [platformsList, setPlatformsList] = useState<any[]>([]);
+  const buildUrl = (st: string, ps: string) => {
+    const params = new URLSearchParams({ view: mode });
+    if (st) params.set("status", st);
+    if (ps) params.set("paymentStatus", ps);
+    return `/api/rentals?${params}`;
+  };
+  const baseCache = getCached<any>(buildUrl("", ""));
+
+  const [me, setMe] = useState<Me | null>(() => getCachedMe());
+  const [rows, setRows] = useState<any[] | null>(() => baseCache?.rentals ?? null);
+  const [platformsList, setPlatformsList] = useState<any[]>(() => baseCache?.platforms ?? []);
   const [category, setCategory] = useState("ALL");
   const [status, setStatus] = useState(""); const [payStatus, setPayStatus] = useState(""); const [q, setQ] = useState("");
   const [rejecting, setRejecting] = useState<any>(null); const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [msg, setMsg] = useState("");
@@ -102,23 +110,61 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
     }
   }
 
-  const load = useCallback(async () => {
-    const params = new URLSearchParams({ view: mode });
-    if (status) params.set("status", status);
-    if (payStatus) params.set("paymentStatus", payStatus);
-    const d = await api(`/api/rentals?${params}`).catch(() => ({ rentals: [], platforms: [] }));
-    setRows(d.rentals);
-    if (d.platforms) setPlatformsList(d.platforms);
+  const load = useCallback(async (force = false) => {
+    const url = buildUrl(status, payStatus);
+    const d = await cachedApi(url, undefined, { force }).catch(() => null);
+    if (d?.rentals) {
+      setRows(d.rentals);
+      if (d.platforms) setPlatformsList(d.platforms);
+    } else if (!rows) {
+      setRows([]);
+    }
   }, [mode, status, payStatus]);
 
-  useEffect(() => { fetchMe().then(setMe); load(); }, [load]);
-  useAutoRefresh(load, 25000);
-
+  useEffect(() => { fetchMe().then((u) => { if (u) setMe(u); }); void load(false); }, [load]);
+  useAutoRefresh(() => load(true), 25000);
 
   async function act(body: any, okMsg: string) {
     setBusy(true); setMsg("");
-    try { await api("/api/actions", { method: "POST", body: JSON.stringify(body) }); setMsg(okMsg); setRejecting(null); setReason(""); await load(); }
-    catch (e: any) { setMsg("⚠️ " + e.message); } finally { setBusy(false); }
+    const currentUrl = buildUrl(status, payStatus);
+    const prevRows = rows ? [...rows] : null;
+
+    if (rows) {
+      let next = rows;
+      if (body.action === "confirmPayment") {
+        next = rows.map((r) => ({
+          ...r,
+          payments: (r.payments || []).map((p: any) => p.id === body.paymentId ? { ...p, status: "CONFIRMED" } : p),
+        }));
+      } else if (body.action === "rejectPayment") {
+        next = rows.map((r) => {
+          if (!(r.payments || []).some((p: any) => p.id === body.paymentId)) return r;
+          return {
+            ...r,
+            status: "REJECTED",
+            payments: (r.payments || []).map((p: any) => p.id === body.paymentId ? { ...p, status: "REJECTED", rejectionReason: body.reason } : p),
+          };
+        });
+      }
+      setRows(next);
+      setCached(currentUrl, { rentals: next, platforms: platformsList });
+    }
+    setRejecting(null); setReason("");
+
+    try {
+      await api("/api/actions", { method: "POST", body: JSON.stringify(body) });
+      setMsg(okMsg);
+      invalidateCache("/api/admin-data");
+      invalidateCache("/api/accounts");
+      invalidateCache("/api/meta");
+      void load(true);
+    } catch (e: any) {
+      if (prevRows) {
+        setRows(prevRows);
+        setCached(currentUrl, { rentals: prevRows, platforms: platformsList });
+      }
+      setMsg("⚠️ " + e.message);
+    } finally { setBusy(false); }
   }
 
   const filtered = (rows || []).filter((r) => {
@@ -546,25 +592,54 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
               e.preventDefault();
               setEditBusy(true);
               setEditErr("");
+              const currentUrl = buildUrl(status, payStatus);
+              const prevRows = rows ? [...rows] : null;
+              const target = editingRental;
+              const snapshotForm = { ...editForm };
+              const nextPlatName = platformsList.find((p) => p.id === Number(snapshotForm.platformId))?.name || target.platformName;
+
+              // Optimistic update
+              if (rows) {
+                const next = rows.map((x) => x.id === target.id ? {
+                  ...x,
+                  customerName: snapshotForm.customerName,
+                  customerPhone: snapshotForm.customerPhone,
+                  platformId: Number(snapshotForm.platformId),
+                  platformName: nextPlatName,
+                  isLifetime: snapshotForm.isLifetime,
+                  endDate: snapshotForm.isLifetime ? x.endDate : snapshotForm.endDate,
+                  customerEmail: snapshotForm.customerEmail,
+                  customerExtra: snapshotForm.customerExtra,
+                } : x);
+                setRows(next);
+                setCached(currentUrl, { rentals: next, platforms: platformsList });
+              }
+              setEditingRental(null);
+              setMsg("✓ تم حفظ تعديلات الاشتراك بنجاح");
+
               try {
                 await api("/api/actions", {
                   method: "POST",
                   body: JSON.stringify({
                     action: "editRental",
-                    rentalId: editingRental.id,
-                    customerName: editForm.customerName,
-                    customerPhone: editForm.customerPhone,
-                    platformId: Number(editForm.platformId),
-                    endDate: editForm.isLifetime ? null : editForm.endDate,
-                    isLifetime: editForm.isLifetime,
-                    customerEmail: editForm.customerEmail,
-                    customerExtra: editForm.customerExtra,
+                    rentalId: target.id,
+                    customerName: snapshotForm.customerName,
+                    customerPhone: snapshotForm.customerPhone,
+                    platformId: Number(snapshotForm.platformId),
+                    endDate: snapshotForm.isLifetime ? null : snapshotForm.endDate,
+                    isLifetime: snapshotForm.isLifetime,
+                    customerEmail: snapshotForm.customerEmail,
+                    customerExtra: snapshotForm.customerExtra,
                   }),
                 });
-                setMsg("✓ تم حفظ تعديلات الاشتراك بنجاح");
-                setEditingRental(null);
-                await load();
+                invalidateCache("/api/admin-data");
+                void load(true);
               } catch (err: any) {
+                if (prevRows) {
+                  setRows(prevRows);
+                  setCached(currentUrl, { rentals: prevRows, platforms: platformsList });
+                }
+                setEditingRental(target);
                 setEditErr(err.message || "فشل تعديل بيانات الاشتراك");
               } finally {
                 setEditBusy(false);
@@ -670,19 +745,44 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
                 onClick={async () => {
                   setRollbackBusy(true);
                   setRollbackErr("");
+                  const currentUrl = buildUrl(status, payStatus);
+                  const prevRows = rows ? [...rows] : null;
+                  const target = rollbackRental;
+                  const reasonText = rollbackReason.trim() || "استرجاع من قبل الإدارة";
+
+                  // Optimistic update
+                  if (rows) {
+                    const next = rows.map((x) => x.id === target.id ? {
+                      ...x,
+                      status: "REFUNDED",
+                      refundReason: reasonText,
+                      payments: (x.payments || []).map((p: any) => ({ ...p, status: "REFUNDED" })),
+                    } : x);
+                    setRows(next);
+                    setCached(currentUrl, { rentals: next, platforms: platformsList });
+                  }
+                  setRollbackRental(null);
+                  setMsg("✓ تم استرجاع الاشتراك وإعادة الحساب للمخزون وتسوية السجل المالي");
+
                   try {
                     await api("/api/actions", {
                       method: "POST",
                       body: JSON.stringify({
                         action: "rollbackRental",
-                        rentalId: rollbackRental.id,
-                        reason: rollbackReason.trim() || "استرجاع من قبل الإدارة",
+                        rentalId: target.id,
+                        reason: reasonText,
                       }),
                     });
-                    setMsg("✓ تم استرجاع الاشتراك وإعادة الحساب للمخزون وتسوية السجل المالي");
-                    setRollbackRental(null);
-                    await load();
+                    invalidateCache("/api/admin-data");
+                    invalidateCache("/api/accounts");
+                    invalidateCache("/api/meta");
+                    void load(true);
                   } catch (err: any) {
+                    if (prevRows) {
+                      setRows(prevRows);
+                      setCached(currentUrl, { rentals: prevRows, platforms: platformsList });
+                    }
+                    setRollbackRental(target);
                     setRollbackErr(err.message || "تعذر إتمام الاسترجاع");
                   } finally {
                     setRollbackBusy(false);
@@ -734,20 +834,37 @@ export default function RentalsList({ mode }: { mode: "all" | "mine" }) {
                 onClick={async () => {
                   setDeleteBusy(true);
                   setDeleteErr("");
+                  const currentUrl = buildUrl(status, payStatus);
+                  const prevRows = rows ? [...rows] : null;
+                  const target = deleteRental;
+                  const pw = deletePassword;
+
                   try {
                     await api("/api/actions", {
                       method: "POST",
                       body: JSON.stringify({
                         action: "hardDeleteRental",
-                        rentalId: deleteRental.id,
-                        adminPassword: deletePassword,
+                        rentalId: target.id,
+                        adminPassword: pw,
                       }),
                     });
+                    if (rows) {
+                      const next = rows.filter((x) => x.id !== target.id);
+                      setRows(next);
+                      setCached(currentUrl, { rentals: next, platforms: platformsList });
+                    }
                     setMsg("✓ تم حذف الاشتراك نهائياً من قاعدة البيانات");
                     setDeleteRental(null);
                     setDeletePassword("");
-                    await load();
+                    invalidateCache("/api/admin-data");
+                    invalidateCache("/api/accounts");
+                    invalidateCache("/api/meta");
+                    void load(true);
                   } catch (err: any) {
+                    if (prevRows) {
+                      setRows(prevRows);
+                      setCached(currentUrl, { rentals: prevRows, platforms: platformsList });
+                    }
                     setDeleteErr(err.message || "كلمة مرور المدير غير صحيحة أو تعذر الحذف");
                   } finally {
                     setDeleteBusy(false);

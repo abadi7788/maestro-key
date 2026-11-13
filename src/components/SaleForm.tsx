@@ -6,16 +6,17 @@ import {
   Phone, Search, ShoppingCart, Sparkles, Trash2, User, Wallet, XCircle, RefreshCcw, Plus,
   Crown, UserRound, ScanLine, ArrowLeft, Zap, Hand, Coins,
 } from "lucide-react";
-import { api, fileToDataUrl, fmtDate, daysLeft, waLink, fetchMe } from "@/lib/client";
+import { api, cachedApi, fileToDataUrl, fmtDate, daysLeft, waLink, fetchMe, getCached, getCachedMe, invalidateCache } from "@/lib/client";
 import { Badge, CopyBtn, PlatformLogo, Spinner, rentalBadge } from "@/components/ui";
 import { normalizeDeliveryMode } from "@/lib/delivery";
 
 type Meta = any;
 
 export default function SaleForm() {
-  const [meta, setMeta] = useState<Meta>(null);
-  const [me, setMe] = useState<any>(null);
-  const [platformId, setPlatformId] = useState<number>(0);
+  const initialMeta = getCached("/api/meta");
+  const [meta, setMeta] = useState<Meta>(() => initialMeta);
+  const [me, setMe] = useState<any>(() => getCachedMe());
+  const [platformId, setPlatformId] = useState<number>(() => initialMeta?.platforms?.[0]?.id || 0);
   const [phone, setPhone] = useState(""); const [name, setName] = useState("");
   const [lookup, setLookup] = useState<any>(null); const [looking, setLooking] = useState(false);
   const [duration, setDuration] = useState(0); const [amount, setAmount] = useState("");
@@ -23,7 +24,7 @@ export default function SaleForm() {
   
   // Payment Type: RECEIPT (Bank Transfer) or WALLET
   const [paymentType, setPaymentType] = useState<"RECEIPT" | "WALLET">("RECEIPT");
-  const [bankId, setBankId] = useState<number>(0); const [ref, setRef] = useState("");
+  const [bankId, setBankId] = useState<number>(() => initialMeta?.paymentMethods?.[0]?.id || 0); const [ref, setRef] = useState("");
   const [receipt, setReceipt] = useState(""); const [forceNew, setForceNew] = useState(false);
   const [customerEmail, setCustomerEmail] = useState(""); const [customerExtra, setCustomerExtra] = useState("");
   const [deliverySource, setDeliverySource] = useState<"AUTO" | "MANUAL">("AUTO");
@@ -54,23 +55,24 @@ export default function SaleForm() {
   }
 
   useEffect(() => {
-    fetchMe().then((u) => setMe(u)).catch(() => {});
-    api("/api/meta").then((m) => {
+    fetchMe().then((u) => { if (u) setMe(u); }).catch(() => {});
+    cachedApi("/api/meta").then((m) => {
       setMeta(m);
       const q = new URLSearchParams(window.location.search);
       const qp = q.get("phone"); const qplat = Number(q.get("platformId") || 0);
       if (qp) setPhone(qp);
       if (qplat) setPlatformId(qplat);
-      else if (m.platforms?.[0]) setPlatformId(m.platforms[0].id);
-      if (m.paymentMethods?.[0]) setBankId(m.paymentMethods[0].id);
+      else if (m.platforms?.[0] && !platformId) setPlatformId(m.platforms[0].id);
+      if (m.paymentMethods?.[0] && !bankId) setBankId(m.paymentMethods[0].id);
     }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const onSync = async () => {
       const [m, u] = await Promise.all([
-        api("/api/meta").catch(() => null),
-        fetchMe().catch(() => null)
+        cachedApi("/api/meta", undefined, { force: true }).catch(() => null),
+        fetchMe(true).catch(() => null)
       ]);
       if (m) setMeta(m);
       if (u) setMe(u);
@@ -192,7 +194,13 @@ export default function SaleForm() {
           manualPin: accountType === "PROFILE" ? manualPin.trim() : null,
         }),
       });
-      setResult(d); window.scrollTo({ top: 0, behavior: "smooth" });
+      setResult(d);
+      invalidateCache("/api/rentals");
+      invalidateCache("/api/accounts");
+      invalidateCache("/api/admin-data");
+      invalidateCache("/api/meta");
+      void fetchMe(true).then((u) => { if (u) setMe(u); });
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (e: any) { 
       setErr(e.message); 
     } finally { 
