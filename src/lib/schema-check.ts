@@ -1,3 +1,4 @@
+import type { Pool, PoolClient } from "pg";
 import { pool } from "@/db";
 
 /**
@@ -371,11 +372,41 @@ const UPGRADE_STATEMENTS: string[] = [
 
 const SCHEMA_META_VERSION = 2;
 
+const HA_QUEUE_DDL = `CREATE TABLE IF NOT EXISTS _ha_sync_queue (
+  id SERIAL PRIMARY KEY,
+  sql_text TEXT NOT NULL,
+  params_json TEXT NOT NULL DEFAULT '[]',
+  table_name VARCHAR(80),
+  inserted_id INTEGER,
+  synced BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`;
+
+export const SERIAL_ID_TABLES = [
+  "users",
+  "platforms",
+  "payment_methods",
+  "customers",
+  "accounts",
+  "profiles",
+  "rentals",
+  "payments",
+  "alerts",
+  "push_subscriptions",
+  "email_codes",
+  "audit_logs",
+  "settings",
+  "whatsapp_logs",
+  "wallet_transactions",
+] as const;
+
 let isSchemaChecked = false;
 
 const globalForSchema = globalThis as typeof globalThis & {
   __maestroSchemaEnsured?: boolean;
   __maestroSchemaPromise?: Promise<void> | null;
+  __maestroPoolSchemaSynced?: WeakSet<object>;
+  __maestroPoolSchemaPromises?: WeakMap<object, Promise<void>>;
 };
 
 async function getExistingPublicTables(queryable: { query: (sql: string) => Promise<{ rows: any[] }> }): Promise<Set<string>> {
@@ -385,33 +416,60 @@ async function getExistingPublicTables(queryable: { query: (sql: string) => Prom
   return new Set((res.rows || []).map((r: any) => String(r.table_name)));
 }
 
-export async function ensureSchema(): Promise<void> {
-  if (isSchemaChecked || globalForSchema.__maestroSchemaEnsured) return;
-  if (!process.env.DATABASE_URL?.trim()) {
-    isSchemaChecked = true;
+export async function syncSequencesOnQueryable(
+  queryable: { query: (sql: string) => Promise<any> },
+  tables: readonly string[] = SERIAL_ID_TABLES
+): Promise<void> {
+  for (const tbl of tables) {
+    try {
+      await queryable.query(
+        `SELECT setval(pg_get_serial_sequence('${tbl}', 'id'), COALESCE((SELECT MAX(id) FROM "${tbl}"), 1), true)`
+      );
+    } catch {
+      // ignore if table has no sequence or permission issue
+    }
+  }
+}
+
+export async function ensureSchemaOnPool(
+  targetPool: Pool,
+  options?: { force?: boolean; label?: string; skipFastMeta?: boolean }
+): Promise<void> {
+  if (!globalForSchema.__maestroPoolSchemaSynced) {
+    globalForSchema.__maestroPoolSchemaSynced = new WeakSet<object>();
+  }
+  if (!globalForSchema.__maestroPoolSchemaPromises) {
+    globalForSchema.__maestroPoolSchemaPromises = new WeakMap<object, Promise<void>>();
+  }
+
+  if (!options?.force && globalForSchema.__maestroPoolSchemaSynced.has(targetPool)) {
     return;
   }
-  if (globalForSchema.__maestroSchemaPromise) return globalForSchema.__maestroSchemaPromise;
 
-  globalForSchema.__maestroSchemaPromise = (async () => {
-    // 0) فحص فائق السرعة (استعلام واحد فقط): إذا كان المخطط مؤسساً مسبقاً نخرج فوراً
-    try {
-      const fastCheck = await pool.query(
-        `SELECT version FROM _schema_meta WHERE version = $1 LIMIT 1`,
-        [SCHEMA_META_VERSION]
-      );
-      if (fastCheck.rows?.length) {
-        isSchemaChecked = true;
-        globalForSchema.__maestroSchemaEnsured = true;
-        return;
+  const existingPromise = globalForSchema.__maestroPoolSchemaPromises.get(targetPool);
+  if (existingPromise) return existingPromise;
+
+  const label = options?.label || "DB";
+  const run = (async () => {
+    if (!options?.force && !options?.skipFastMeta) {
+      try {
+        const fastCheck = await targetPool.query(
+          `SELECT version FROM _schema_meta WHERE version = $1 LIMIT 1`,
+          [SCHEMA_META_VERSION]
+        );
+        if (fastCheck.rows?.length) {
+          // Ensure _ha_sync_queue exists without re-running all DDL
+          await targetPool.query(HA_QUEUE_DDL).catch(() => {});
+          globalForSchema.__maestroPoolSchemaSynced!.add(targetPool);
+          return;
+        }
+      } catch {
+        // الجدول غير موجود أو القاعدة جديدة — نتابع التهيئة الكاملة
       }
-    } catch {
-      // الجدول غير موجود أو القاعدة جديدة — نتابع التهيئة الكاملة
     }
 
-    const client = await pool.connect();
+    const client: PoolClient = await targetPool.connect();
     try {
-      // ضمان العمل داخل public schema في Supabase / Postgres
       try {
         await client.query(`CREATE SCHEMA IF NOT EXISTS public`);
         await client.query(`SET search_path TO public`);
@@ -419,25 +477,22 @@ export async function ensureSchema(): Promise<void> {
         // تجاهل إذا كانت الصلاحية مقيدة وكان public موجوداً بالفعل
       }
 
-      // 1) فحص الجداول الموجودة حالياً
       const initialTables = await getExistingPublicTables(client);
       const missingBefore = REQUIRED_TABLES.filter((t) => !initialTables.has(t));
       const isFreshDatabase = missingBefore.length === REQUIRED_TABLES.length;
       const errors: string[] = [];
 
-      // 2) إنشاء جميع الجداول الـ 16 بالترتيب (CREATE TABLE IF NOT EXISTS)
       for (const sql of CREATE_TABLE_STATEMENTS) {
         try {
           await client.query(sql);
         } catch (err: any) {
           const msg = err?.message || String(err);
           errors.push(msg);
-          console.error("[schema-check] CREATE TABLE error:", msg);
+          console.error(`[schema-check:${label}] CREATE TABLE error:`, msg);
         }
       }
 
-      // 3) إذا كانت قاعدة بيانات قديمة (ليست فارغة)، ننفذ ترقية الأعمدة الناقصة
-      if (!isFreshDatabase) {
+      if (!isFreshDatabase || options?.force) {
         for (const sql of UPGRADE_STATEMENTS) {
           try {
             await client.query(sql);
@@ -448,7 +503,6 @@ export async function ensureSchema(): Promise<void> {
         }
       }
 
-      // 4) إنشاء الفهارس الأساسية (حتى على القاعدة الجديدة)
       for (const sql of INDEX_STATEMENTS) {
         try {
           await client.query(sql);
@@ -458,17 +512,19 @@ export async function ensureSchema(): Promise<void> {
         }
       }
 
-      // 5) تحقق فعلي من وجود جميع الجداول الـ 16 في القاعدة قبل اعتماد المخطط
+      try {
+        await client.query(HA_QUEUE_DDL);
+      } catch {}
+
       const finalTables = await getExistingPublicTables(client);
       const stillMissing = REQUIRED_TABLES.filter((t) => !finalTables.has(t));
 
       if (stillMissing.length > 0) {
         throw new Error(
-          `تعذر إنشاء الجداول التالية (${stillMissing.join(", ")}): ${errors[0] || "خطأ غير معروف"}`
+          `تعذر إنشاء الجداول التالية في ${label} (${stillMissing.join(", ")}): ${errors[0] || "خطأ غير معروف"}`
         );
       }
 
-      // 6) تسجيل اكتمال المخطط بنجاح
       await client.query(
         `CREATE TABLE IF NOT EXISTS _schema_meta (version INT PRIMARY KEY, applied_at TIMESTAMPTZ DEFAULT NOW())`
       );
@@ -477,14 +533,38 @@ export async function ensureSchema(): Promise<void> {
         [SCHEMA_META_VERSION]
       );
 
-      isSchemaChecked = true;
-      globalForSchema.__maestroSchemaEnsured = true;
+      globalForSchema.__maestroPoolSchemaSynced!.add(targetPool);
       console.log(
-        `[schema-check] ${isFreshDatabase ? "Fresh database initialized (16 tables created)" : "Schema verified & upgraded"} successfully.`
+        `[schema-check:${label}] ${isFreshDatabase ? "Fresh database initialized (16 tables created)" : "Schema verified & upgraded"} successfully.`
       );
     } finally {
       client.release();
     }
+  })()
+    .catch((e) => {
+      globalForSchema.__maestroPoolSchemaSynced?.delete(targetPool);
+      throw e;
+    })
+    .finally(() => {
+      globalForSchema.__maestroPoolSchemaPromises?.delete(targetPool);
+    });
+
+  globalForSchema.__maestroPoolSchemaPromises.set(targetPool, run);
+  return run;
+}
+
+export async function ensureSchema(): Promise<void> {
+  if (isSchemaChecked || globalForSchema.__maestroSchemaEnsured) return;
+  if (!process.env.DATABASE_URL?.trim() && !process.env.FALLBACK_DATABASE_URL?.trim() && !process.env.DATABASE_BACKUP_URL?.trim()) {
+    isSchemaChecked = true;
+    return;
+  }
+  if (globalForSchema.__maestroSchemaPromise) return globalForSchema.__maestroSchemaPromise;
+
+  globalForSchema.__maestroSchemaPromise = (async () => {
+    await ensureSchemaOnPool(pool, { label: "active" });
+    isSchemaChecked = true;
+    globalForSchema.__maestroSchemaEnsured = true;
   })().catch((e) => {
     console.error("[schema-check] error:", e?.message || e);
     isSchemaChecked = false;

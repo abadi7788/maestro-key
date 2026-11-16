@@ -10,6 +10,20 @@ import {
 
 export const TELEGRAM_ARCHIVED_MARKER = "tg://archived";
 
+const globalForTg = globalThis as typeof globalThis & {
+  __maestroTgCfgCache?: { token: string; archiveChatId: string; cachedAt: number };
+  __maestroHaAlertCooldowns?: Map<string, number>;
+};
+
+const HA_ALERT_COOLDOWN_MS = 15 * 60 * 1000; // 15 دقيقة
+
+export type HaAlertEventKey =
+  | "PRIMARY_FAILOVER"
+  | "PRIMARY_DOWN_NO_BACKUP"
+  | "PRIMARY_RECOVERED"
+  | "BACKUP_FAILURE"
+  | "SYNC_ERROR";
+
 function getTelegramConfig() {
   const token = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
   const archiveChatId = (process.env.TELEGRAM_ARCHIVE_CHAT_ID || "").trim();
@@ -20,20 +34,88 @@ function getTelegramConfig() {
 export async function resolveTelegramArchiveConfig(): Promise<{ token: string; archiveChatId: string }> {
   const envCfg = getTelegramConfig();
   if (envCfg.token && envCfg.archiveChatId) {
+    globalForTg.__maestroTgCfgCache = { ...envCfg, cachedAt: Date.now() };
     return { token: envCfg.token, archiveChatId: envCfg.archiveChatId };
   }
+
+  // استخدام الكاش الفوري إن وُجد (مفيد في حالات الطوارئ عند انقطاع القاعدة)
+  const cached = globalForTg.__maestroTgCfgCache;
+  if (cached && Date.now() - cached.cachedAt < 10 * 60 * 1000 && cached.token && cached.archiveChatId) {
+    return { token: envCfg.token || cached.token, archiveChatId: envCfg.archiveChatId || cached.archiveChatId };
+  }
+
   try {
     const rows = await db
       .select({ key: settings.key, value: settings.value })
       .from(settings)
       .where(inArray(settings.key, ["telegram_bot_token", "telegram_archive_chat_id"]));
     const map = new Map(rows.map((r) => [r.key, r.value.trim()]));
-    return {
-      token: envCfg.token || map.get("telegram_bot_token") || "",
-      archiveChatId: envCfg.archiveChatId || map.get("telegram_archive_chat_id") || "",
+    const resolved = {
+      token: envCfg.token || map.get("telegram_bot_token") || cached?.token || "",
+      archiveChatId: envCfg.archiveChatId || map.get("telegram_archive_chat_id") || cached?.archiveChatId || "",
     };
+    if (resolved.token && resolved.archiveChatId) {
+      globalForTg.__maestroTgCfgCache = { ...resolved, cachedAt: Date.now() };
+    }
+    return resolved;
   } catch {
-    return { token: envCfg.token, archiveChatId: envCfg.archiveChatId };
+    return {
+      token: envCfg.token || cached?.token || "",
+      archiveChatId: envCfg.archiveChatId || cached?.archiveChatId || "",
+    };
+  }
+}
+
+export async function sendHaEmergencyTelegramAlert(
+  eventKey: HaAlertEventKey,
+  title: string,
+  lines: string[] = []
+): Promise<{ sent: boolean; throttled?: boolean; error?: string }> {
+  if (!globalForTg.__maestroHaAlertCooldowns) {
+    globalForTg.__maestroHaAlertCooldowns = new Map<string, number>();
+  }
+
+  const now = Date.now();
+  const lastSent = globalForTg.__maestroHaAlertCooldowns.get(eventKey) || 0;
+  if (now - lastSent < HA_ALERT_COOLDOWN_MS) {
+    return { sent: false, throttled: true };
+  }
+
+  // تسجيل الوقت مبكراً لمنع إرسال تنبيهات متوازية مكررة خلال نفس اللحظة
+  globalForTg.__maestroHaAlertCooldowns.set(eventKey, now);
+
+  try {
+    const { token, archiveChatId } = await resolveTelegramArchiveConfig();
+    if (!token || !archiveChatId) {
+      globalForTg.__maestroHaAlertCooldowns.delete(eventKey);
+      return { sent: false, error: "Telegram archive bot/channel not configured" };
+    }
+
+    const timeAden = new Date().toLocaleString("en-GB", { timeZone: "Asia/Aden", hour12: false });
+    const text = [
+      title,
+      `━━━━━━━━━━━━━━━━━━`,
+      ...lines.filter(Boolean),
+      `🕒 الوقت (عدن): ${timeAden}`,
+    ]
+      .join("\n")
+      .slice(0, 4000);
+
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: archiveChatId, text }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const json = await res.json().catch(() => ({} as any));
+    if (!res.ok || !json?.ok) {
+      globalForTg.__maestroHaAlertCooldowns.delete(eventKey);
+      return { sent: false, error: json?.description || `HTTP ${res.status}` };
+    }
+    return { sent: true };
+  } catch (e: any) {
+    globalForTg.__maestroHaAlertCooldowns.delete(eventKey);
+    return { sent: false, error: e?.message || "Network error" };
   }
 }
 

@@ -10,6 +10,7 @@ import {
 } from "@/lib/backup";
 import { ensureSeeded } from "@/lib/seed";
 import { resolveTelegramArchiveConfig } from "@/lib/telegram";
+import { probeBothDatabases, syncPrimaryToBackupFull } from "@/lib/db-ha";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,19 @@ export async function GET(req: Request) {
         resolveTelegramArchiveConfig(),
       ]);
       return Response.json({
+        lastTelegramBackupAt,
+        telegramConfigured: Boolean(cfg.token && cfg.archiveChatId),
+      });
+    }
+
+    if (action === "ha-status") {
+      const [ha, lastTelegramBackupAt, cfg] = await Promise.all([
+        probeBothDatabases(),
+        getLastTelegramBackupAt(),
+        resolveTelegramArchiveConfig(),
+      ]);
+      return Response.json({
+        ha,
         lastTelegramBackupAt,
         telegramConfigured: Boolean(cfg.token && cfg.archiveChatId),
       });
@@ -255,6 +269,19 @@ export async function POST(req: Request) {
         `استعادة ودمج نسخة احتياطية: +${summary.inserted.customers} عملاء، +${summary.inserted.rentals} اشتراكات، +${summary.inserted.accounts} حسابات`
       );
       return Response.json({ ok: true, summary });
+    }
+
+    if (action === "syncNeon") {
+      const result = await syncPrimaryToBackupFull();
+      const ha = await probeBothDatabases();
+      await audit(
+        admin,
+        "HA_SYNC_NEON",
+        "backup",
+        null,
+        `مزامنة كاملة للقاعدة الاحتياطية (Neon): ${result.counts.customers ?? 0} عميل، ${result.counts.rentals ?? 0} اشتراك في ${result.durationMs}ms`
+      );
+      return Response.json({ ok: true, ...result, ha });
     }
 
     return jsonError("إجراء غير معروف");

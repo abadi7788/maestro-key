@@ -1,9 +1,24 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool, type PoolConfig } from "pg";
+import { Pool, type PoolClient, type PoolConfig } from "pg";
+import {
+  type CapturedWrite,
+  FAILOVER_WINDOW_MS,
+  isConnectionFailureError,
+  normalizeQueryArgs,
+  prepareCapturedWrite,
+  PRIMARY_TIMEOUT_MS,
+  scheduleDualWriteToBackup,
+  scheduleFailoverWriteLog,
+  schedulePrimaryRecoveryProbe,
+  triggerHaTelegramAlert,
+  withTimeout,
+} from "@/lib/db-ha";
 
 const primaryUrl = process.env.DATABASE_URL?.trim() || "";
-const backupUrl = process.env.DATABASE_BACKUP_URL?.trim() || "";
-const FAILOVER_WINDOW_MS = 60_000;
+const backupUrl =
+  process.env.FALLBACK_DATABASE_URL?.trim() ||
+  process.env.DATABASE_BACKUP_URL?.trim() ||
+  "";
 
 const globalForDb = globalThis as typeof globalThis & {
   __maestroPrimaryPool?: Pool;
@@ -38,9 +53,10 @@ function buildPoolConfig(rawUrl: string, isBackup = false): PoolConfig {
 
   const config: PoolConfig = {
     connectionString,
-    max: isBackup ? 2 : 5,
+    max: isBackup ? 3 : 6,
     idleTimeoutMillis: 8000,
-    connectionTimeoutMillis: isBackup ? 15000 : 8000,
+    connectionTimeoutMillis: isBackup ? 12000 : PRIMARY_TIMEOUT_MS,
+    query_timeout: isBackup ? 15000 : PRIMARY_TIMEOUT_MS,
     allowExitOnIdle: true,
   };
 
@@ -49,60 +65,6 @@ function buildPoolConfig(rawUrl: string, isBackup = false): PoolConfig {
   }
 
   return config;
-}
-
-/**
- * التحقق مما إذا كان الخطأ ناتجاً عن انقطاع الاتصال بقاعدة البيانات الأساسية (Supabase)
- * وليس خطأ منطقي أو قيد بيانات (مثل UNIQUE أو FOREIGN KEY).
- */
-function isConnectionFailureError(err: unknown): boolean {
-  const candidates: any[] = [err, (err as any)?.cause].filter(Boolean);
-  const netCodes = new Set([
-    "ECONNREFUSED",
-    "ETIMEDOUT",
-    "ENOTFOUND",
-    "ECONNRESET",
-    "EHOSTUNREACH",
-    "ENETUNREACH",
-    "EAI_AGAIN",
-    "EPIPE",
-  ]);
-  const pgConnCodes = new Set([
-    "08000",
-    "08001",
-    "08003",
-    "08004",
-    "08006",
-    "08P01",
-    "57P01",
-    "57P02",
-    "57P03",
-    "53300",
-  ]);
-
-  for (const c of candidates) {
-    const code = String(c?.code || "");
-    if (netCodes.has(code) || pgConnCodes.has(code) || code.startsWith("08")) {
-      return true;
-    }
-    const msg = String(c?.message || "").toLowerCase();
-    if (
-      msg.includes("connection terminated") ||
-      msg.includes("timeout exceeded") ||
-      msg.includes("connection timeout") ||
-      msg.includes("could not connect") ||
-      msg.includes("server closed the connection unexpectedly") ||
-      msg.includes("tenant or user not found") ||
-      msg.includes("dbhandler exited") ||
-      msg.includes("circuit breaker open") ||
-      msg.includes("getaddrinfo") ||
-      msg.includes("ssl handshake") ||
-      msg.includes("remaining connection slots")
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function getOrCreateBackupPool(): Pool | null {
@@ -115,6 +77,142 @@ function getOrCreateBackupPool(): Pool | null {
     globalForDb.__maestroBackupPool = bp;
   }
   return globalForDb.__maestroBackupPool;
+}
+
+function activateFailoverWindow(reason: unknown): Pool | null {
+  globalForDb.__maestroFailoverUntil = Date.now() + FAILOVER_WINDOW_MS;
+  const errMsg = reason instanceof Error ? reason.message : String(reason || "Timeout / Connection error");
+  console.error("[DB Failover] Primary (Supabase) unreachable or >3s — failing over to Neon:", errMsg);
+
+  const bp = getOrCreateBackupPool();
+  if (bp) {
+    triggerHaTelegramAlert("PRIMARY_FAILOVER", "🚨 تحذير طوارئ: تحويل تلقائي إلى القاعدة الاحتياطية (Neon)", [
+      `تعذر الاتصال بالقاعدة الأساسية (Supabase) أو تجاوزت مهلة الـ 3 ثوانٍ.`,
+      `السبب: ${errMsg}`,
+      `تم تفعيل التحويل التلقائي (Active-Passive Failover) فوراً إلى Neon لضمان عدم توقف النظام.`,
+    ]);
+  } else {
+    triggerHaTelegramAlert("PRIMARY_DOWN_NO_BACKUP", "🚨 تعذر الاتصال بقاعدة البيانات الأساسية (Supabase)", [
+      `الخطأ: ${errMsg}`,
+      `القاعدة الاحتياطية (FALLBACK_DATABASE_URL) غير مضبوطة!`,
+    ]);
+  }
+  return bp;
+}
+
+async function ensureBackupReady(bp: Pool): Promise<void> {
+  try {
+    const { ensureSchemaOnPool } = await import("@/lib/schema-check");
+    await ensureSchemaOnPool(bp, { label: "Neon Backup" });
+  } catch (e) {
+    console.warn("[DB Failover] Backup schema ensure warning:", e instanceof Error ? e.message : e);
+  }
+}
+
+function wrapHaClient(initialClient: PoolClient, initialSource: "primary" | "backup"): PoolClient {
+  let activeClient = initialClient;
+  let source = initialSource;
+  let inTx = false;
+  let txWrites: CapturedWrite[] = [];
+
+  const wrapped: any = new Proxy(initialClient as any, {
+    get(_target, prop) {
+      if (prop === "release") {
+        return (err?: Error | boolean) => activeClient.release(err);
+      }
+
+      if (prop === "query") {
+        return async (...args: any[]) => {
+          const { text, params, hasCallback } = normalizeQueryArgs(args);
+          if (hasCallback) {
+            return (activeClient.query as any)(...args);
+          }
+
+          const upper = text.trim().slice(0, 16).toUpperCase();
+          const isBegin = upper.startsWith("BEGIN");
+          const isCommit = upper.startsWith("COMMIT");
+          const isRollback = upper.startsWith("ROLLBACK");
+
+          const runOnClient = async (c: PoolClient, src: "primary" | "backup") => {
+            if (src === "primary") {
+              return withTimeout((c.query as any)(...args), PRIMARY_TIMEOUT_MS, "tx-query");
+            }
+            return (c.query as any)(...args);
+          };
+
+          try {
+            const res = await runOnClient(activeClient, source);
+
+            if (isBegin) {
+              inTx = true;
+              txWrites = [];
+            } else if (isRollback) {
+              inTx = false;
+              txWrites = [];
+            } else if (isCommit) {
+              const batch = txWrites;
+              txWrites = [];
+              inTx = false;
+              if (batch.length > 0) {
+                if (source === "primary") {
+                  scheduleDualWriteToBackup(batch);
+                } else {
+                  scheduleFailoverWriteLog(batch);
+                }
+              }
+            } else {
+              const captured = prepareCapturedWrite(text, params, res);
+              if (captured) {
+                if (inTx) {
+                  txWrites.push(captured);
+                } else if (source === "primary") {
+                  scheduleDualWriteToBackup([captured]);
+                } else {
+                  scheduleFailoverWriteLog([captured]);
+                }
+              }
+            }
+
+            return res;
+          } catch (err) {
+            // إذا فشل BEGIN أو أول استعلام قراءة قبل بدء أي كتابة داخل المعاملة، نحول الاتصال تلقائياً لـ Neon
+            if (source === "primary" && backupUrl && txWrites.length === 0 && isConnectionFailureError(err)) {
+              const bp = activateFailoverWindow(err);
+              if (bp) {
+                try {
+                  activeClient.release(true);
+                } catch {}
+                await ensureBackupReady(bp);
+                activeClient = await bp.connect();
+                source = "backup";
+                if (!isBegin && inTx) {
+                  await activeClient.query("BEGIN");
+                }
+                const res = await (activeClient.query as any)(...args);
+                if (isBegin) {
+                  inTx = true;
+                  txWrites = [];
+                } else {
+                  const captured = prepareCapturedWrite(text, params, res);
+                  if (captured) {
+                    if (inTx) txWrites.push(captured);
+                    else scheduleFailoverWriteLog([captured]);
+                  }
+                }
+                return res;
+              }
+            }
+            throw err;
+          }
+        };
+      }
+
+      const val = (activeClient as any)[prop];
+      return typeof val === "function" ? val.bind(activeClient) : val;
+    },
+  });
+
+  return wrapped as PoolClient;
 }
 
 const mockPool: any = {
@@ -151,65 +249,104 @@ function createMockDb(): any {
   return new Proxy(dummyFn, handler);
 }
 
+function shouldRouteToFailover(): boolean {
+  const until = globalForDb.__maestroFailoverUntil;
+  if (!backupUrl || !until) return false;
+  if (Date.now() < until) return true;
+  // انتهت نافذة الـ 45 ثانية — نفحص عودة القاعدة الأساسية في الخلفية دون تعطيل الطلب الحالي
+  schedulePrimaryRecoveryProbe();
+  return true;
+}
+
 function createFailoverPool(primary: Pool): Pool {
   const wrapper: any = {
     async query(...args: any[]) {
-      const inFailover = Boolean(
-        backupUrl && globalForDb.__maestroFailoverUntil && Date.now() < globalForDb.__maestroFailoverUntil
-      );
+      const { text, params, hasCallback } = normalizeQueryArgs(args);
+      if (hasCallback) {
+        return (primary.query as any)(...args);
+      }
 
-      if (inFailover) {
+      if (shouldRouteToFailover()) {
         const bp = getOrCreateBackupPool();
-        if (bp) return (bp.query as any)(...args);
+        if (bp) {
+          await ensureBackupReady(bp);
+          try {
+            const res = await (bp.query as any)(...args);
+            const captured = prepareCapturedWrite(text, params, res);
+            if (captured) scheduleFailoverWriteLog([captured]);
+            return res;
+          } catch (backupErr) {
+            if (isConnectionFailureError(backupErr)) {
+              triggerHaTelegramAlert("BACKUP_FAILURE", "🚨 فشل القاعدة الاحتياطية (Neon) أثناء وضع الطوارئ", [
+                `الخطأ: ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+              ]);
+            }
+            throw backupErr;
+          }
+        }
       }
 
       try {
-        const res = await (primary.query as any)(...args);
-        if (globalForDb.__maestroFailoverUntil) {
-          globalForDb.__maestroFailoverUntil = 0;
-          console.info("[DB Failover] Primary (Supabase) recovered — returning to primary database.");
+        const res = await withTimeout<any>((primary.query as any)(...args), PRIMARY_TIMEOUT_MS, "query");
+        const captured = prepareCapturedWrite(text, params, res);
+        if (captured) {
+          scheduleDualWriteToBackup([captured]);
         }
         return res;
       } catch (err) {
-        if (backupUrl && isConnectionFailureError(err)) {
-          console.error(
-            "[DB Failover] Primary (Supabase) connection failed — switching temporarily to Neon standby backup:",
-            (err as any)?.message || err
-          );
-          globalForDb.__maestroFailoverUntil = Date.now() + FAILOVER_WINDOW_MS;
-          const bp = getOrCreateBackupPool();
-          if (bp) return (bp.query as any)(...args);
+        if (isConnectionFailureError(err)) {
+          const bp = activateFailoverWindow(err);
+          if (bp) {
+            await ensureBackupReady(bp);
+            try {
+              const res = await (bp.query as any)(...args);
+              const captured = prepareCapturedWrite(text, params, res);
+              if (captured) scheduleFailoverWriteLog([captured]);
+              return res;
+            } catch (backupErr) {
+              if (isConnectionFailureError(backupErr)) {
+                triggerHaTelegramAlert("BACKUP_FAILURE", "🚨 تعذر الاتصال بالقاعدتين (Supabase و Neon) في نفس الوقت!", [
+                  `خطأ Neon: ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+                ]);
+              }
+              throw backupErr;
+            }
+          }
         }
         throw err;
       }
     },
 
-    async connect() {
-      const inFailover = Boolean(
-        backupUrl && globalForDb.__maestroFailoverUntil && Date.now() < globalForDb.__maestroFailoverUntil
-      );
-
-      if (inFailover) {
+    async connect(): Promise<PoolClient> {
+      if (shouldRouteToFailover()) {
         const bp = getOrCreateBackupPool();
-        if (bp) return bp.connect();
+        if (bp) {
+          await ensureBackupReady(bp);
+          const bc = await bp.connect();
+          return wrapHaClient(bc, "backup");
+        }
       }
 
       try {
-        const client = await primary.connect();
-        if (globalForDb.__maestroFailoverUntil) {
-          globalForDb.__maestroFailoverUntil = 0;
-          console.info("[DB Failover] Primary (Supabase) recovered — returning to primary database.");
-        }
-        return client;
+        const client = await withTimeout(primary.connect(), PRIMARY_TIMEOUT_MS, "connect");
+        return wrapHaClient(client, "primary");
       } catch (err) {
-        if (backupUrl && isConnectionFailureError(err)) {
-          console.error(
-            "[DB Failover] Primary (Supabase) connect failed — switching temporarily to Neon standby backup:",
-            (err as any)?.message || err
-          );
-          globalForDb.__maestroFailoverUntil = Date.now() + FAILOVER_WINDOW_MS;
-          const bp = getOrCreateBackupPool();
-          if (bp) return bp.connect();
+        if (isConnectionFailureError(err)) {
+          const bp = activateFailoverWindow(err);
+          if (bp) {
+            await ensureBackupReady(bp);
+            try {
+              const bc = await bp.connect();
+              return wrapHaClient(bc, "backup");
+            } catch (backupErr) {
+              if (isConnectionFailureError(backupErr)) {
+                triggerHaTelegramAlert("BACKUP_FAILURE", "🚨 تعذر فتح اتصال مع القاعدتين (Supabase و Neon)!", [
+                  `خطأ Neon: ${backupErr instanceof Error ? backupErr.message : String(backupErr)}`,
+                ]);
+              }
+              throw backupErr;
+            }
+          }
         }
         throw err;
       }
@@ -257,10 +394,28 @@ if (primaryUrl) {
     activePool = mockPool as Pool;
     activeDb = createMockDb() as ReturnType<typeof drizzle>;
   }
+} else if (backupUrl) {
+  const bp = getOrCreateBackupPool()!;
+  activePool = bp;
+  activeDb = drizzle(bp);
 } else {
   console.warn("[AI Studio] DATABASE_URL not set — using in-memory mock");
   activePool = mockPool as Pool;
   activeDb = createMockDb() as ReturnType<typeof drizzle>;
+}
+
+export function getRawPools(): {
+  primaryUrl: string;
+  backupUrl: string;
+  primaryPool: Pool | null;
+  getBackupPool: () => Pool | null;
+} {
+  return {
+    primaryUrl,
+    backupUrl,
+    primaryPool: globalForDb.__maestroPrimaryPool ?? null,
+    getBackupPool: getOrCreateBackupPool,
+  };
 }
 
 export function getDbStatus(): {
@@ -268,8 +423,11 @@ export function getDbStatus(): {
   hasBackup: boolean;
   mode: "primary" | "standby-failover" | "mock";
 } {
-  if (!primaryUrl) {
-    return { configured: false, hasBackup: Boolean(backupUrl), mode: "mock" };
+  if (!primaryUrl && !backupUrl) {
+    return { configured: false, hasBackup: false, mode: "mock" };
+  }
+  if (!primaryUrl && backupUrl) {
+    return { configured: true, hasBackup: true, mode: "standby-failover" };
   }
   const inFailover = Boolean(
     backupUrl && globalForDb.__maestroFailoverUntil && Date.now() < globalForDb.__maestroFailoverUntil

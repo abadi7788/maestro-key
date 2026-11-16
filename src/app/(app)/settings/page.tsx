@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, KeyRound, UserCheck, DatabaseBackup, Download, Upload, FileSpreadsheet, FileJson, Send, CheckCircle2, Clock, AlertTriangle } from "lucide-react";
+import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, KeyRound, UserCheck, DatabaseBackup, Download, Upload, FileSpreadsheet, FileJson, Send, CheckCircle2, Clock, AlertTriangle, Database, RefreshCw } from "lucide-react";
 import { api, cachedApi, fetchMe, fileToDataUrl, fmtDateTime, getCached, getCachedMe, invalidateCache, setCached } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner } from "@/components/ui";
 import { isAdminRole } from "@/lib/roles";
@@ -45,8 +45,14 @@ export default function SettingsPage() {
   const [quickAmount, setQuickAmount] = useState("");
   const [quickNote, setQuickNote] = useState("");
   const [meId, setMeId] = useState<number | null>(() => getCachedMe()?.id ?? null);
-  const [backupBusy, setBackupBusy] = useState<"" | "json" | "csv_customers" | "csv_rentals" | "telegram" | "restore">("");
+  const [backupBusy, setBackupBusy] = useState<"" | "json" | "csv_customers" | "csv_rentals" | "telegram" | "restore" | "syncNeon" | "checkHa">("");
   const [backupNotice, setBackupNotice] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [haStatus, setHaStatus] = useState<{
+    mode: "primary" | "standby-failover" | "mock";
+    primary: { configured: boolean; connected: boolean; latencyMs: number | null; error?: string };
+    backup: { configured: boolean; connected: boolean; latencyMs: number | null; error?: string; pendingFailoverWrites: number; pendingDualWrites: number };
+    checkedAt: string;
+  } | null>(null);
   const [pendingRestore, setPendingRestore] = useState<{
     filename: string;
     exportedAt?: string;
@@ -70,6 +76,31 @@ export default function SettingsPage() {
     fetchMe().then((u) => setMeId(u?.id ?? null)).catch(() => {});
   }, []);
   useEffect(() => { void load(false); }, [load]);
+
+  const fetchHaStatus = useCallback(async (withSpinner = false) => {
+    if (withSpinner) setBackupBusy("checkHa");
+    try {
+      const res = await api<{ ha: any; lastTelegramBackupAt?: string | null; telegramConfigured?: boolean }>(
+        "/api/backup?action=ha-status"
+      );
+      if (res?.ha) setHaStatus(res.ha);
+    } catch {
+      // ignore background probe error cleanly
+    } finally {
+      if (withSpinner) setBackupBusy("");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "backup") return;
+    let active = true;
+    api<{ ha: any }>("/api/backup?action=ha-status")
+      .then((res) => {
+        if (active && res?.ha) setHaStatus(res.ha);
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [tab]);
 
   async function manage(body: any, ok: string): Promise<boolean> {
     setBusy(true); setMsg("");
@@ -237,6 +268,31 @@ export default function SettingsPage() {
       });
     } catch (e: any) {
       setBackupNotice({ tone: "err", text: e?.message || "فشلت عملية استعادة النسخة الاحتياطية" });
+    } finally {
+      setBackupBusy("");
+    }
+  }
+
+  async function syncNeonNow() {
+    setBackupBusy("syncNeon");
+    setBackupNotice(null);
+    try {
+      const res = await api<{
+        ok: boolean;
+        counts: Record<string, number>;
+        durationMs: number;
+        ha?: any;
+      }>("/api/backup", {
+        method: "POST",
+        body: JSON.stringify({ action: "syncNeon" }),
+      });
+      if (res.ha) setHaStatus(res.ha);
+      setBackupNotice({
+        tone: "ok",
+        text: `تمت مزامنة القاعدة الاحتياطية (Neon) بالكامل بنجاح خلال ${(res.durationMs / 1000).toFixed(2)} ثانية — العملاء: ${res.counts?.customers ?? 0}، الاشتراكات: ${res.counts?.rentals ?? 0}، الحسابات: ${res.counts?.accounts ?? 0}.`,
+      });
+    } catch (e: any) {
+      setBackupNotice({ tone: "err", text: e?.message || "فشلت مزامنة القاعدة الاحتياطية (Neon)" });
     } finally {
       setBackupBusy("");
     }
@@ -941,6 +997,103 @@ export default function SettingsPage() {
 
       {tab === "backup" && (
         <div className="space-y-5">
+          {/* حالة التوفر العالي واتصال القاعدتين (Supabase Primary + Neon Failover) */}
+          <div className="card space-y-4 border border-white/10 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
+                  haStatus?.mode === "standby-failover"
+                    ? "bg-amber-500/15 text-amber-400"
+                    : "bg-emerald-500/15 text-emerald-400"
+                }`}>
+                  <Database size={22} />
+                </span>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-black text-white">حالة قواعد البيانات (Active-Passive High Availability)</h3>
+                    {haStatus?.mode === "standby-failover" ? (
+                      <Badge tone="amber">وضع الطوارئ النشط — Neon يعمل حالياً</Badge>
+                    ) : haStatus?.mode === "primary" ? (
+                      <Badge tone="green">الوضع الطبيعي — Supabase الأساسي</Badge>
+                    ) : (
+                      <Badge tone="blue">جارٍ الفحص...</Badge>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-400">
+                    القراءة والكتابة عبر Supabase، مع مزامنة تلقائية في الخلفية لـ Neon وتحويل فوري خلال 3 ثوانٍ عند أي تعذر في الاتصال.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={backupBusy !== ""}
+                  onClick={() => fetchHaStatus(true)}
+                  className="btn-ghost px-3 py-2 text-xs font-extrabold"
+                >
+                  <RefreshCw size={14} className={backupBusy === "checkHa" ? "animate-spin" : ""} />
+                  {backupBusy === "checkHa" ? "جارٍ الفحص..." : "تحديث الحالة"}
+                </button>
+                <button
+                  type="button"
+                  disabled={backupBusy !== "" || !haStatus?.backup?.configured}
+                  onClick={syncNeonNow}
+                  className="btn-gold px-4 py-2 text-xs font-black shadow"
+                >
+                  <RefreshCw size={14} className={backupBusy === "syncNeon" ? "animate-spin" : ""} />
+                  {backupBusy === "syncNeon" ? "جارٍ المزامنة الكاملة..." : "مزامنة القاعدة الاحتياطية (Neon) الآن"}
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {/* Supabase Primary */}
+              <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[.03] px-4 py-3">
+                <div>
+                  <div className="text-xs font-black text-slate-200">القاعدة الأساسية: Supabase (DATABASE_URL)</div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-slate-400">
+                    {haStatus?.primary?.error
+                      ? haStatus.primary.error
+                      : haStatus?.primary?.latencyMs != null
+                      ? `زمن الاستجابة: ${haStatus.primary.latencyMs}ms`
+                      : "في انتظار الفحص..."}
+                  </div>
+                </div>
+                {!haStatus ? (
+                  <Badge>جارٍ الفحص</Badge>
+                ) : haStatus.primary.connected ? (
+                  <Badge tone="green">متصل</Badge>
+                ) : (
+                  <Badge tone="red">غير متصل</Badge>
+                )}
+              </div>
+
+              {/* Neon Standby/Failover */}
+              <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[.03] px-4 py-3">
+                <div>
+                  <div className="text-xs font-black text-slate-200">القاعدة الاحتياطية: Neon (FALLBACK_DATABASE_URL)</div>
+                  <div className="mt-0.5 text-[11px] font-semibold text-slate-400">
+                    {!haStatus?.backup?.configured && haStatus
+                      ? "غير مضبوطة في متغيرات البيئة"
+                      : haStatus?.backup?.error
+                      ? haStatus.backup.error
+                      : haStatus?.backup?.latencyMs != null
+                      ? `زمن الاستجابة: ${haStatus.backup.latencyMs}ms${haStatus.backup.pendingFailoverWrites > 0 ? ` • عمليات معلقة للمزامنة: ${haStatus.backup.pendingFailoverWrites}` : ""}`
+                      : "في انتظار الفحص..."}
+                  </div>
+                </div>
+                {!haStatus ? (
+                  <Badge>جارٍ الفحص</Badge>
+                ) : haStatus.backup.connected ? (
+                  <Badge tone="green">متصل</Badge>
+                ) : (
+                  <Badge tone="red">غير متصل</Badge>
+                )}
+              </div>
+            </div>
+          </div>
+
           {/* حالة النسخ الاحتياطي التلقائي */}
           <div className="card flex flex-wrap items-center justify-between gap-4 border border-white/10 p-5">
             <div className="flex items-start gap-3">
