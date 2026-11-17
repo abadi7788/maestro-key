@@ -460,6 +460,11 @@ export async function ensureSchemaOnPool(
         if (fastCheck.rows?.length) {
           // Ensure _ha_sync_queue exists without re-running all DDL
           await targetPool.query(HA_QUEUE_DDL).catch(() => {});
+          await targetPool
+            .query(
+              `UPDATE _ha_sync_queue SET synced = TRUE WHERE synced = FALSE AND sql_text ~ '\\$[0-9]+' AND (params_json IS NULL OR params_json = '' OR params_json = '[]')`
+            )
+            .catch(() => {});
           globalForSchema.__maestroPoolSchemaSynced!.add(targetPool);
           return;
         }

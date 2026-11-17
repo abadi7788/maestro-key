@@ -33,6 +33,7 @@ const globalForHa = globalThis as typeof globalThis & {
   __maestroRecoveryProbeRunning?: boolean;
   __maestroReconcilingPromise?: Promise<number> | null;
   __maestroFullSyncPromise?: Promise<{ counts: Record<string, number>; durationMs: number }> | null;
+  __maestroHaQueueCleaned?: WeakSet<object>;
 };
 
 /* ---------------- Error & Timeout Utilities ---------------- */
@@ -93,9 +94,21 @@ export function isConnectionFailureError(err: unknown): boolean {
   return false;
 }
 
+function isPermanentWriteReplayError(err: unknown): boolean {
+  const code = String((err as any)?.code || "");
+  const msg = String((err as any)?.message || "").toLowerCase();
+  if (code === "42P02" || code === "08P01" || code === "42601" || code === "42703") {
+    return true;
+  }
+  return (
+    msg.includes("there is no parameter $") ||
+    msg.includes("bind message supplies") ||
+    msg.includes("syntax error at or near")
+  );
+}
+
 export async function withTimeout<T>(promise: Promise<T>, ms: number, label = "Operation"): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // Prevent unhandled rejection if caller races ahead on timeout
   promise.catch(() => {});
   return new Promise<T>((resolve, reject) => {
     timer = setTimeout(() => {
@@ -142,8 +155,13 @@ export function triggerHaTelegramAlert(
   });
 }
 
-/* ---------------- SQL Normalization & Write Capture ---------------- */
+/* ---------------- SQL Normalization, Param Validation & Write Capture ---------------- */
 
+/**
+ * تطبيع معاملات الاستعلام القادمة من pg أو Drizzle ORM:
+ * ملاحظة مهمة: Drizzle ORM يمرر (queryConfigObject, paramsArray)
+ * حيث يكون args[0] كائناً لا يحتوي على values، بينما المصفوفة تكون في args[1].
+ */
 export function normalizeQueryArgs(args: any[]): { text: string; params: any[]; hasCallback: boolean } {
   const first = args[0];
   const hasCallback = typeof args[args.length - 1] === "function";
@@ -152,7 +170,11 @@ export function normalizeQueryArgs(args: any[]): { text: string; params: any[]; 
     return { text: first, params, hasCallback };
   }
   if (first && typeof first === "object" && typeof first.text === "string") {
-    const params = Array.isArray(first.values) ? first.values : [];
+    const params = Array.isArray(first.values)
+      ? first.values
+      : Array.isArray(args[1])
+      ? args[1]
+      : [];
     return { text: first.text, params, hasCallback };
   }
   return { text: "", params: [], hasCallback };
@@ -179,6 +201,142 @@ export function getWriteKind(sqlText: string): "INSERT" | "UPDATE" | "DELETE" | 
   return null;
 }
 
+/**
+ * استخراج أعلى رقم متغير ($1, $2, ...) خارج النصوص المقتبسة '...'
+ */
+export function getMaxSqlParamIndex(sqlText: string): number {
+  let maxIdx = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < sqlText.length; i++) {
+    const ch = sqlText[i];
+    if (ch === "'" && !inDoubleQuote) {
+      if (inSingleQuote && sqlText[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (ch === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote && ch === "$") {
+      let j = i + 1;
+      while (j < sqlText.length && sqlText[j] >= "0" && sqlText[j] <= "9") j++;
+      if (j > i + 1) {
+        const idx = Number(sqlText.slice(i + 1, j));
+        if (Number.isInteger(idx) && idx > maxIdx) maxIdx = idx;
+        i = j - 1;
+      }
+    }
+  }
+  return maxIdx;
+}
+
+export function hasValidSqlParams(sqlText: string, params: unknown): boolean {
+  if (!sqlText || typeof sqlText !== "string") return false;
+  if (!Array.isArray(params)) return false;
+  const maxParam = getMaxSqlParamIndex(sqlText);
+  return params.length >= maxParam;
+}
+
+function extractInsertedIdFromResult(res?: QueryResult<any>): number | null {
+  const rows = res?.rows;
+  if (!Array.isArray(rows) || rows.length !== 1) return null;
+  const row0: any = rows[0];
+
+  if (row0 && typeof row0 === "object" && !Array.isArray(row0) && row0.id != null) {
+    const n = Number(row0.id);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
+
+  // Drizzle ORM يستخدم rowMode: "array" فتعود rows[0] كمصفوفة قيم
+  if (Array.isArray(row0) && Array.isArray(res?.fields)) {
+    const idIdx = res.fields.findIndex((f: any) => String(f?.name || "").toLowerCase() === "id");
+    if (idIdx >= 0 && row0[idIdx] != null) {
+      const n = Number(row0[idIdx]);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * تقسيم VALUES (...) الأولى بأمان مع مراعاة الأقواس المتداخلة وعلامات الاقتباس
+ */
+function parseFirstValuesTuple(restAfterValuesOpenParen: string): {
+  expressions: string[];
+  afterTuple: string;
+} | null {
+  const expressions: string[] = [];
+  let current = "";
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < restAfterValuesOpenParen.length; i++) {
+    const ch = restAfterValuesOpenParen[i];
+
+    if (ch === "'" && !inDouble) {
+      current += ch;
+      if (inSingle && restAfterValuesOpenParen[i + 1] === "'") {
+        current += "'";
+        i++;
+        continue;
+      }
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      current += ch;
+      inDouble = !inDouble;
+      continue;
+    }
+
+    if (!inSingle && !inDouble) {
+      if (ch === "(") {
+        depth++;
+        current += ch;
+        continue;
+      }
+      if (ch === ")") {
+        depth--;
+        if (depth === 0) {
+          expressions.push(current.trim());
+          return {
+            expressions,
+            afterTuple: restAfterValuesOpenParen.slice(i + 1),
+          };
+        }
+        current += ch;
+        continue;
+      }
+      if (ch === "," && depth === 1) {
+        expressions.push(current.trim());
+        current = "";
+        continue;
+      }
+    }
+
+    current += ch;
+  }
+
+  return null;
+}
+
+function appendOnConflictDoNothing(sqlText: string): string {
+  if (/\bon\s+conflict\b/i.test(sqlText)) return sqlText;
+  const returningMatch = sqlText.match(/\breturning\b/i);
+  if (returningMatch && typeof returningMatch.index === "number") {
+    const idx = returningMatch.index;
+    return `${sqlText.slice(0, idx).trimEnd()} ON CONFLICT DO NOTHING ${sqlText.slice(idx)}`;
+  }
+  return `${sqlText} ON CONFLICT DO NOTHING`;
+}
+
 export function prepareCapturedWrite(
   sqlText: string,
   params: any[],
@@ -187,52 +345,52 @@ export function prepareCapturedWrite(
   const kind = getWriteKind(sqlText);
   if (!kind) return null;
 
-  const normalizedParams = Array.isArray(params) ? [...params] : [];
+  const normalizedParams = Array.isArray(params)
+    ? params.map((p) => (p === undefined ? null : p))
+    : [];
   let replicatedSql = sqlText.trim();
   let tableName: string | null = null;
-  let insertedId: number | null = null;
+  const insertedId = extractInsertedIdFromResult(res);
 
   if (kind === "INSERT") {
     const m = replicatedSql.match(
-      /^insert\s+into\s+(?:"?[a-zA-Z0-9_]+"?\.)?"?([a-zA-Z0-9_]+)"?\s*\(([^)]+)\)\s*values\s*\(([\s\S]*)$/i
+      /^(insert\s+into\s+(?:"?[a-zA-Z0-9_]+"?\.)?"?([a-zA-Z0-9_]+)"?\s*\()([^)]+)(\)\s*values\s*\()([\s\S]*)$/i
     );
     if (m) {
-      tableName = m[1];
-      const colsPart = m[2];
-      const restAfterValues = m[3];
+      const insertHead = m[1];
+      tableName = m[2];
+      const colsPart = m[3];
+      const midPart = m[4];
+      const restAfterOpen = m[5];
 
-      // Single-row VALUES detection: check returned id from RETURNING
-      const rows = res?.rows;
-      if (Array.isArray(rows) && rows.length === 1 && typeof rows[0]?.id === "number") {
-        insertedId = rows[0].id;
-        const colNames = colsPart.split(",").map((c) => c.trim().replace(/"/g, "").toLowerCase());
-        const hasMultipleTuples = /\)\s*,\s*\(/.test(restAfterValues.split(/\b(?:on\s+conflict|returning)\b/i)[0] || "");
+      const parsedTuple = parseFirstValuesTuple(restAfterOpen);
+      const colNames = colsPart.split(",").map((c) => c.trim().replace(/"/g, "").toLowerCase());
 
-        if (!hasMultipleTuples && !colNames.includes("id")) {
-          const nextParamIdx = normalizedParams.length + 1;
-          normalizedParams.push(insertedId);
-          replicatedSql = replicatedSql.replace(
-            /^(insert\s+into\s+(?:"?[a-zA-Z0-9_]+"?\.)?"?[a-zA-Z0-9_]+"?\s*\()([^)]+)(\)\s*values\s*\()/i,
-            `$1"id", $2$3$${nextParamIdx}, `
-          );
-        } else if (!hasMultipleTuples && colNames[0] === "id" && /^\s*default\s*,/i.test(restAfterValues)) {
-          const nextParamIdx = normalizedParams.length + 1;
-          normalizedParams.push(insertedId);
-          replicatedSql = replicatedSql.replace(
-            /^((?:insert\s+into\s+(?:"?[a-zA-Z0-9_]+"?\.)?"?[a-zA-Z0-9_]+"?\s*\([^)]+\)\s*values\s*\()\s*)default(\s*,)/i,
-            `$1$${nextParamIdx}$2`
-          );
+      if (parsedTuple) {
+        const hasMultipleTuples = /^\s*,/.test(parsedTuple.afterTuple);
+        const maxBefore = getMaxSqlParamIndex(replicatedSql);
+
+        if (
+          !hasMultipleTuples &&
+          insertedId !== null &&
+          normalizedParams.length >= maxBefore &&
+          colNames.length === parsedTuple.expressions.length
+        ) {
+          const idIdx = colNames.indexOf("id");
+          if (idIdx >= 0 && /^default$/i.test(parsedTuple.expressions[idIdx])) {
+            const nextParamIdx = normalizedParams.length + 1;
+            normalizedParams.push(insertedId);
+            parsedTuple.expressions[idIdx] = `$${nextParamIdx}`;
+            replicatedSql = `${insertHead}${colsPart}${midPart}${parsedTuple.expressions.join(", ")})${parsedTuple.afterTuple}`;
+          } else if (idIdx === -1) {
+            const nextParamIdx = normalizedParams.length + 1;
+            normalizedParams.push(insertedId);
+            replicatedSql = `${insertHead}"id", ${colsPart}${midPart}$${nextParamIdx}, ${parsedTuple.expressions.join(", ")})${parsedTuple.afterTuple}`;
+          }
         }
       }
 
-      // Make non-upsert inserts idempotent on conflict when replicating
-      if (!/\bon\s+conflict\b/i.test(replicatedSql)) {
-        if (/\breturning\b/i.test(replicatedSql)) {
-          replicatedSql = replicatedSql.replace(/\breturning\b/i, "ON CONFLICT DO NOTHING RETURNING");
-        } else {
-          replicatedSql = `${replicatedSql} ON CONFLICT DO NOTHING`;
-        }
-      }
+      replicatedSql = appendOnConflictDoNothing(replicatedSql);
     }
   } else if (kind === "UPDATE") {
     const m = replicatedSql.match(/^update\s+(?:"?[a-zA-Z0-9_]+"?\.)?"?([a-zA-Z0-9_]+)"?/i);
@@ -240,6 +398,14 @@ export function prepareCapturedWrite(
   } else if (kind === "DELETE") {
     const m = replicatedSql.match(/^delete\s+from\s+(?:"?[a-zA-Z0-9_]+"?\.)?"?([a-zA-Z0-9_]+)"?/i);
     if (m) tableName = m[1];
+  }
+
+  // ضمان مطابقة مصفوفة المعاملات لأرقام $1, $2, ... قبل وضع العملية في طابور المزامنة
+  if (!hasValidSqlParams(replicatedSql, normalizedParams)) {
+    console.warn(
+      `[db-ha] Skipping write capture due to parameter count mismatch (table=${tableName}, params=${normalizedParams.length}, needed=${getMaxSqlParamIndex(replicatedSql)})`
+    );
+    return null;
   }
 
   return {
@@ -251,24 +417,85 @@ export function prepareCapturedWrite(
   };
 }
 
+/* ---------------- Retry Queue Cleanup ---------------- */
+
+function sanitizePendingBackupQueue(): void {
+  if (!globalForHa.__maestroPendingToBackup?.length) return;
+  globalForHa.__maestroPendingToBackup = globalForHa.__maestroPendingToBackup
+    .map((batch) => batch.filter((w) => hasValidSqlParams(w.sql, w.params)))
+    .filter((batch) => batch.length > 0);
+}
+
+export async function cleanupBrokenHaSyncQueue(backupPool: Pool, force = false): Promise<number> {
+  if (!globalForHa.__maestroHaQueueCleaned) {
+    globalForHa.__maestroHaQueueCleaned = new WeakSet<object>();
+  }
+  if (!force && globalForHa.__maestroHaQueueCleaned.has(backupPool)) {
+    return 0;
+  }
+
+  try {
+    const existsRes = await backupPool
+      .query(`SELECT to_regclass('public._ha_sync_queue') AS tbl`)
+      .catch(() => null);
+    if (!existsRes?.rows?.[0]?.tbl) {
+      globalForHa.__maestroHaQueueCleaned.add(backupPool);
+      return 0;
+    }
+
+    const pending = await backupPool.query(
+      `SELECT id, sql_text, params_json FROM _ha_sync_queue WHERE synced = FALSE ORDER BY id ASC LIMIT 2000`
+    );
+    const brokenIds: number[] = [];
+    for (const row of pending.rows || []) {
+      let parsed: unknown = [];
+      try {
+        parsed = JSON.parse(row.params_json || "[]");
+      } catch {
+        parsed = null;
+      }
+      if (!hasValidSqlParams(String(row.sql_text || ""), parsed)) {
+        brokenIds.push(Number(row.id));
+      }
+    }
+
+    if (brokenIds.length > 0) {
+      await backupPool.query(
+        `UPDATE _ha_sync_queue SET synced = TRUE WHERE id = ANY($1::int[])`,
+        [brokenIds]
+      );
+      console.info(`[db-ha] Cleaned ${brokenIds.length} broken/param-missing item(s) from _ha_sync_queue.`);
+    }
+
+    globalForHa.__maestroHaQueueCleaned.add(backupPool);
+    return brokenIds.length;
+  } catch {
+    return 0;
+  }
+}
+
 /* ---------------- Dual-Write Replication (Primary -> Backup) ---------------- */
 
 async function executeWritesOnPool(targetPool: Pool, batch: CapturedWrite[]): Promise<void> {
-  if (!batch.length) return;
+  const validBatch = batch.filter((w) => hasValidSqlParams(w.sql, w.params));
+  if (!validBatch.length) return;
+
   const client = await targetPool.connect();
   const tablesToSyncSeq = new Set<string>();
   try {
     await client.query("BEGIN");
-    for (const w of batch) {
+    for (const w of validBatch) {
       await client.query(w.sql, w.params);
       if (w.kind === "INSERT" && w.tableName && w.insertedId !== null) {
         tablesToSyncSeq.add(w.tableName);
       }
     }
     for (const tbl of tablesToSyncSeq) {
-      await client.query(
-        `SELECT setval(pg_get_serial_sequence('${tbl}', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM "${tbl}"), 1), 1), true)`
-      ).catch(() => {});
+      await client
+        .query(
+          `SELECT setval(pg_get_serial_sequence('${tbl}', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM "${tbl}"), 1), 1), true)`
+        )
+        .catch(() => {});
     }
     await client.query("COMMIT");
   } catch (err) {
@@ -280,7 +507,9 @@ async function executeWritesOnPool(targetPool: Pool, batch: CapturedWrite[]): Pr
 }
 
 export function scheduleDualWriteToBackup(writes: CapturedWrite[]): void {
-  if (!writes.length) return;
+  const validWrites = writes.filter((w) => hasValidSqlParams(w.sql, w.params));
+  if (!validWrites.length) return;
+
   scheduleBackgroundTask(async () => {
     const { getRawPools } = await import("@/db");
     const { backupUrl, getBackupPool } = getRawPools();
@@ -292,41 +521,56 @@ export function scheduleDualWriteToBackup(writes: CapturedWrite[]): void {
     try {
       const { ensureSchemaOnPool } = await import("./schema-check");
       await ensureSchemaOnPool(backupPool, { label: "Neon Backup" });
+      await cleanupBrokenHaSyncQueue(backupPool);
 
+      sanitizePendingBackupQueue();
       if (!globalForHa.__maestroPendingToBackup) {
         globalForHa.__maestroPendingToBackup = [];
       }
 
-      // Replay previously queued failed batches first
+      // إعادة تشغيل الدفعات المعلقة السليمة فقط؛ إذا فشلت دفعة قديمة بخطأ معاملات تُحذف فوراً
       while (globalForHa.__maestroPendingToBackup.length > 0) {
         const pendingBatch = globalForHa.__maestroPendingToBackup[0];
-        await executeWritesOnPool(backupPool, pendingBatch);
-        globalForHa.__maestroPendingToBackup.shift();
+        try {
+          await executeWritesOnPool(backupPool, pendingBatch);
+          globalForHa.__maestroPendingToBackup.shift();
+        } catch (replayErr: any) {
+          if (isPermanentWriteReplayError(replayErr)) {
+            console.warn("[db-ha] Dropped permanently invalid queued batch:", replayErr?.message);
+            globalForHa.__maestroPendingToBackup.shift();
+            continue;
+          }
+          throw replayErr;
+        }
       }
 
-      await executeWritesOnPool(backupPool, writes);
+      await executeWritesOnPool(backupPool, validWrites);
     } catch (err: any) {
       const msg = err?.message || String(err);
       console.error("[db-ha] Dual-Write to Neon backup failed:", msg);
 
-      // Buffer failed batch (max 200) so transient network glitches self-heal
+      // لا نعيد جدولة أي دفعة فاشلة بسبب نقص معاملات أو صياغة غير قابلة للإعادة
+      if (isPermanentWriteReplayError(err)) {
+        return;
+      }
+
       if (!globalForHa.__maestroPendingToBackup) {
         globalForHa.__maestroPendingToBackup = [];
       }
       if (globalForHa.__maestroPendingToBackup.length < 200) {
-        globalForHa.__maestroPendingToBackup.push(writes);
+        globalForHa.__maestroPendingToBackup.push(validWrites);
       } else {
         globalForHa.__maestroBackupNeedsFullSync = true;
       }
 
-      // Foreign key violation (e.g. backup missed older parent record) -> auto heal via full sync
+      // خطأ مفتاح خارجي (سجل أب مفقود في Neon) -> مزامنة آمنة بالدمج (Upsert بدون TRUNCATE)
       if (String(err?.code || "") === "23503" && !globalForHa.__maestroFullSyncPromise) {
         globalForHa.__maestroBackupNeedsFullSync = true;
         void syncPrimaryToBackupFull({ silentAlert: true }).catch(() => {});
       }
 
       triggerHaTelegramAlert("BACKUP_FAILURE", "⚠️ فشل مزامنة عملية مع القاعدة الاحتياطية (Neon)", [
-        `العملية: ${writes.map((w) => `${w.kind} ${w.tableName || ""}`).join("، ")}`,
+        `العملية: ${validWrites.map((w) => `${w.kind} ${w.tableName || ""}`).join("، ")}`,
         `السبب: ${msg}`,
         `سيتم الاحتفاظ بالتحديثات وإعادة المحاولة تلقائياً.`,
       ]);
@@ -337,7 +581,9 @@ export function scheduleDualWriteToBackup(writes: CapturedWrite[]): void {
 /* ---------------- Failover Queue (Backup -> Primary Recovery) ---------------- */
 
 export function scheduleFailoverWriteLog(writes: CapturedWrite[]): void {
-  if (!writes.length) return;
+  const validWrites = writes.filter((w) => hasValidSqlParams(w.sql, w.params));
+  if (!validWrites.length) return;
+
   scheduleBackgroundTask(async () => {
     const { getRawPools } = await import("@/db");
     const backupPool = getRawPools().getBackupPool();
@@ -345,7 +591,7 @@ export function scheduleFailoverWriteLog(writes: CapturedWrite[]): void {
     try {
       const { ensureSchemaOnPool } = await import("./schema-check");
       await ensureSchemaOnPool(backupPool, { label: "Neon Backup" });
-      for (const w of writes) {
+      for (const w of validWrites) {
         await backupPool.query(
           `INSERT INTO _ha_sync_queue (sql_text, params_json, table_name, inserted_id) VALUES ($1, $2, $3, $4)`,
           [w.sql, JSON.stringify(w.params ?? []), w.tableName, w.insertedId]
@@ -371,7 +617,6 @@ export async function reconcileFailoverWritesToPrimary(): Promise<number> {
     const { ensureSchemaOnPool, syncSequencesOnQueryable } = await import("./schema-check");
     await ensureSchemaOnPool(primaryPool, { label: "Supabase Primary" });
 
-    // Ensure queue table exists on backup before reading
     await backupPool
       .query(
         `CREATE TABLE IF NOT EXISTS _ha_sync_queue (
@@ -385,6 +630,8 @@ export async function reconcileFailoverWritesToPrimary(): Promise<number> {
         )`
       )
       .catch(() => {});
+
+    await cleanupBrokenHaSyncQueue(backupPool, true);
 
     const pendingRes = await backupPool.query(
       `SELECT id, sql_text, params_json, table_name, inserted_id FROM _ha_sync_queue WHERE synced = FALSE ORDER BY id ASC LIMIT 2000`
@@ -403,8 +650,23 @@ export async function reconcileFailoverWritesToPrimary(): Promise<number> {
         } catch {
           params = [];
         }
-        await primaryClient.query(row.sql_text, params);
-        syncedIds.push(Number(row.id));
+        if (!hasValidSqlParams(String(row.sql_text || ""), params)) {
+          syncedIds.push(Number(row.id));
+          continue;
+        }
+        await primaryClient.query("SAVEPOINT sp_reconcile_row");
+        try {
+          await primaryClient.query(row.sql_text, params);
+          await primaryClient.query("RELEASE SAVEPOINT sp_reconcile_row");
+          syncedIds.push(Number(row.id));
+        } catch (rowErr: any) {
+          await primaryClient.query("ROLLBACK TO SAVEPOINT sp_reconcile_row").catch(() => {});
+          if (isPermanentWriteReplayError(rowErr)) {
+            syncedIds.push(Number(row.id));
+          } else {
+            throw rowErr;
+          }
+        }
       }
       await syncSequencesOnQueryable(primaryClient);
       await primaryClient.query("COMMIT");
@@ -462,7 +724,6 @@ export function schedulePrimaryRecoveryProbe(): void {
           : `✨ لم تكن هناك عمليات معلقة تحتاج للمزامنة.`,
       ]);
     } catch {
-      // Primary still offline — stay on Neon for another window
       globalForHa.__maestroFailoverUntil = Date.now() + FAILOVER_WINDOW_MS;
     } finally {
       globalForHa.__maestroRecoveryProbeRunning = false;
@@ -508,16 +769,17 @@ export async function probeBothDatabases(): Promise<BothDatabasesHealth> {
   let pendingFailoverWrites = 0;
   if (backupHealth.connected && backupPool) {
     try {
+      await cleanupBrokenHaSyncQueue(backupPool);
       const qRes = await backupPool.query(
         `SELECT COUNT(*)::int AS c FROM _ha_sync_queue WHERE synced = FALSE`
       );
       pendingFailoverWrites = Number(qRes.rows?.[0]?.c || 0);
     } catch {
-      // Queue table may not exist yet on fresh Neon DB
       pendingFailoverWrites = 0;
     }
   }
 
+  sanitizePendingBackupQueue();
   const pendingDualWrites = globalForHa.__maestroPendingToBackup?.length ?? 0;
 
   if (primaryHealth.configured && !primaryHealth.connected) {
@@ -547,19 +809,23 @@ export async function probeBothDatabases(): Promise<BothDatabasesHealth> {
   };
 }
 
-/* ---------------- Full One-Click Sync (Supabase -> Neon) ---------------- */
+/* ---------------- Safe Upsert Sync (Supabase -> Neon, Zero TRUNCATE) ---------------- */
 
 type SyncTableSpec = {
   table: string;
+  pk: string;
+  uniqueKeys?: string[][];
   columns: string[];
   hasId: boolean;
 };
 
 const FULL_SYNC_TABLES: SyncTableSpec[] = [
-  { table: "settings", columns: ["id", "key", "value", "updated_at"], hasId: true },
-  { table: "payment_methods", columns: ["id", "name", "is_active", "created_at"], hasId: true },
+  { table: "settings", pk: "id", uniqueKeys: [["key"]], columns: ["id", "key", "value", "updated_at"], hasId: true },
+  { table: "payment_methods", pk: "id", uniqueKeys: [["name"]], columns: ["id", "name", "is_active", "created_at"], hasId: true },
   {
     table: "platforms",
+    pk: "id",
+    uniqueKeys: [["name"]],
     columns: [
       "id",
       "name",
@@ -578,6 +844,8 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
   },
   {
     table: "users",
+    pk: "id",
+    uniqueKeys: [["username"]],
     columns: [
       "id",
       "username",
@@ -595,9 +863,10 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
     ],
     hasId: true,
   },
-  { table: "customers", columns: ["id", "name", "phone", "notes", "created_at"], hasId: true },
+  { table: "customers", pk: "id", uniqueKeys: [["phone"]], columns: ["id", "name", "phone", "notes", "created_at"], hasId: true },
   {
     table: "accounts",
+    pk: "id",
     columns: [
       "id",
       "platform_id",
@@ -625,6 +894,8 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
   },
   {
     table: "profiles",
+    pk: "id",
+    uniqueKeys: [["account_id", "profile_no"]],
     columns: [
       "id",
       "account_id",
@@ -642,6 +913,7 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
   },
   {
     table: "rentals",
+    pk: "id",
     columns: [
       "id",
       "account_id",
@@ -683,6 +955,7 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
   },
   {
     table: "payments",
+    pk: "id",
     columns: [
       "id",
       "rental_id",
@@ -704,36 +977,102 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
     ],
     hasId: true,
   },
-  { table: "wallet_balances", columns: ["user_id", "balance", "updated_at"], hasId: false },
+  { table: "wallet_balances", pk: "user_id", columns: ["user_id", "balance", "updated_at"], hasId: false },
   {
     table: "wallet_transactions",
+    pk: "id",
     columns: ["id", "user_id", "type", "amount", "balance_before", "balance_after", "rental_id", "note", "created_by", "created_at"],
     hasId: true,
   },
   {
     table: "whatsapp_logs",
+    pk: "id",
     columns: ["id", "rental_id", "customer_id", "phone", "message", "kind", "status", "created_at"],
     hasId: true,
   },
-  { table: "alerts", columns: ["id", "title", "body", "kind", "href", "for_user_id", "created_at"], hasId: true },
-  { table: "email_codes", columns: ["id", "email", "code_hash", "expires_at", "used", "created_at"], hasId: true },
+  { table: "alerts", pk: "id", columns: ["id", "title", "body", "kind", "href", "for_user_id", "created_at"], hasId: true },
+  { table: "email_codes", pk: "id", columns: ["id", "email", "code_hash", "expires_at", "used", "created_at"], hasId: true },
   {
     table: "audit_logs",
+    pk: "id",
     columns: ["id", "user_id", "username", "action", "entity_type", "entity_id", "details", "created_at"],
     hasId: true,
   },
-  { table: "push_subscriptions", columns: ["id", "user_id", "endpoint", "p256dh", "auth", "created_at"], hasId: true },
+  {
+    table: "push_subscriptions",
+    pk: "id",
+    uniqueKeys: [["endpoint"]],
+    columns: ["id", "user_id", "endpoint", "p256dh", "auth", "created_at"],
+    hasId: true,
+  },
 ];
 
-async function batchInsertRows(
+async function upsertSingleRowFallback(
   client: PoolClient,
-  table: string,
-  columns: string[],
+  spec: SyncTableSpec,
+  row: Record<string, any>
+): Promise<void> {
+  const cols = spec.columns;
+  const quotedCols = cols.map((c) => `"${c}"`).join(", ");
+  const updateCols = cols.filter((c) => c !== spec.pk);
+  const updateSet = updateCols.map((c) => `"${c}" = EXCLUDED."${c}"`).join(", ");
+  const values = cols.map((c) => (row[c] === undefined ? null : row[c]));
+  const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(", ");
+
+  await client.query("SAVEPOINT sp_upsert_row");
+  try {
+    await client.query(
+      `INSERT INTO "${spec.table}" (${quotedCols}) VALUES (${placeholders}) ON CONFLICT ("${spec.pk}") DO UPDATE SET ${updateSet}`,
+      values
+    );
+    await client.query("RELEASE SAVEPOINT sp_upsert_row");
+    return;
+  } catch (err: any) {
+    await client.query("ROLLBACK TO SAVEPOINT sp_upsert_row").catch(() => {});
+
+    // تعارض مفتاح فريد ثانوي (مثل username أو phone أو endpoint أو settings.key) -> تحديث السجل الفردي دون حذف
+    if (String(err?.code || "") === "23505" && spec.uniqueKeys?.length) {
+      for (const keyCols of spec.uniqueKeys) {
+        const keyVals = keyCols.map((k) => row[k]);
+        if (keyVals.some((v) => v === undefined || v === null)) continue;
+
+        const nonKeyCols = cols.filter((c) => c !== spec.pk && !keyCols.includes(c));
+        if (!nonKeyCols.length) return;
+
+        const setParams: any[] = nonKeyCols.map((c) => (row[c] === undefined ? null : row[c]));
+        const setSql = nonKeyCols.map((c, idx) => `"${c}" = $${idx + 1}`).join(", ");
+        const whereSql = keyCols
+          .map((k, idx) => {
+            setParams.push(row[k]);
+            return `"${k}" = $${nonKeyCols.length + idx + 1}`;
+          })
+          .join(" AND ");
+
+        await client.query("SAVEPOINT sp_upsert_uk");
+        try {
+          await client.query(`UPDATE "${spec.table}" SET ${setSql} WHERE ${whereSql}`, setParams);
+          await client.query("RELEASE SAVEPOINT sp_upsert_uk");
+          return;
+        } catch {
+          await client.query("ROLLBACK TO SAVEPOINT sp_upsert_uk").catch(() => {});
+        }
+      }
+    }
+    throw err;
+  }
+}
+
+async function batchUpsertRows(
+  client: PoolClient,
+  spec: SyncTableSpec,
   rows: Record<string, any>[]
 ): Promise<void> {
   if (!rows.length) return;
-  const maxRowsPerBatch = Math.max(1, Math.floor(4500 / columns.length));
-  const quotedCols = columns.map((c) => `"${c}"`).join(", ");
+  const cols = spec.columns;
+  const maxRowsPerBatch = Math.max(1, Math.floor(4000 / cols.length));
+  const quotedCols = cols.map((c) => `"${c}"`).join(", ");
+  const updateCols = cols.filter((c) => c !== spec.pk);
+  const updateSet = updateCols.map((c) => `"${c}" = EXCLUDED."${c}"`).join(", ");
 
   for (let offset = 0; offset < rows.length; offset += maxRowsPerBatch) {
     const slice = rows.slice(offset, offset + maxRowsPerBatch);
@@ -742,17 +1081,26 @@ async function batchInsertRows(
 
     for (const r of slice) {
       const placeholders: string[] = [];
-      for (const col of columns) {
-        values.push(r[col] ?? null);
+      for (const col of cols) {
+        values.push(r[col] === undefined ? null : r[col]);
         placeholders.push(`$${values.length}`);
       }
       tuples.push(`(${placeholders.join(", ")})`);
     }
 
-    await client.query(
-      `INSERT INTO "${table}" (${quotedCols}) VALUES ${tuples.join(", ")} ON CONFLICT DO NOTHING`,
-      values
-    );
+    await client.query("SAVEPOINT sp_upsert_batch");
+    try {
+      await client.query(
+        `INSERT INTO "${spec.table}" (${quotedCols}) VALUES ${tuples.join(", ")} ON CONFLICT ("${spec.pk}") DO UPDATE SET ${updateSet}`,
+        values
+      );
+      await client.query("RELEASE SAVEPOINT sp_upsert_batch");
+    } catch {
+      await client.query("ROLLBACK TO SAVEPOINT sp_upsert_batch").catch(() => {});
+      for (const row of slice) {
+        await upsertSingleRowFallback(client, spec, row);
+      }
+    }
   }
 }
 
@@ -776,21 +1124,21 @@ export async function syncPrimaryToBackupFull(opts?: {
       throw new Error("القاعدة الاحتياطية (FALLBACK_DATABASE_URL) غير مضبوطة.");
     }
 
-    // 1. Check both reachable
+    // 1. فحص توفر القاعدتين
     await withTimeout(primaryPool.query("SELECT 1"), 4000, "Supabase Primary");
     await withTimeout(backupPool.query("SELECT 1"), 6000, "Neon Backup");
 
-    // 2. Reconcile any pending failover writes from Neon -> Supabase before mirroring Supabase -> Neon
+    // 2. تصريف طابور الطوارئ من Neon -> Supabase أولاً قبل المزامنة
     await reconcileFailoverWritesToPrimary().catch(() => {});
 
-    // 3. Ensure schema is 100% synced on both sides
+    // 3. ضمان تطابق المخطط على الطرفين
     const { ensureSchemaOnPool, syncSequencesOnQueryable } = await import("./schema-check");
     await Promise.all([
       ensureSchemaOnPool(primaryPool, { label: "Supabase Primary" }),
       ensureSchemaOnPool(backupPool, { force: true, label: "Neon Backup" }),
     ]);
 
-    // 4. Snapshot all 16 tables concurrently from Primary (Supabase)
+    // 4. سحب جميع الجداول الـ 16 بالتوازي من الأساسية (Supabase)
     const snapshots = await Promise.all(
       FULL_SYNC_TABLES.map(async (spec) => {
         const orderBy = spec.hasId ? `ORDER BY id ASC` : "";
@@ -801,16 +1149,14 @@ export async function syncPrimaryToBackupFull(opts?: {
       })
     );
 
-    // 5. Atomic mirror into Neon inside BEGIN ... COMMIT
+    // 5. دمج آمن (Safe Upsert بدون أي TRUNCATE أو حذف) في Neon داخل معاملة ذرية
     const backupClient = await backupPool.connect();
     const counts: Record<string, number> = {};
     try {
       await backupClient.query("BEGIN");
-      const truncateOrder = [...FULL_SYNC_TABLES].reverse().map((s) => `"${s.table}"`).join(", ");
-      await backupClient.query(`TRUNCATE TABLE ${truncateOrder} RESTART IDENTITY CASCADE`);
 
       for (const { spec, rows } of snapshots) {
-        await batchInsertRows(backupClient, spec.table, spec.columns, rows);
+        await batchUpsertRows(backupClient, spec, rows);
         counts[spec.table] = rows.length;
       }
 
@@ -828,13 +1174,13 @@ export async function syncPrimaryToBackupFull(opts?: {
     globalForHa.__maestroBackupNeedsFullSync = false;
 
     const durationMs = Date.now() - started;
-    console.info(`[db-ha] Full sync Supabase -> Neon completed in ${durationMs}ms.`);
+    console.info(`[db-ha] Safe Upsert sync Supabase -> Neon completed in ${durationMs}ms.`);
     return { counts, durationMs };
   })()
     .catch((err) => {
       const msg = err?.message || String(err);
       if (!opts?.silentAlert) {
-        triggerHaTelegramAlert("BACKUP_FAILURE", "⚠️ فشلت المزامنة الكاملة مع القاعدة الاحتياطية (Neon)", [
+        triggerHaTelegramAlert("BACKUP_FAILURE", "⚠️ فشلت المزامنة الآمنة مع القاعدة الاحتياطية (Neon)", [
           `السبب: ${msg}`,
         ]);
       }

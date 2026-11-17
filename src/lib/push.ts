@@ -14,8 +14,8 @@ export async function getOrInitVapidKeys(): Promise<{ publicKey: string; private
 
   // 1. فحص متغيرات البيئة
   if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-    cachedPublicKey = process.env.VAPID_PUBLIC_KEY;
-    cachedPrivateKey = process.env.VAPID_PRIVATE_KEY;
+    cachedPublicKey = process.env.VAPID_PUBLIC_KEY.trim();
+    cachedPrivateKey = process.env.VAPID_PRIVATE_KEY.trim();
     return { publicKey: cachedPublicKey, privateKey: cachedPrivateKey };
   }
 
@@ -25,9 +25,9 @@ export async function getOrInitVapidKeys(): Promise<{ publicKey: string; private
       .select()
       .from(settings)
       .where(or(eq(settings.key, "vapid_public_key"), eq(settings.key, "vapid_private_key")));
-    
-    const pub = existing.find((s) => s.key === "vapid_public_key")?.value;
-    const priv = existing.find((s) => s.key === "vapid_private_key")?.value;
+
+    const pub = existing.find((s) => s.key === "vapid_public_key")?.value?.trim();
+    const priv = existing.find((s) => s.key === "vapid_private_key")?.value?.trim();
 
     if (pub && priv) {
       cachedPublicKey = pub;
@@ -35,23 +35,23 @@ export async function getOrInitVapidKeys(): Promise<{ publicKey: string; private
       return { publicKey: cachedPublicKey, privateKey: cachedPrivateKey };
     }
 
-    // 3. توليد زوج مفاتيح VAPID جديد وحفظه بشكل دائم
+    // 3. توليد زوج مفاتيح VAPID جديد وحفظه بأمان بدون استبدال غير متعمد للمفتاح الخاص
     const newKeys = webpush.generateVAPIDKeys();
     cachedPublicKey = newKeys.publicKey;
     cachedPrivateKey = newKeys.privateKey;
 
-    await db.insert(settings).values([
-      { key: "vapid_public_key", value: newKeys.publicKey },
-      { key: "vapid_private_key", value: newKeys.privateKey },
-    ]).onConflictDoUpdate({
-      target: settings.key,
-      set: { value: newKeys.publicKey, updatedAt: new Date() },
-    }).catch(() => {});
+    await db
+      .insert(settings)
+      .values([
+        { key: "vapid_public_key", value: newKeys.publicKey },
+        { key: "vapid_private_key", value: newKeys.privateKey },
+      ])
+      .onConflictDoNothing()
+      .catch(() => {});
 
     return { publicKey: cachedPublicKey, privateKey: cachedPrivateKey };
   } catch (e) {
     console.error("VAPID init error:", e);
-    // إذا حدث خطأ غير متوقع في قاعدة البيانات نولد مفاتيح في الذاكرة
     const fallback = webpush.generateVAPIDKeys();
     cachedPublicKey = fallback.publicKey;
     cachedPrivateKey = fallback.privateKey;
@@ -82,10 +82,13 @@ export async function sendPushToUsers(
   await ensure();
   if (!ready || !userIds.length) return;
 
+  const uniqueIds = Array.from(new Set(userIds.filter((id) => Number.isInteger(id) && id > 0)));
+  if (!uniqueIds.length) return;
+
   const subs = await db
     .select()
     .from(pushSubscriptions)
-    .where(inArray(pushSubscriptions.userId, userIds));
+    .where(inArray(pushSubscriptions.userId, uniqueIds));
 
   if (!subs.length) return;
 
@@ -100,9 +103,10 @@ export async function sendPushToUsers(
           JSON.stringify(payload)
         );
       } catch (err: any) {
-        // حذف الاشتراكات المنتهية أو غير الصالحة تلقائياً
         if (err?.statusCode === 404 || err?.statusCode === 410) {
           await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, sub.id)).catch(() => {});
+        } else {
+          console.warn("[webpush] send error:", err?.statusCode || err?.message || err);
         }
       }
     })
@@ -110,9 +114,9 @@ export async function sendPushToUsers(
 }
 
 export async function adminUserIds() {
-  const rows = await db.select({ id: users.id, role: users.role }).from(users);
+  const rows = await db.select({ id: users.id, role: users.role, isActive: users.isActive }).from(users);
   const { isAdminRole } = await import("./roles");
-  return rows.filter((r) => isAdminRole(r.role)).map((r) => r.id);
+  return rows.filter((r) => r.isActive && isAdminRole(r.role)).map((r) => r.id);
 }
 
 export async function employeeUserIds() {

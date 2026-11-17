@@ -318,9 +318,11 @@ export default function SettingsPage() {
             <br />الإرسال التلقائي قبل الانتهاء بيومين يعمل عبر Meta Cloud API عند ضبط <span dir="ltr" className="font-mono text-xs">WHATSAPP_TOKEN</span> و<span dir="ltr" className="font-mono text-xs">WHATSAPP_PHONE_ID</span> في متغيرات الخادم؛ بدونه تُجهَّز الرسالة وتُسجَّل ويظهر زر إرسال واتساب فوري. المهمة اليومية متاحة أيضاً على <span dir="ltr" className="font-mono text-xs">/api/cron/daily</span> للجدولة الساعة 09:00 بتوقيت عدن.
           </div>
           {[
-            { k: "whatsapp_expiry_template", t: "🔔 قالب تنبيه الانتهاء (قبل يومين — تلقائي بدون مراجعة)" },
+            { k: "whatsapp_expiry_template", t: "🔔 قالب التذكير قبل الانتهاء (قبل يومين — تلقائي بدون مراجعة)" },
+            { k: "whatsapp_expired_template", t: "⌛ قالب إشعار انتهاء الاشتراك" },
             { k: "whatsapp_sale_template", t: "🎉 قالب تسليم بيانات اشتراك جديد" },
             { k: "whatsapp_renewal_template", t: "✅ قالب تأكيد التجديد" },
+            { k: "whatsapp_payment_confirmed_template", t: "💳 قالب تأكيد استلام الدفع" },
             { k: "whatsapp_activation_template", t: "⚡ قالب «تم التفعيل» — يصل للعميل بعد ضغطك الزر (المتغيرات: {{name}} {{platform}} {{email}} {{password}} {{link}} {{note}} {{credentials}} {{end_date}})" },
           ].map((f) => (
             <div key={f.k} className="card p-4">

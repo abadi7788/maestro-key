@@ -19,7 +19,7 @@ export interface MessagePayload {
   endDate?: Date | string | null;
   isLifetime?: boolean;
   days?: number;
-  templateType?: "SALE" | "ACTIVATION" | "RENEWAL" | "EXPIRY";
+  templateType?: "SALE" | "ACTIVATION" | "RENEWAL" | "EXPIRY" | "EXPIRED" | "PAYMENT_CONFIRMED";
 }
 
 /**
@@ -76,6 +76,10 @@ export async function buildWhatsAppMessage(payload: MessagePayload): Promise<str
       customTpl = await getSetting("whatsapp_renewal_template", "");
     } else if (templateType === "EXPIRY") {
       customTpl = await getSetting("whatsapp_expiry_template", "");
+    } else if (templateType === "EXPIRED") {
+      customTpl = await getSetting("whatsapp_expired_template", "");
+    } else if (templateType === "PAYMENT_CONFIRMED") {
+      customTpl = await getSetting("whatsapp_payment_confirmed_template", "");
     } else {
       customTpl = await getSetting("whatsapp_sale_template", "");
     }

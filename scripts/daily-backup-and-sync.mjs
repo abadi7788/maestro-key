@@ -380,6 +380,60 @@ async function sendTelegramNotice(text) {
   }).catch(() => {});
 }
 
+const UNIQUE_KEYS_BY_TABLE = {
+  users: [["username"]],
+  platforms: [["name"]],
+  payment_methods: [["name"]],
+  customers: [["phone"]],
+  settings: [["key"]],
+  profiles: [["account_id", "profile_no"]],
+};
+
+async function upsertSingleStandbyRow(client, tbl, cols, row) {
+  const updateCols = cols.filter((c) => c !== tbl.pk);
+  const updateSet = updateCols.map((c) => `"${c}" = EXCLUDED."${c}"`).join(", ");
+  const values = cols.map((c) => (row[c] === undefined ? null : row[c]));
+  const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(", ");
+
+  await client.query("SAVEPOINT sp_standby_row");
+  try {
+    await client.query(
+      `INSERT INTO "${tbl.name}" (${cols.map((c) => `"${c}"`).join(", ")}) VALUES (${placeholders}) ON CONFLICT ("${tbl.pk}") DO UPDATE SET ${updateSet}`,
+      values
+    );
+    await client.query("RELEASE SAVEPOINT sp_standby_row");
+    return;
+  } catch (err) {
+    await client.query("ROLLBACK TO SAVEPOINT sp_standby_row").catch(() => {});
+    const uniqueSets = UNIQUE_KEYS_BY_TABLE[tbl.name];
+    if (String(err?.code || "") === "23505" && uniqueSets) {
+      for (const keyCols of uniqueSets) {
+        const keyVals = keyCols.map((k) => row[k]);
+        if (keyVals.some((v) => v === undefined || v === null)) continue;
+        const nonKeyCols = cols.filter((c) => c !== tbl.pk && !keyCols.includes(c));
+        if (!nonKeyCols.length) return;
+        const setParams = nonKeyCols.map((c) => (row[c] === undefined ? null : row[c]));
+        const setSql = nonKeyCols.map((c, idx) => `"${c}" = $${idx + 1}`).join(", ");
+        const whereSql = keyCols
+          .map((k, idx) => {
+            setParams.push(row[k]);
+            return `"${k}" = $${nonKeyCols.length + idx + 1}`;
+          })
+          .join(" AND ");
+        await client.query("SAVEPOINT sp_standby_uk");
+        try {
+          await client.query(`UPDATE "${tbl.name}" SET ${setSql} WHERE ${whereSql}`, setParams);
+          await client.query("RELEASE SAVEPOINT sp_standby_uk");
+          return;
+        } catch {
+          await client.query("ROLLBACK TO SAVEPOINT sp_standby_uk").catch(() => {});
+        }
+      }
+    }
+    throw err;
+  }
+}
+
 async function syncNeonStandby(backupUrl, snapshot) {
   const backupPool = buildPgPool(backupUrl);
   const client = await backupPool.connect();
@@ -392,9 +446,6 @@ async function syncNeonStandby(backupUrl, snapshot) {
 
     await client.query("BEGIN");
 
-    const reverseNames = [...TABLES_IN_ORDER].reverse().map((t) => `"${t.name}"`);
-    await client.query(`TRUNCATE TABLE ${reverseNames.join(", ")} RESTART IDENTITY CASCADE`);
-
     for (const tbl of TABLES_IN_ORDER) {
       const rows = snapshot.tables[tbl.name] || [];
       if (rows.length === 0) continue;
@@ -403,6 +454,9 @@ async function syncNeonStandby(backupUrl, snapshot) {
       const sourceCols = Object.keys(rows[0]);
       const cols = sourceCols.filter((c) => targetCols.includes(c));
       if (cols.length === 0) continue;
+
+      const updateCols = cols.filter((c) => c !== tbl.pk);
+      const updateSet = updateCols.map((c) => `"${c}" = EXCLUDED."${c}"`).join(", ");
 
       const chunkSize = 150;
       for (let i = 0; i < rows.length; i += chunkSize) {
@@ -416,10 +470,19 @@ async function syncNeonStandby(backupUrl, snapshot) {
           return `(${rowPh.join(", ")})`;
         });
 
-        await client.query(
-          `INSERT INTO "${tbl.name}" (${cols.map((c) => `"${c}"`).join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT DO NOTHING`,
-          values
-        );
+        await client.query("SAVEPOINT sp_standby_chunk");
+        try {
+          await client.query(
+            `INSERT INTO "${tbl.name}" (${cols.map((c) => `"${c}"`).join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT ("${tbl.pk}") DO UPDATE SET ${updateSet}`,
+            values
+          );
+          await client.query("RELEASE SAVEPOINT sp_standby_chunk");
+        } catch {
+          await client.query("ROLLBACK TO SAVEPOINT sp_standby_chunk").catch(() => {});
+          for (const row of chunk) {
+            await upsertSingleStandbyRow(client, tbl, cols, row);
+          }
+        }
       }
 
       if (tbl.seqCol) {
@@ -431,7 +494,7 @@ async function syncNeonStandby(backupUrl, snapshot) {
     }
 
     await client.query("COMMIT");
-    console.log("  ✅ تم تحديث قاعدة Neon الاحتياطية الواقفة (Standby Sync) بنجاح.");
+    console.log("  ✅ تم تحديث قاعدة Neon الاحتياطية الواقفة بالدمج الآمن (Safe Upsert) بنجاح.");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;

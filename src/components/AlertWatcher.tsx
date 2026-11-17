@@ -1,8 +1,15 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, BellRing, CheckCheck, Volume2, X } from "lucide-react";
+import { Bell, BellRing, CheckCheck, Volume2, VolumeX, X } from "lucide-react";
 import { api } from "@/lib/client";
-import { playNotifySound, unlockNotifySound } from "@/lib/notify-sound";
+import {
+  installSoundUnlockHandlers,
+  isNotifySoundEnabled,
+  playNotifySound,
+  setNotifySoundEnabled,
+  unlockNotifySound,
+} from "@/lib/notify-sound";
+import { registerPwaWorker } from "@/lib/pwa-client";
 
 type AlertItem = {
   id: number;
@@ -22,12 +29,10 @@ function urlBase64ToUint8Array(base64String: string) {
 const AFTER_KEY = "mk_alerts_after";
 const ON_KEY = "mk_alerts_on";
 const READ_KEY = "mk_alerts_read";
-const MAX_TOASTS = 3;
-const MAX_HISTORY = 20;
-const TOAST_MS = 6000;
-const POLL_MS = 25000;
-
-
+const MAX_TOASTS = 4;
+const MAX_HISTORY = 25;
+const TOAST_MS = 7000;
+const POLL_MS = 15000;
 
 export default function AlertWatcher() {
   const [toasts, setToasts] = useState<AlertItem[]>([]);
@@ -36,9 +41,15 @@ export default function AlertWatcher() {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [enabling, setEnabling] = useState(false);
+  const [soundOn, setSoundOn] = useState<boolean>(() => isNotifySoundEnabled());
   const after = useRef(0);
   const primed = useRef(false);
   const timers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const historyRef = useRef<AlertItem[]>([]);
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
 
   const dismissToast = useCallback((id: number) => {
     const t = timers.current.get(id);
@@ -66,22 +77,18 @@ export default function AlertWatcher() {
   const markAllRead = useCallback(() => {
     setUnread(0);
     try {
-      const maxId = Math.max(after.current, ...history.map((h) => h.id), 0);
+      const maxId = Math.max(after.current, ...historyRef.current.map((h) => h.id), 0);
       localStorage.setItem(READ_KEY, String(maxId));
     } catch {}
-  }, [history]);
+  }, []);
 
   const togglePanel = useCallback(() => {
+    void unlockNotifySound();
     setOpen((v) => {
       if (!v) {
-        // فتح اللوحة = قراءة الكل
         setUnread(0);
         try {
-          const maxId = Math.max(
-            after.current,
-            ...historyRef.current.map((h) => h.id),
-            0,
-          );
+          const maxId = Math.max(after.current, ...historyRef.current.map((h) => h.id), 0);
           localStorage.setItem(READ_KEY, String(maxId));
         } catch {}
       }
@@ -89,10 +96,14 @@ export default function AlertWatcher() {
     });
   }, []);
 
-  const historyRef = useRef<AlertItem[]>([]);
-  useEffect(() => {
-    historyRef.current = history;
-  }, [history]);
+  const toggleSound = useCallback(() => {
+    const next = !soundOn;
+    setSoundOn(next);
+    setNotifySoundEnabled(next);
+    if (next) {
+      void unlockNotifySound().then(() => playNotifySound({ force: true }));
+    }
+  }, [soundOn]);
 
   useEffect(() => {
     const onInboxRead = () => {
@@ -110,24 +121,34 @@ export default function AlertWatcher() {
     if (enabling) return;
     setEnabling(true);
     try {
-      unlockNotifySound();
-      if ("Notification" in window) await Notification.requestPermission();
-      const reg = await navigator.serviceWorker?.register("/sw.js");
+      await unlockNotifySound();
+      if ("Notification" in window && Notification.permission === "default") {
+        await Notification.requestPermission();
+      }
+      const reg = await registerPwaWorker();
       const keyRes = await fetch("/api/push");
       const { publicKey } = await keyRes.json();
-      if (reg && publicKey && "PushManager" in window) {
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
-        });
+      if (reg && publicKey && "PushManager" in window && Notification.permission === "granted") {
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+        }
         await fetch("/api/push", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(sub),
         });
       }
-      playNotifySound();
+      setNotifySoundEnabled(true);
+      setSoundOn(true);
+      void playNotifySound({ force: true });
+
       const boot = await api("/api/alerts?after=0");
+      const rows: AlertItem[] = boot.alerts || [];
+      setHistory(rows.slice(-MAX_HISTORY).reverse());
       after.current = boot.latestId || 0;
       primed.current = true;
       try {
@@ -135,9 +156,6 @@ export default function AlertWatcher() {
         localStorage.setItem(ON_KEY, "1");
       } catch {}
       reg?.active?.postMessage({ type: "watch", after: after.current });
-      navigator.serviceWorker?.ready.then((r) =>
-        r.active?.postMessage({ type: "watch", after: after.current }),
-      );
       setReady(true);
     } catch {
       setReady(false);
@@ -147,28 +165,33 @@ export default function AlertWatcher() {
   }
 
   useEffect(() => {
+    const uninstallAudioUnlock = installSoundUnlockHandlers();
+
     let readId = 0;
     try {
       const saved = Number(localStorage.getItem(AFTER_KEY) || 0);
       readId = Number(localStorage.getItem(READ_KEY) || 0);
-      if (saved) {
+      if (saved > 0) {
         after.current = saved;
         primed.current = true;
       }
     } catch {}
+
     try {
       if (
         localStorage.getItem(ON_KEY) === "1" &&
+        "Notification" in window &&
         Notification.permission === "granted"
-      )
+      ) {
         setReady(true);
+      }
     } catch {}
 
     const syncBackgroundPush = async () => {
       try {
-        if (!("Notification" in window) || Notification.permission !== "granted") return;
-        const reg = await navigator.serviceWorker?.register("/sw.js");
-        if (!reg || !("PushManager" in window)) return;
+        const reg = await registerPwaWorker();
+        if (!reg || !("Notification" in window) || Notification.permission !== "granted") return;
+        if (!("PushManager" in window)) return;
         const keyRes = await fetch("/api/push");
         const { publicKey } = await keyRes.json();
         if (!publicKey) return;
@@ -192,54 +215,67 @@ export default function AlertWatcher() {
         console.warn("Background push sync:", err);
       }
     };
-    syncBackgroundPush();
-
-    navigator.serviceWorker?.register("/sw.js").catch(() => {});
+    void syncBackgroundPush();
 
     const clearBadge = async () => {
       try {
         const reg = await navigator.serviceWorker?.ready;
         const notes = await reg?.getNotifications();
         notes?.forEach((n) => n.close());
-        if ("clearAppBadge" in navigator)
+        if ("clearAppBadge" in navigator) {
           await (navigator as unknown as { clearAppBadge: () => Promise<void> }).clearAppBadge();
+        }
       } catch {}
     };
-    clearBadge();
-    const onVis = () => {
-      if (document.visibilityState === "visible") clearBadge();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    const onMsg = (e: MessageEvent) => {
-      if (e.data?.type === "clear-badge") clearBadge();
-    };
-    navigator.serviceWorker?.addEventListener("message", onMsg);
+    void clearBadge();
 
     const showSystemNotification = async (a: AlertItem) => {
       try {
-        if (!("Notification" in window) || Notification.permission !== "granted")
-          return;
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
         const reg = await navigator.serviceWorker?.ready;
         if (!reg) return;
-        await reg.showNotification("مايسترو كي", {
-          body: a.title + " — " + a.body,
+        await reg.showNotification(a.title || "مايسترو كي", {
+          body: a.body,
           icon: "/icons/icon-192x192.png",
           badge: "/icons/badge-72x72.png",
-          tag: "maestro-key",
+          tag: `maestro-key-${a.id}`,
           silent: false,
           data: { href: a.href || "/inbox" },
         });
       } catch {}
     };
 
+    const handleFreshAlerts = async (fresh: AlertItem[], latestId?: number) => {
+      if (!fresh.length) return;
+      after.current = Math.max(...fresh.map((a) => a.id), latestId || 0);
+      try {
+        localStorage.setItem(AFTER_KEY, String(after.current));
+      } catch {}
+      navigator.serviceWorker?.controller?.postMessage({
+        type: "watch",
+        after: after.current,
+      });
+
+      setHistory((h) =>
+        [...fresh.slice().reverse(), ...h]
+          .filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i)
+          .slice(0, MAX_HISTORY),
+      );
+      setUnread((u) => Math.min(99, u + fresh.length));
+
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void playNotifySound();
+        fresh.forEach(pushToast);
+      } else {
+        for (const a of fresh) await showSystemNotification(a);
+      }
+    };
+
     const tick = async () => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       try {
         const data = await api(`/api/alerts?after=${after.current}`);
-
         const rows: AlertItem[] = data.alerts || [];
         if (!primed.current) {
-          // أول تشغيل: اعرض السجل دون ضجيج، ولا تعتبر القديم "غير مقروء"
           after.current = data.latestId || 0;
           primed.current = true;
           setHistory(rows.slice(-MAX_HISTORY).reverse());
@@ -250,58 +286,85 @@ export default function AlertWatcher() {
           return;
         }
         const fresh = rows.filter((a) => a.id > after.current);
-        if (!fresh.length) return;
-        after.current = Math.max(...fresh.map((a) => a.id), data.latestId || 0);
-        try {
-          localStorage.setItem(AFTER_KEY, String(after.current));
-        } catch {}
-        navigator.serviceWorker?.controller?.postMessage({
-          type: "watch",
-          after: after.current,
-        });
-        setHistory((h) =>
-          [...fresh.slice().reverse(), ...h]
-            .filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i)
-            .slice(0, MAX_HISTORY),
-        );
-        setUnread((u) => Math.min(99, u + fresh.length));
-        if (document.visibilityState === "visible") {
-          // التطبيق مفتوح: صوت + تنبيه منبثق داخل الصفحة
-          playNotifySound();
-          fresh.forEach(pushToast);
-        } else {
-          // التطبيق في الخلفية: إشعار نظام (يظهر في الشريط حتى لو التبويب مخفي)
-          for (const a of fresh) await showSystemNotification(a);
-        }
+        await handleFreshAlerts(fresh, data.latestId);
       } catch {}
     };
 
-    // تحميل أولي للسجل + بدء الاستطلاع
+    // تحميل أولي للسجل + التحقق فوراً من أي تنبيهات جديدة وصلت منذ آخر حفظ
     (async () => {
       try {
         const data = await api("/api/alerts?after=0");
         const rows: AlertItem[] = data.alerts || [];
         setHistory(rows.slice(-MAX_HISTORY).reverse());
+
         if (!primed.current) {
           after.current = data.latestId || 0;
           primed.current = true;
           try {
             localStorage.setItem(AFTER_KEY, String(after.current));
-            if (!localStorage.getItem(READ_KEY))
+            if (!localStorage.getItem(READ_KEY)) {
               localStorage.setItem(READ_KEY, String(after.current));
-            else {
+            } else {
               const unreadBacklog = rows.filter((a) => a.id > readId).length;
               if (unreadBacklog > 0) setUnread(Math.min(99, unreadBacklog));
             }
           } catch {}
           return;
         }
+
+        const freshSinceLast = rows.filter((a) => a.id > after.current);
+        if (freshSinceLast.length > 0) {
+          await handleFreshAlerts(freshSinceLast, data.latestId);
+        } else {
+          const unreadBacklog = rows.filter((a) => a.id > readId).length;
+          if (unreadBacklog > 0) setUnread(Math.min(99, unreadBacklog));
+        }
       } catch {}
     })();
-    const timer = setInterval(tick, POLL_MS);
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        void clearBadge();
+        void tick();
+      }
+    };
+    const onFocus = () => {
+      void tick();
+    };
+    const onPing = () => {
+      void tick();
+    };
+    const onSwMsg = (e: MessageEvent) => {
+      if (e.data?.type === "clear-badge") void clearBadge();
+      if (e.data?.type === "push-received") {
+        void tick();
+        if (typeof document !== "undefined" && document.visibilityState === "visible") {
+          void playNotifySound();
+        }
+      }
+      if (e.data?.type === "navigate" && e.data?.href) {
+        window.location.href = String(e.data.href);
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("maestro-sync", onPing);
+    window.addEventListener("maestro-alert-ping", onPing);
+    navigator.serviceWorker?.addEventListener("message", onSwMsg);
+
+    const timer = setInterval(() => {
+      void tick();
+    }, POLL_MS);
+
     return () => {
+      uninstallAudioUnlock();
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("maestro-sync", onPing);
+      window.removeEventListener("maestro-alert-ping", onPing);
+      navigator.serviceWorker?.removeEventListener("message", onSwMsg);
       timers.current.forEach((t) => clearTimeout(t));
       timers.current.clear();
     };
@@ -315,7 +378,7 @@ export default function AlertWatcher() {
       {/* زر الجرس العائم مع شارة العداد */}
       <div className="fixed bottom-24 left-4 z-[80] flex flex-col items-start gap-2 lg:bottom-6">
         {open && (
-          <div className="w-[min(92vw,360px)] overflow-hidden rounded-2xl border border-white/10 bg-[#0c1426]/98 shadow-2xl backdrop-blur">
+          <div className="w-[min(92vw,370px)] overflow-hidden rounded-2xl border border-white/15 bg-[#0c1426]/98 shadow-2xl backdrop-blur">
             <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
               <div className="flex items-center gap-2 text-sm font-black text-white">
                 <BellRing size={16} className="text-[#8fd0ff]" />
@@ -327,6 +390,18 @@ export default function AlertWatcher() {
                 )}
               </div>
               <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={toggleSound}
+                  title={soundOn ? "إيقاف صوت الإشعارات" : "تفعيل صوت الإشعارات"}
+                  className={`rounded-lg p-1.5 transition ${
+                    soundOn
+                      ? "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                      : "text-slate-400 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}
+                </button>
                 <button
                   type="button"
                   onClick={markAllRead}
@@ -381,7 +456,7 @@ export default function AlertWatcher() {
                   className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-[#2f7bff] to-[#ff3b5c] px-4 py-2.5 text-xs font-black text-white transition hover:brightness-110 disabled:opacity-60"
                 >
                   <Volume2 size={15} />
-                  {enabling ? "جارٍ التفعيل…" : "تفعيل صوت وإشعارات النظام"}
+                  {enabling ? "جارٍ التفعيل…" : "تفعيل إشعارات المتصفح والهاتف"}
                 </button>
               </div>
             )}
@@ -408,8 +483,8 @@ export default function AlertWatcher() {
         </button>
       </div>
 
-      {/* التنبيهات المنبثقة أعلى الصفحة — تختفي تلقائياً وتدعم النقر للانتقال */}
-      <div className="pointer-events-none fixed top-3 left-1/2 z-[70] flex w-[min(94vw,420px)] -translate-x-1/2 flex-col gap-2">
+      {/* التنبيهات المنبثقة أعلى الصفحة — مرئية بوضوح وتختفي تلقائياً وتدعم النقر للانتقال */}
+      <div className="pointer-events-none fixed top-3 left-1/2 z-[95] flex w-[min(94vw,430px)] -translate-x-1/2 flex-col gap-2">
         {toasts.map((t) => (
           <div
             key={t.id}
@@ -425,11 +500,11 @@ export default function AlertWatcher() {
                 go(t.href);
               }
             }}
-            className="pointer-events-auto cursor-pointer rounded-2xl border border-white/10 bg-[#0c1426]/97 p-3 text-right text-white shadow-2xl backdrop-blur transition hover:border-[#2f7bff]/50 active:scale-[.99]"
+            className="pointer-events-auto cursor-pointer rounded-2xl border border-[#2f7bff]/40 bg-[#0c1426]/98 p-3.5 text-right text-white shadow-[0_14px_38px_rgba(0,0,0,.65)] backdrop-blur transition hover:border-[#2f7bff] active:scale-[.99]"
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2 text-sm font-black text-[#8fd0ff]">
-                <BellRing size={15} className="shrink-0" />
+                <BellRing size={16} className="shrink-0 text-amber-300" />
                 <span className="truncate">{t.title}</span>
               </div>
               <span
@@ -440,15 +515,15 @@ export default function AlertWatcher() {
                   e.stopPropagation();
                   dismissToast(t.id);
                 }}
-                className="shrink-0 rounded-lg p-1 text-slate-500 transition hover:bg-white/10 hover:text-white"
+                className="shrink-0 rounded-lg p-1 text-slate-400 transition hover:bg-white/10 hover:text-white"
               >
                 <X size={14} />
               </span>
             </div>
-            <div className="mt-1 line-clamp-2 text-xs font-semibold leading-relaxed text-slate-300">
+            <div className="mt-1 line-clamp-2 text-xs font-semibold leading-relaxed text-slate-200">
               {t.body}
             </div>
-            <div className="mt-1 text-[10px] font-bold text-slate-500">
+            <div className="mt-1.5 text-[10px] font-bold text-slate-400">
               اضغط للانتقال ←
             </div>
           </div>
