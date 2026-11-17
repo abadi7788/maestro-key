@@ -1,5 +1,5 @@
-// maestro-sw-v11
-const STATIC_CACHE = "maestro-static-v11";
+// maestro-sw-v12
+const STATIC_CACHE = "maestro-static-v12";
 const OFFLINE_URL = "/offline.html";
 
 const PRECACHE_URLS = [
@@ -85,7 +85,7 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
-// استلام الإشعارات في الخلفية حتى عندما يكون التطبيق أو المتصفح مغلقاً
+// استلام الإشعارات في الخلفية وبثها للنوافذ المفتوحة لتنشيط الصوت والتنبيه الفوري
 self.addEventListener("push", (event) => {
   let data = {
     title: "مايسترو كي",
@@ -110,9 +110,11 @@ self.addEventListener("push", (event) => {
     body: data.body || "لديك إشعار جديد",
     icon: "/icons/icon-192x192.png",
     badge: "/icons/badge-72x72.png",
-    tag: data.tag || "maestro-key-alert",
+    tag: data.tag || ("maestro-key-alert-" + Date.now()),
+    renotify: true,
     vibrate: [200, 100, 200],
-    requireInteraction: true,
+    requireInteraction: false,
+    silent: false,
     data: {
       href: data.href || "/inbox",
       dateOfArrival: Date.now(),
@@ -123,7 +125,16 @@ self.addEventListener("push", (event) => {
   };
 
   event.waitUntil(
-    self.registration.showNotification(notificationTitle, notificationOptions)
+    (async () => {
+      await self.registration.showNotification(notificationTitle, notificationOptions);
+      const clientList = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      for (const client of clientList) {
+        client.postMessage({ type: "push-received", payload: data });
+      }
+    })()
   );
 });
 
@@ -136,23 +147,24 @@ self.addEventListener("notificationclick", (event) => {
 
   event.waitUntil(
     (async () => {
-      // إخفاء الشارة أو تنبيه النوافذ المفتوحة
+      await clearAll();
       const clientList = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
       });
 
-      // إذا كان هناك تبويب أو نافذة مفتوحة للتطبيق، ركّز عليها وانتقل للرابط
       for (const client of clientList) {
         if (client.url.startsWith(self.location.origin) && "focus" in client) {
-          if ("navigate" in client) {
-            await client.navigate(targetUrl);
-          }
+          try {
+            if ("navigate" in client) {
+              await client.navigate(targetUrl);
+            }
+          } catch {}
+          client.postMessage({ type: "navigate", href: targetPath });
           return await client.focus();
         }
       }
 
-      // إذا كان التطبيق مغلقاً تماماً، افتح نافذة جديدة بالرابط المطلوب
       if (self.clients.openWindow) {
         return await self.clients.openWindow(targetUrl);
       }
