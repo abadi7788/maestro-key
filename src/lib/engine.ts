@@ -135,6 +135,21 @@ export async function runDailyJob(opts: { sendAlerts?: boolean; force?: boolean 
       console.error("[daily-job] expiry-warnings section failed:", e instanceof Error ? e.message : e);
     }
   }
+  if (endedCount > 0 || alertsSent > 0) {
+    try {
+      const { notifyAdmin } = await import("./notify");
+      const parts: string[] = [];
+      if (endedCount > 0) parts.push(`انتهى ${endedCount} اشتراك وتحتاج مراجعة/تغيير كلمة المرور`);
+      if (alertsSent > 0) parts.push(`تم تجهيز ${alertsSent} تذكير انتهاء قبل يومين`);
+      await notifyAdmin({
+        title: endedCount > 0 ? "⏳ اشتراكات منتهية وتنبيهات جديدة" : "🔔 تنبيهات انتهاء قريبة",
+        body: parts.join(" • "),
+        kind: "EXPIRY",
+        href: "/inbox",
+      });
+    } catch {}
+  }
+
   return { endedCount, alertsSent, ranAt: now.toISOString() };
 }
 

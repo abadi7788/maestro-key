@@ -2,6 +2,13 @@ export async function api<T = any>(url: string, opts?: RequestInit): Promise<T> 
   const res = await fetch(url, { headers: { "content-type": "application/json" }, ...opts });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || "حدث خطأ"), { status: res.status, data });
+  if (typeof window !== "undefined" && opts?.method && opts.method.toUpperCase() !== "GET") {
+    if (!url.startsWith("/api/alerts") && !url.startsWith("/api/push")) {
+      try {
+        window.dispatchEvent(new Event("maestro-alert-ping"));
+      } catch {}
+    }
+  }
   return data as T;
 }
 

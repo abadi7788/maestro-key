@@ -1,5 +1,5 @@
-// maestro-sw-v12
-const STATIC_CACHE = "maestro-static-v12";
+// maestro-sw-v13
+const STATIC_CACHE = "maestro-static-v13";
 const OFFLINE_URL = "/offline.html";
 
 const PRECACHE_URLS = [
@@ -9,24 +9,32 @@ const PRECACHE_URLS = [
   "/manifest.json",
   "/icons/icon-192x192.png",
   "/icons/icon-512x512.png",
-  "/icons/badge-72x72.png"
+  "/icons/badge-72x72.png",
 ];
 
 let after = 0;
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
-    caches.open(STATIC_CACHE).then((cache) =>
-      Promise.allSettled(PRECACHE_URLS.map((u) => cache.add(new Request(u, { cache: "reload" })))),
-    ).then(() => self.skipWaiting()),
+    caches
+      .open(STATIC_CACHE)
+      .then((cache) =>
+        Promise.allSettled(PRECACHE_URLS.map((u) => cache.add(new Request(u, { cache: "reload" })))),
+      )
+      .then(() => self.skipWaiting()),
   );
 });
 
 self.addEventListener("activate", (e) => {
   e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k.startsWith("maestro-") && k !== STATIC_CACHE).map((k) => caches.delete(k))),
-    ).then(() => self.clients.claim()),
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys.filter((k) => k.startsWith("maestro-") && k !== STATIC_CACHE).map((k) => caches.delete(k)),
+        ),
+      )
+      .then(() => self.clients.claim()),
   );
 });
 
@@ -39,28 +47,33 @@ self.addEventListener("fetch", (event) => {
 
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req).then((res) => {
-        if (res && res.ok && url.origin === self.location.origin) {
-          const copy = res.clone();
-          caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
-        }
-        return res;
-      }).catch(async () => {
-        const cache = await caches.open(STATIC_CACHE);
-        const cached = await cache.match(req);
-        if (cached) return cached;
-
-        const offlineFallback = await cache.match(OFFLINE_URL) || await cache.match("/offline") || await cache.match("/offline.html");
-        if (offlineFallback) return offlineFallback;
-
-        return new Response(
-          `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر الاتصال — مايسترو كي</title><style>body{background:#070b14;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box}h2{font-size:22px;margin:0 0 8px;font-weight:900}p{color:#94a3b8;font-size:14px;margin:0 0 24px;line-height:1.6}button{background:#2f7bff;color:#fff;border:none;padding:12px 28px;border-radius:14px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 8px 20px rgba(47,123,255,.3)}</style></head><body><h2>تعذر تحميل الصفحة مؤقتاً</h2><p>يرجى التحقق من اتصال الشبكة ثم إعادة المحاولة.</p><button onclick="location.reload()">إعادة المحاولة</button></body></html>`,
-          {
-            status: 200,
-            headers: { "content-type": "text/html; charset=utf-8" },
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok && url.origin === self.location.origin) {
+            const copy = res.clone();
+            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
           }
-        );
-      }),
+          return res;
+        })
+        .catch(async () => {
+          const cache = await caches.open(STATIC_CACHE);
+          const cached = await cache.match(req);
+          if (cached) return cached;
+
+          const offlineFallback =
+            (await cache.match(OFFLINE_URL)) ||
+            (await cache.match("/offline")) ||
+            (await cache.match("/offline.html"));
+          if (offlineFallback) return offlineFallback;
+
+          return new Response(
+            `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر الاتصال — مايسترو كي</title><style>body{background:#070b14;color:#fff;font-family:system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box}h2{font-size:22px;margin:0 0 8px;font-weight:900}p{color:#94a3b8;font-size:14px;margin:0 0 24px;line-height:1.6}button{background:#2f7bff;color:#fff;border:none;padding:12px 28px;border-radius:14px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 8px 20px rgba(47,123,255,.3)}</style></head><body><h2>تعذر تحميل الصفحة مؤقتاً</h2><p>يرجى التحقق من اتصال الشبكة ثم إعادة المحاولة.</p><button onclick="location.reload()">إعادة المحاولة</button></body></html>`,
+            {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            },
+          );
+        }),
     );
     return;
   }
@@ -71,21 +84,23 @@ self.addEventListener("fetch", (event) => {
   ) {
     event.respondWith(
       caches.match(req).then((hit) => {
-        const network = fetch(req).then((res) => {
-          const ct = res.headers.get("content-type") || "";
-          if (res && res.ok && !ct.includes("text/html")) {
-            const copy = res.clone();
-            caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
-          }
-          return res;
-        }).catch(() => hit);
+        const network = fetch(req)
+          .then((res) => {
+            const ct = res.headers.get("content-type") || "";
+            if (res && res.ok && !ct.includes("text/html")) {
+              const copy = res.clone();
+              caches.open(STATIC_CACHE).then((cache) => cache.put(req, copy)).catch(() => {});
+            }
+            return res;
+          })
+          .catch(() => hit);
         return hit || network;
       }),
     );
   }
 });
 
-// استلام الإشعارات في الخلفية وبثها للنوافذ المفتوحة لتنشيط الصوت والتنبيه الفوري
+// استلام إشعارات الخلفية وإظهارها أعلى شاشة الهاتف حتى عندما يكون التطبيق مغلقاً بالكامل
 self.addEventListener("push", (event) => {
   let data = {
     title: "مايسترو كي",
@@ -110,23 +125,31 @@ self.addEventListener("push", (event) => {
     body: data.body || "لديك إشعار جديد",
     icon: "/icons/icon-192x192.png",
     badge: "/icons/badge-72x72.png",
-    tag: data.tag || ("maestro-key-alert-" + Date.now()),
+    tag: data.tag || "maestro-key-alert-" + Date.now(),
     renotify: true,
-    vibrate: [200, 100, 200],
+    vibrate: [250, 100, 250, 100, 250],
     requireInteraction: false,
     silent: false,
+    dir: "rtl",
+    lang: "ar",
+    timestamp: Date.now(),
     data: {
       href: data.href || "/inbox",
       dateOfArrival: Date.now(),
     },
-    actions: [
-      { action: "open", title: "عرض الإشعار" }
-    ]
+    actions: [{ action: "open", title: "عرض التنبيه" }],
   };
 
   event.waitUntil(
     (async () => {
       await self.registration.showNotification(notificationTitle, notificationOptions);
+
+      try {
+        if (self.navigator && "setAppBadge" in self.navigator) {
+          await self.navigator.setAppBadge(1);
+        }
+      } catch {}
+
       const clientList = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
@@ -134,7 +157,7 @@ self.addEventListener("push", (event) => {
       for (const client of clientList) {
         client.postMessage({ type: "push-received", payload: data });
       }
-    })()
+    })(),
   );
 });
 
@@ -168,13 +191,18 @@ self.addEventListener("notificationclick", (event) => {
       if (self.clients.openWindow) {
         return await self.clients.openWindow(targetUrl);
       }
-    })()
+    })(),
   );
 });
 
 async function clearAll() {
   const all = await self.registration.getNotifications();
   all.forEach((n) => n.close());
+  try {
+    if (self.navigator && "clearAppBadge" in self.navigator) {
+      await self.navigator.clearAppBadge();
+    }
+  } catch {}
   const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
   list.forEach((c) => c.postMessage({ type: "clear-badge" }));
 }

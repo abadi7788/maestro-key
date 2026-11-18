@@ -1,7 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Eye, EyeOff, KeyRound, Loader2, LockKeyhole, Mail, User } from "lucide-react";
 import { api } from "@/lib/client";
+import { registerPwaWorker } from "@/lib/pwa-client";
 import { homeForRole, isAdminOnlyPath, isAdminRole, safeNextPath } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,10 @@ export default function LoginPage() {
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void registerPwaWorker();
+  }, []);
 
   // التوجيه بعد الدخول حسب الدور الفعلي: مدير → لوحة التحكم، موظف → نقطة البيع
   // مع احترام ?next= إن كانت وجهة داخلية مسموحاً لهذا الدور بها
