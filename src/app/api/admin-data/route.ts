@@ -280,6 +280,7 @@ export async function GET(req: Request) {
           username: users.username,
           email: users.email,
           displayName: users.displayName,
+          avatarUrl: users.avatarUrl,
           role: users.role,
           permissions: users.permissions,
           isActive: users.isActive,

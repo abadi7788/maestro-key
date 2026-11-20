@@ -14,6 +14,7 @@ export const users = pgTable("users", {
   lockedUntil: timestamp("locked_until"),
   lastLoginAt: timestamp("last_login_at"),
   email: varchar("email", { length: 180 }),
+  avatarUrl: text("avatar_url"),
   permissions: text("permissions"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

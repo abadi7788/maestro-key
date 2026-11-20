@@ -1,13 +1,14 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Building2, ImagePlus, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, Users, Wallet, KeyRound, UserCheck, DatabaseBackup, Download, Upload, FileSpreadsheet, FileJson, Send, CheckCircle2, Clock, AlertTriangle, Database, RefreshCw } from "lucide-react";
-import { api, cachedApi, fetchMe, fileToDataUrl, fmtDateTime, getCached, getCachedMe, invalidateCache, setCached } from "@/lib/client";
+import { Building2, Camera, ImagePlus, Lock, MessageCircle, MonitorPlay, Pencil, Plus, Save, Trash2, User, Users, Wallet, KeyRound, UserCheck, DatabaseBackup, Download, Upload, FileSpreadsheet, FileJson, Send, CheckCircle2, Clock, AlertTriangle, Database, RefreshCw } from "lucide-react";
+import { api, avatarFileToDataUrl, broadcastMeUpdate, cachedApi, fetchMe, fileToDataUrl, fmtDateTime, getCached, getCachedMe, invalidateCache, setCached, subscribeMe, type Me } from "@/lib/client";
 import { Badge, PlatformLogo, Spinner } from "@/components/ui";
 import { isAdminRole } from "@/lib/roles";
 
 const SETTINGS_URL = "/api/admin-data?view=settings";
 
 const TABS = [
+  { id: "profile", label: "الملف الشخصي", icon: <User size={18} /> },
   { id: "whatsapp", label: "قوالب واتساب", icon: <MessageCircle size={18} /> },
   { id: "platforms", label: "المنصات", icon: <MonitorPlay size={18} /> },
   { id: "banks", label: "البنوك والدفع", icon: <Building2 size={18} /> },
@@ -44,7 +45,17 @@ export default function SettingsPage() {
   const [quickTopUpUser, setQuickTopUpUser] = useState<any | null>(null);
   const [quickAmount, setQuickAmount] = useState("");
   const [quickNote, setQuickNote] = useState("");
-  const [meId, setMeId] = useState<number | null>(() => getCachedMe()?.id ?? null);
+  const [me, setMe] = useState<Me | null>(() => getCachedMe());
+  const meId = me?.id ?? null;
+  const [profileName, setProfileName] = useState(() => getCachedMe()?.displayName || "");
+  const [profileAvatar, setProfileAvatar] = useState<string | null>(() => getCachedMe()?.avatarUrl || null);
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileMsg, setProfileMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const profileFileRef = useRef<HTMLInputElement | null>(null);
   const [backupBusy, setBackupBusy] = useState<"" | "json" | "csv_customers" | "csv_rentals" | "telegram" | "restore" | "syncNeon" | "checkHa">("");
   const [backupNotice, setBackupNotice] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [haStatus, setHaStatus] = useState<{
@@ -73,9 +84,24 @@ export default function SettingsPage() {
       setData(d);
       setTpl(d.settings || {});
     }
-    fetchMe().then((u) => setMeId(u?.id ?? null)).catch(() => {});
+    fetchMe(force).then((u) => {
+      if (u) {
+        setMe(u);
+        setProfileName((prev) => prev || u.displayName || "");
+        setProfileAvatar((prev) => (prev === null ? (u.avatarUrl || null) : prev));
+      }
+    }).catch(() => {});
   }, []);
-  useEffect(() => { void load(false); }, [load]);
+  useEffect(() => {
+    void load(false);
+    return subscribeMe((u) => {
+      setMe(u);
+      if (u) {
+        setProfileName(u.displayName || "");
+        setProfileAvatar(u.avatarUrl || null);
+      }
+    });
+  }, [load]);
 
   const fetchHaStatus = useCallback(async (withSpinner = false) => {
     if (withSpinner) setBackupBusy("checkHa");
@@ -138,6 +164,9 @@ export default function SettingsPage() {
       await api("/api/manage", { method: "POST", body: JSON.stringify(body) });
       setMsg("✓ " + ok);
       invalidateCache("/api/meta");
+      if (body.action === "topUpWallet" || body.action === "updateUser") {
+        void fetchMe(true);
+      }
       void load(true);
       return true;
     } catch (e: any) {
@@ -148,6 +177,71 @@ export default function SettingsPage() {
       setMsg("⚠️ " + e.message);
       return false;
     } finally { setBusy(false); }
+  }
+
+  async function onPickProfileAvatar(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setProfileMsg(null);
+    try {
+      const compressed = await avatarFileToDataUrl(file);
+      setProfileAvatar(compressed);
+    } catch (err: any) {
+      setProfileMsg({ tone: "err", text: err?.message || "تعذر معالجة الصورة" });
+    }
+  }
+
+  async function saveProfileSettings() {
+    const trimmed = profileName.trim();
+    if (trimmed.length < 2) {
+      setProfileMsg({ tone: "err", text: "الاسم المعروض يجب أن يكون حرفين على الأقل" });
+      return;
+    }
+    setProfileBusy(true);
+    setProfileMsg(null);
+    try {
+      const res = await api<{ ok: boolean; user: Me }>("/api/auth", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "update-profile",
+          displayName: trimmed,
+          avatarUrl: profileAvatar,
+        }),
+      });
+      if (res?.user) {
+        broadcastMeUpdate(res.user);
+      }
+      invalidateCache(SETTINGS_URL);
+      void load(true);
+      setProfileMsg({ tone: "ok", text: "تم حفظ الاسم والصورة الشخصية وتحديثهما لحظياً." });
+    } catch (err: any) {
+      setProfileMsg({ tone: "err", text: err?.message || "تعذر حفظ الملف الشخصي" });
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function savePasswordSettings() {
+    if (newPw.length < 6) {
+      setPwMsg({ tone: "err", text: "كلمة المرور الجديدة يجب أن تكون 6 أحرف على الأقل" });
+      return;
+    }
+    setPwBusy(true);
+    setPwMsg(null);
+    try {
+      await api("/api/auth", {
+        method: "POST",
+        body: JSON.stringify({ action: "change-password", currentPassword: curPw, newPassword: newPw }),
+      });
+      setCurPw("");
+      setNewPw("");
+      setPwMsg({ tone: "ok", text: "تم تغيير كلمة المرور بنجاح." });
+    } catch (err: any) {
+      setPwMsg({ tone: "err", text: err?.message || "تعذر تغيير كلمة المرور" });
+    } finally {
+      setPwBusy(false);
+    }
   }
 
   async function downloadBackupFile(
@@ -310,6 +404,137 @@ export default function SettingsPage() {
           <button key={t.id} onClick={() => setTab(t.id)} className={`flex shrink-0 items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-extrabold transition ${tab === t.id ? "bg-[#0e1526] text-white shadow" : "bg-[#101828] text-slate-600 border border-white/10"}`}>{t.icon}{t.label}</button>
         ))}
       </div>
+
+      {tab === "profile" && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="card space-y-4 p-5">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#2f7bff]/15 text-[#63a8ff]">
+                <User size={20} />
+              </span>
+              <div>
+                <h3 className="font-black text-white">تعديل الاسم والصورة الشخصية</h3>
+                <p className="text-xs font-semibold text-slate-400">يتم ضغط الصورة تلقائياً وتحديث الشريط العلوي والقائمة الجانبية فور الحفظ.</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-white/[.03] p-4">
+              {profileAvatar ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={profileAvatar}
+                  alt={profileName || me?.displayName || "Avatar"}
+                  className="h-16 w-16 shrink-0 rounded-2xl border border-white/15 object-cover shadow-md"
+                />
+              ) : (
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-[#2f7bff] to-[#174ea6] text-2xl font-black text-white shadow-md">
+                  {(profileName || me?.displayName || "U").slice(0, 1)}
+                </div>
+              )}
+              <div className="flex flex-1 flex-wrap gap-2">
+                <input
+                  ref={profileFileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={onPickProfileAvatar}
+                />
+                <button
+                  type="button"
+                  onClick={() => profileFileRef.current?.click()}
+                  className="btn-ghost px-3.5 py-2 text-xs"
+                >
+                  <Camera size={15} /> {profileAvatar ? "تغيير الصورة" : "رفع صورة شخصية"}
+                </button>
+                {profileAvatar && (
+                  <button
+                    type="button"
+                    onClick={() => setProfileAvatar(null)}
+                    className="btn-danger px-3 py-2 text-xs"
+                  >
+                    <Trash2 size={14} /> حذف الصورة
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="label">الاسم المعروض</label>
+              <input
+                className="field"
+                value={profileName}
+                onChange={(e) => setProfileName(e.target.value)}
+                placeholder="اكتب اسمك المعروض"
+                maxLength={120}
+              />
+            </div>
+
+            {profileMsg && (
+              <div className={`rounded-xl px-3.5 py-2.5 text-xs font-bold ${profileMsg.tone === "ok" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
+                {profileMsg.text}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={profileBusy}
+              onClick={saveProfileSettings}
+              className="btn-gold w-full py-3"
+            >
+              <Save size={17} /> {profileBusy ? "جارٍ الحفظ…" : "حفظ الاسم والصورة"}
+            </button>
+          </div>
+
+          <div className="card space-y-4 p-5">
+            <div className="flex items-center gap-2.5">
+              <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-300">
+                <Lock size={20} />
+              </span>
+              <div>
+                <h3 className="font-black text-white">تغيير كلمة المرور</h3>
+                <p className="text-xs font-semibold text-slate-400">حافظ على أمان حسابك بكلمة مرور قوية (6 أحرف أو أكثر).</p>
+              </div>
+            </div>
+
+            <div>
+              <label className="label">كلمة المرور الحالية</label>
+              <input
+                type="password"
+                className="field"
+                value={curPw}
+                onChange={(e) => setCurPw(e.target.value)}
+                placeholder="••••••••"
+              />
+            </div>
+
+            <div>
+              <label className="label">كلمة المرور الجديدة</label>
+              <input
+                type="password"
+                className="field"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                placeholder="6 أحرف على الأقل"
+              />
+            </div>
+
+            {pwMsg && (
+              <div className={`rounded-xl px-3.5 py-2.5 text-xs font-bold ${pwMsg.tone === "ok" ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300"}`}>
+                {pwMsg.text}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={pwBusy || !curPw || newPw.length < 6}
+              onClick={savePasswordSettings}
+              className="btn-primary w-full py-3"
+            >
+              <KeyRound size={17} /> {pwBusy ? "جارٍ التحديث…" : "تحديث كلمة المرور"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {tab === "whatsapp" && (
         <div className="space-y-4">
@@ -808,9 +1033,18 @@ export default function SettingsPage() {
                 return (
                   <div key={u.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 transition hover:bg-white/[.02]">
                     <div className="flex items-center gap-3">
-                      <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#0e1526] font-black text-[#57c8ff] shadow-inner">
-                        {u.displayName?.slice(0, 1) || "U"}
-                      </span>
+                      {u.avatarUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={u.avatarUrl}
+                          alt={u.displayName || "User"}
+                          className="h-11 w-11 shrink-0 rounded-2xl border border-white/15 object-cover shadow-inner"
+                        />
+                      ) : (
+                        <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#0e1526] font-black text-[#57c8ff] shadow-inner">
+                          {u.displayName?.slice(0, 1) || "U"}
+                        </span>
+                      )}
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-extrabold text-white">{u.displayName}</span>

@@ -858,6 +858,7 @@ const FULL_SYNC_TABLES: SyncTableSpec[] = [
       "locked_until",
       "last_login_at",
       "email",
+      "avatar_url",
       "permissions",
       "created_at",
     ],

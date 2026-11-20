@@ -40,6 +40,7 @@ export async function POST(req: Request) {
   let walletDeducted = false;
   let chargedUserId: number | null = null;
   let chargedAmount = 0;
+  let latestWalletBalance: number | null = null;
   let storedReceiptRef: string | null = null;
 
   try {
@@ -48,6 +49,7 @@ export async function POST(req: Request) {
     await runDailyJob({ sendAlerts: false });
     const b = await req.json().catch(() => ({}));
     const platformId = Number(b.platformId);
+    const preferredAccountId = Number(b.accountId || 0);
     const durationDays = Number(b.durationDays);
     const paymentType = b.paymentType === "WALLET" ? "WALLET" : "RECEIPT";
     const paymentMethodId = paymentType === "WALLET" ? null : Number(b.paymentMethodId);
@@ -56,7 +58,7 @@ export async function POST(req: Request) {
     const receipt: string = paymentType === "WALLET" ? "" : String(b.receiptImageData || "");
     const customerName = String(b.customerName || "").trim();
     const customerPhone = cleanPhone(String(b.customerPhone || ""));
-    const forceNew = b.mode === "NEW";
+    const forceNew = b.mode === "NEW" || preferredAccountId > 0;
     const deliverySource = b.deliverySource === "MANUAL" ? "MANUAL" : "AUTO";
     const manualEmail = String(b.manualEmail || "").trim();
     const manualPassword = String(b.manualPassword || "");
@@ -131,7 +133,7 @@ export async function POST(req: Request) {
 
     async function processWalletDeduction(rentalId: number, noteText: string) {
       if (paymentType !== "WALLET") return;
-      await deductFromWallet({
+      const deducted = await deductFromWallet({
         userId: user.id,
         amount,
         note: noteText,
@@ -141,6 +143,7 @@ export async function POST(req: Request) {
       walletDeducted = true;
       chargedUserId = user.id;
       chargedAmount = amount;
+      latestWalletBalance = deducted.balanceAfter;
     }
 
     const [platform] = await db.select().from(platforms).where(eq(platforms.id, platformId)).limit(1);
@@ -254,6 +257,7 @@ export async function POST(req: Request) {
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name, durationDays: days,
         endDate: neededEnd.toISOString(), paymentStatus,
+        walletBalance: latestWalletBalance,
         delivered: { email: manualEmail, password: manualPassword, profileName: manualProfileName, pin: manualPin, link: manualLink, code: manualCode, note: manualNote },
         whatsappMessage: message,
       });
@@ -300,6 +304,7 @@ export async function POST(req: Request) {
         customer: { name: customer.name, phone: customer.phone },
         platformName: platform.name, durationDays: days,
         endDate: neededEnd.toISOString(), paymentStatus,
+        walletBalance: latestWalletBalance,
       });
     }
 
@@ -357,6 +362,7 @@ export async function POST(req: Request) {
         accountLabel: profileLabel,
         endDate: endDate.toISOString(),
         paymentStatus,
+        walletBalance: latestWalletBalance,
         delivered: deliveredData,
         whatsappMessage: waMessage,
       });
@@ -383,9 +389,6 @@ export async function POST(req: Request) {
         }
         if (acc && stillHeld) {
           const newEnd = lifetime ? lifetimeEndDate() : (renewable.status === "ACTIVE" ? addDays(new Date(renewable.endDate), days) : addDays(now, days));
-          if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < newEnd) {
-            return jsonError("الحساب الحالي للعميل ينتهي قبل نهاية مدة التجديد. اختر «بيع جديد» لسحب حساب آخر يغطي المدة.", 409);
-          }
           const uploadedReceipt = await getStoredReceiptRef();
           await db.update(rentals).set({
             status: "ACTIVE", startDate: renewable.status === "ACTIVE" ? renewable.startDate : now,
@@ -420,16 +423,31 @@ export async function POST(req: Request) {
 
     // ---------- New sale path ----------
     const neededEnd = lifetime ? lifetimeEndDate() : addDays(now, days);
-    const accCandidates = await db.select().from(accounts)
+    const rawCandidates = await db.select().from(accounts)
       .where(and(eq(accounts.platformId, platformId), eq(accounts.isDeleted, false)))
       .orderBy(asc(accounts.expiryDate));
+
+    // ترتيب ذكي: إذا اختار المستخدم حساباً محدداً يُمنح الأولوية؛ وإلا نفضل ما يغطي المدة أولاً
+    // دون منع أو تقييد البيع أبداً إذا كانت أيام الإيميل المتبقية أقل من مدة اشتراك العميل
+    const accCandidates = [...rawCandidates].sort((a, b) => {
+      if (preferredAccountId > 0) {
+        if (a.id === preferredAccountId && b.id !== preferredAccountId) return -1;
+        if (b.id === preferredAccountId && a.id !== preferredAccountId) return 1;
+      }
+      const aCovers = lifetime || !a.expiryDate || new Date(a.expiryDate) >= neededEnd;
+      const bCovers = lifetime || !b.expiryDate || new Date(b.expiryDate) >= neededEnd;
+      if (aCovers !== bCovers) return aCovers ? -1 : 1;
+      const aMs = a.expiryDate ? new Date(a.expiryDate).getTime() : Number.MAX_SAFE_INTEGER;
+      const bMs = b.expiryDate ? new Date(b.expiryDate).getTime() : Number.MAX_SAFE_INTEGER;
+      return aMs - bMs;
+    });
 
     let claimedAcc: typeof accounts.$inferSelect | null = null;
     let claimedProfile: typeof profiles.$inferSelect | null = null;
 
     for (const acc of accCandidates) {
       if (acc.status === "NEEDS_PASSWORD_CHANGE") continue;
-      if (!lifetime && acc.expiryDate && new Date(acc.expiryDate) < neededEnd) continue;
+      if (acc.expiryDate && new Date(acc.expiryDate) <= now) continue;
       const accKind = acc.deliveryKind === "INVITE_LINK" || acc.deliveryKind === "LICENSE_KEY" ? acc.deliveryKind : "CREDENTIALS";
       if (accKind !== "CREDENTIALS") {
         if (acc.status !== "AVAILABLE") continue;
@@ -509,7 +527,7 @@ export async function POST(req: Request) {
 
     if (!claimedAcc) {
       const typeLabel = saleType === "FULL" ? "حساب كامل" : saleType === "PROFILE" ? "ملف/بروفايل" : "حساب متاح";
-      return jsonError(`عفواً، لا يوجد «${typeLabel}» متاح حالياً لهذه المنصة يغطي المدة المطلوبة.`, 409);
+      return jsonError(`عفواً، لا يوجد «${typeLabel}» متاح حالياً لهذه المنصة.`, 409);
     }
 
     try {

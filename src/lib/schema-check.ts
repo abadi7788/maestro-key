@@ -45,6 +45,7 @@ const CREATE_TABLE_STATEMENTS: string[] = [
     locked_until TIMESTAMP,
     last_login_at TIMESTAMP,
     email VARCHAR(180),
+    avatar_url TEXT,
     permissions TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
@@ -262,6 +263,7 @@ const UPGRADE_STATEMENTS: string[] = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'USER'`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12, 2) DEFAULT '0.00'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`,
 
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS image_url TEXT`,
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS delivery_mode VARCHAR(20) NOT NULL DEFAULT 'INSTANT_INVENTORY'`,
@@ -370,7 +372,7 @@ const UPGRADE_STATEMENTS: string[] = [
   `UPDATE platforms SET delivery_mode = 'ON_DEMAND_EMAIL' WHERE delivery_mode = 'ON_DEMAND'`,
 ];
 
-const SCHEMA_META_VERSION = 2;
+const SCHEMA_META_VERSION = 3;
 
 const HA_QUEUE_DDL = `CREATE TABLE IF NOT EXISTS _ha_sync_queue (
   id SERIAL PRIMARY KEY,

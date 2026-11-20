@@ -97,19 +97,33 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   await ensureSeeded();
   const user = await getCurrentUser();
-  if (!user) return Response.json({ user: null }, { status: 401 });
+  if (!user) {
+    return Response.json(
+      { user: null },
+      { status: 401, headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" } }
+    );
+  }
   const { walletBalances } = await import("@/db/schema");
   const [w] = await db.select().from(walletBalances).where(eq(walletBalances.userId, user.id)).limit(1);
-  return Response.json({
-    user: {
-      id: user.id,
-      username: user.username,
-      displayName: user.displayName,
-      role: user.role,
-      permissions: user.permissions,
-      walletBalance: w ? w.balance : Number(user.walletBalance || 0),
+  return Response.json(
+    {
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        role: user.role,
+        permissions: user.permissions,
+        avatarUrl: user.avatarUrl || null,
+        walletBalance: w ? w.balance : Number(user.walletBalance || 0),
+      },
     },
-  });
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        Pragma: "no-cache",
+      },
+    }
+  );
 }
 
 
@@ -184,6 +198,73 @@ export async function POST(req: Request) {
       href: "/audit",
     });
     return Response.json({ ok: true, message: "تم تغيير كلمة المرور بنجاح" });
+  }
+
+  if (body.action === "update-profile") {
+    const user = await getCurrentUser();
+    if (!user) return Response.json({ error: "غير مصرح — سجل الدخول أولاً" }, { status: 401 });
+
+    const nextDisplayName = String(body.displayName ?? user.displayName ?? "").trim();
+    if (nextDisplayName.length < 2 || nextDisplayName.length > 120) {
+      return Response.json({ error: "الاسم المعروض يجب أن يكون بين حرفين و120 حرفاً" }, { status: 400 });
+    }
+
+    let nextAvatarUrl: string | null | undefined = undefined;
+    if (Object.prototype.hasOwnProperty.call(body, "avatarUrl")) {
+      if (body.avatarUrl === null || body.avatarUrl === "") {
+        nextAvatarUrl = null;
+      } else if (typeof body.avatarUrl === "string") {
+        const trimmedAvatar = body.avatarUrl.trim();
+        const isSafeImageDataUrl = /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(trimmedAvatar);
+        if (!isSafeImageDataUrl) {
+          return Response.json({ error: "صيغة الصورة غير مدعومة — يرجى رفع صورة JPG أو PNG أو WebP" }, { status: 400 });
+        }
+        if (trimmedAvatar.length > 350_000) {
+          return Response.json({ error: "حجم الصورة كبير جداً بعد الضغط — يرجى اختيار صورة أصغر" }, { status: 400 });
+        }
+        nextAvatarUrl = trimmedAvatar;
+      } else {
+        return Response.json({ error: "قيمة الصورة الشخصية غير صالحة" }, { status: 400 });
+      }
+    }
+
+    const updateValues: { displayName: string; avatarUrl?: string | null } = {
+      displayName: nextDisplayName,
+    };
+    if (nextAvatarUrl !== undefined) {
+      updateValues.avatarUrl = nextAvatarUrl;
+    }
+
+    await db.update(users).set(updateValues).where(eq(users.id, user.id));
+
+    const { walletBalances } = await import("@/db/schema");
+    const [w] = await db.select().from(walletBalances).where(eq(walletBalances.userId, user.id)).limit(1);
+    const resolvedAvatar = nextAvatarUrl !== undefined ? nextAvatarUrl : (user.avatarUrl || null);
+
+    await audit(
+      user,
+      "PROFILE_UPDATED",
+      "users",
+      user.id,
+      `تحديث الملف الشخصي (${nextDisplayName}${nextAvatarUrl !== undefined ? " + تحديث الصورة الشخصية" : ""})`
+    );
+
+    return Response.json(
+      {
+        ok: true,
+        message: "تم تحديث الملف الشخصي بنجاح",
+        user: {
+          id: user.id,
+          username: user.username,
+          displayName: nextDisplayName,
+          role: user.role,
+          permissions: user.permissions,
+          avatarUrl: resolvedAvatar,
+          walletBalance: w ? w.balance : Number(user.walletBalance || 0),
+        },
+      },
+      { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" } }
+    );
   }
 
   const username = String(body.username || body.email || "").trim().toLowerCase();

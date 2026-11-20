@@ -2,11 +2,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  Camera, CheckCircle2, ChevronLeft, ImagePlus, Landmark, Loader2, Lock,
+  Camera, CheckCircle2, ChevronLeft, Clock, ImagePlus, Landmark, Loader2, Lock,
   Phone, Search, ShoppingCart, Sparkles, Trash2, User, Wallet, XCircle, RefreshCcw, Plus,
   Crown, UserRound, ScanLine, ArrowLeft, Zap, Hand, Coins,
 } from "lucide-react";
-import { api, cachedApi, fileToDataUrl, fmtDate, daysLeft, waLink, fetchMe, getCached, getCachedMe, invalidateCache } from "@/lib/client";
+import { api, cachedApi, fileToDataUrl, fmtDate, daysLeft, waLink, fetchMe, getCached, getCachedMe, invalidateCache, formatSeatsCount, subscribeMe, updateCachedMe } from "@/lib/client";
 import { Badge, CopyBtn, PlatformLogo, Spinner, rentalBadge } from "@/components/ui";
 import { normalizeDeliveryMode } from "@/lib/delivery";
 
@@ -21,6 +21,7 @@ export default function SaleForm() {
   const [lookup, setLookup] = useState<any>(null); const [looking, setLooking] = useState(false);
   const [duration, setDuration] = useState(0); const [amount, setAmount] = useState("");
   const [accountType, setAccountType] = useState<"FULL" | "PROFILE">("PROFILE");
+  const [selectedAccountId, setSelectedAccountId] = useState<number>(0);
   
   // Payment Type: RECEIPT (Bank Transfer) or WALLET
   const [paymentType, setPaymentType] = useState<"RECEIPT" | "WALLET">("RECEIPT");
@@ -69,6 +70,9 @@ export default function SaleForm() {
   }, []);
 
   useEffect(() => {
+    const unsub = subscribeMe((u) => {
+      if (u) setMe(u);
+    });
     const onSync = async () => {
       const [m, u] = await Promise.all([
         cachedApi("/api/meta", undefined, { force: true }).catch(() => null),
@@ -78,7 +82,10 @@ export default function SaleForm() {
       if (u) setMe(u);
     };
     window.addEventListener("maestro-sync", onSync);
-    return () => window.removeEventListener("maestro-sync", onSync);
+    return () => {
+      unsub();
+      window.removeEventListener("maestro-sync", onSync);
+    };
   }, []);
 
   useEffect(() => {
@@ -186,6 +193,7 @@ export default function SaleForm() {
           receiptImageData: paymentType === "WALLET" ? null : receipt, 
           mode: effectiveForceNew ? "NEW" : "AUTO", 
           accountType,
+          accountId: deliverySource === "AUTO" && selectedAccountId > 0 ? selectedAccountId : undefined,
           customerEmail: customerEmail.trim(), customerExtra: customerExtra.trim(),
           deliverySource,
           manualEmail: manualEmail.trim(), manualPassword, manualLink: manualLink.trim(),
@@ -195,6 +203,9 @@ export default function SaleForm() {
         }),
       });
       setResult(d);
+      if (typeof d?.walletBalance === "number") {
+        updateCachedMe({ walletBalance: d.walletBalance });
+      }
       invalidateCache("/api/rentals");
       invalidateCache("/api/accounts");
       invalidateCache("/api/admin-data");
@@ -211,7 +222,7 @@ export default function SaleForm() {
 
   function reset() {
     setResult(null); setPhone(""); setName(""); setLookup(null); setRef(""); setReceipt(""); 
-    setForceNew(false); setCustomerEmail(""); setCustomerExtra(""); setDeliverySource("AUTO"); 
+    setForceNew(false); setSelectedAccountId(0); setCustomerEmail(""); setCustomerExtra(""); setDeliverySource("AUTO"); 
     setManualEmail(""); setManualPassword(""); setManualLink(""); setManualCode(""); setManualNote(""); 
     setManualProfileName(""); setManualPin("");
     setAmount(""); setDuration(0); setErr(""); setScan("idle"); setScanNote(""); 
@@ -391,6 +402,18 @@ export default function SaleForm() {
 
   // ---------------- MAIN FORM ----------------
   const slots = (pid: number) => meta.availability?.[pid]?.slots ?? 0;
+  const availableAccountsForChoice: Array<{
+    id: number;
+    slots: number;
+    expiryDate: string | null;
+    remainingDays: number | null;
+    salePrice?: number | null;
+    deliveryKind?: string;
+  }> = meta.availableAccountsByType?.[platformId]?.[accountType] || [];
+  const chosenAccount = availableAccountsForChoice.find((a) => a.id === selectedAccountId) || availableAccountsForChoice[0] || null;
+  const typeMeta = meta.availabilityByType?.[platformId]?.[accountType];
+  const emailRemainingDays: number | null = chosenAccount ? chosenAccount.remainingDays : (typeMeta?.nextRemainingDays ?? null);
+  const emailExpiryDate: string | null = chosenAccount ? chosenAccount.expiryDate : (typeMeta?.nextExpiryDate ?? null);
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 stagger">
@@ -401,7 +424,7 @@ export default function SaleForm() {
             <span className="step-num">١</span>
             <div>
               <h3 className="section-title">اختر المنصة ونوع الحساب</h3>
-              <p className="section-sub">يظهر عدد الأماكن المتاحة — يتم حجب كلمة المرور حتى إتمام الدفع والتأكيد.</p>
+              <p className="section-sub">يظهر عدد المقاعد المتاحة — يتم حجب كلمة المرور حتى إتمام الدفع والتأكيد.</p>
             </div>
           </div>
         </div>
@@ -412,7 +435,7 @@ export default function SaleForm() {
               const s = slots(p.id); const active = platformId === p.id;
               const pm = normalizeDeliveryMode(p.deliveryMode);
               return (
-                <button key={p.id} type="button" onClick={() => setPlatformId(p.id)}
+                <button key={p.id} type="button" onClick={() => { setPlatformId(p.id); setSelectedAccountId(0); }}
                   className={`choice ${active ? "choice-selected-blue" : ""} ${pm === "INSTANT_INVENTORY" && s === 0 ? "opacity-50" : ""}`}>
                   <div className="flex items-start justify-between gap-2">
                     <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={64} />
@@ -425,7 +448,7 @@ export default function SaleForm() {
                       : pm === "ON_DEMAND_EMAIL"
                         ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-amber"}`}>📧 تفعيل على الإيميل</span>
                         : s > 0
-                          ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {s} مكان</span>
+                          ? <span className={`pill ${active ? "bg-white/15 text-white" : "pill-green"}`}>متاح: {formatSeatsCount(s)}</span>
                           : <span className={`pill ${active ? "bg-white/15 text-white/70" : "pill-red"}`}>غير متاح حالياً</span>}
                     {p.isLifetime && <span className="pill pill-gold">♾️ دائم</span>}
                   </div>
@@ -449,10 +472,12 @@ export default function SaleForm() {
                 { type: "FULL", icon: <Crown size={22} />, title: "حساب كامل", desc: "إيميل + باسورد بدون رمز PIN للعميل الواحد" },
                 { type: "PROFILE", icon: <UserRound size={22} />, title: "ملف / بروفايل", desc: "ملف مخصص مع PIN مستقل داخل حساب مشترك" },
               ] as const).map((opt) => {
-                const count = meta.availabilityByType?.[platformId]?.[opt.type]?.slots ?? 0;
+                const info = meta.availabilityByType?.[platformId]?.[opt.type];
+                const count = info?.slots ?? 0;
+                const remDays = info?.nextRemainingDays;
                 const active = accountType === opt.type;
                 return (
-                  <button key={opt.type} type="button" disabled={count <= 0} onClick={() => setAccountType(opt.type)}
+                  <button key={opt.type} type="button" disabled={count <= 0} onClick={() => { setAccountType(opt.type); setSelectedAccountId(0); }}
                     className={`choice ${active ? "choice-selected" : ""}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-center gap-3">
@@ -464,16 +489,49 @@ export default function SaleForm() {
                           <p className={`mt-1 max-w-[220px] text-[12px] font-semibold leading-relaxed ${active ? "text-slate-300" : "text-slate-400"}`}>{opt.desc}</p>
                         </div>
                       </div>
-                      <div className="shrink-0">
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
                         {count > 0
-                          ? <span className={`pill ${active ? "bg-[#5ba2ff] text-white" : "pill-green"}`}>متاح: {count}</span>
+                          ? <span className={`pill ${active ? "bg-[#5ba2ff] text-white" : "pill-green"}`}>متاح: {formatSeatsCount(count)}</span>
                           : <span className="pill pill-red">غير متاح</span>}
+                        {count > 0 && (
+                          <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] font-extrabold ${active ? "bg-white/15 text-amber-200" : "bg-sky-500/10 text-sky-300"}`}>
+                            <Clock size={11} />
+                            {typeof remDays === "number" ? `متبقي في الإيميل: ${remDays} يوم` : "صلاحية مفتوحة"}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </button>
                 );
               })}
             </div>
+
+            {deliverySource === "AUTO" && availableAccountsForChoice.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-sky-400/20 bg-sky-500/[.06] px-4 py-3 text-xs">
+                <div className="flex items-center gap-2 font-extrabold text-sky-200">
+                  <Clock size={15} className="shrink-0 text-sky-400" />
+                  <span>
+                    {emailRemainingDays !== null
+                      ? <>متبقي في الإيميل: <b className="text-white">{emailRemainingDays} يوم</b>{emailExpiryDate ? <span className="mr-1.5 text-slate-400">(حتى {fmtDate(emailExpiryDate)})</span> : null}</>
+                      : <>صلاحية الإيميل: <b className="text-white">مفتوحة بدون تاريخ انتهاء</b></>}
+                  </span>
+                </div>
+                {availableAccountsForChoice.length > 1 && (
+                  <select
+                    className="rounded-xl border border-white/15 bg-[#0e1526] px-3 py-1.5 text-xs font-bold text-slate-200 outline-none focus:border-sky-400"
+                    value={selectedAccountId}
+                    onChange={(e) => setSelectedAccountId(Number(e.target.value) || 0)}
+                  >
+                    <option value={0}>تلقائي من المخزون ({availableAccountsForChoice.length} حسابات متاحة)</option>
+                    {availableAccountsForChoice.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        حساب #{acc.id} • {formatSeatsCount(acc.slots)} — {acc.remainingDays !== null ? `متبقي في الإيميل: ${acc.remainingDays} يوم` : "صلاحية مفتوحة"}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
           </div>
           )}
 
@@ -642,17 +700,54 @@ export default function SaleForm() {
 
         <div className="grid gap-4 p-6 sm:grid-cols-2">
           <div>
-            <label className="label">⏳ مدة الاشتراك (أيام) {isLinkMode && <span className="text-[#5ba2ff] font-bold">(اختياري للروابط)</span>}</label>
-            {isLifetime ? (
-              <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم</div>
-            ) : isLinkMode ? (
-              <div className="space-y-1">
-                <input className="field" inputMode="numeric" min={1} placeholder="اختياري (أو اتركه فارغاً لاشتراكات الروابط)" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-                <p className="text-[11px] font-bold text-slate-400">🔗 اختياري: اشتراكات الروابط لا تتطلب تحديد عدد الأيام إجبارياً.</p>
-              </div>
-            ) : (
-              <input className="field" inputMode="numeric" min={1} placeholder="مثال: 30" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-            )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="label mb-0">⏳ مدة الاشتراك (أيام) {isLinkMode && <span className="text-[#5ba2ff] font-bold">(اختياري للروابط)</span>}</label>
+              {isInstant && deliverySource === "AUTO" && !isLifetime && emailRemainingDays !== null && (
+                <span className="inline-flex items-center gap-1 rounded-lg border border-sky-400/25 bg-sky-500/10 px-2 py-0.5 text-[11px] font-extrabold text-sky-300">
+                  <Clock size={11} /> متبقي في الإيميل: {emailRemainingDays} يوم
+                </span>
+              )}
+            </div>
+            <div className="mt-1.5">
+              {isLifetime ? (
+                <div className="flex items-center gap-2 rounded-xl border border-[#c99327]/40 bg-[#c99327]/10 px-4 py-3.5 text-sm font-black text-[#f5d67b]">♾️ اشتراك دائم</div>
+              ) : isLinkMode ? (
+                <div className="space-y-1.5">
+                  <input className="field" inputMode="numeric" min={1} placeholder="اختياري (أو اتركه فارغاً لاشتراكات الروابط)" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
+                  <p className="text-[11px] font-bold text-slate-400">🔗 اختياري: اشتراكات الروابط لا تتطلب تحديد عدد الأيام إجبارياً.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <input className="field" inputMode="numeric" min={1} placeholder="اكتب أي عدد أيام بحرية (مثال: 30)" value={duration || ""} onChange={(e) => setDuration(Number(e.target.value.replace(/\D/g, "")) || 0)} />
+                  <div className="flex flex-wrap gap-1.5">
+                    {[7, 15, 30, 60, 90, 365].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setDuration(d)}
+                        className={`rounded-lg border px-2.5 py-1 text-[11px] font-black transition ${
+                          duration === d
+                            ? "border-[#5ba2ff] bg-[#2f7bff] text-white"
+                            : "border-white/10 bg-white/[.04] text-slate-300 hover:border-white/25 hover:text-white"
+                        }`}
+                      >
+                        {d} يوم
+                      </button>
+                    ))}
+                  </div>
+                  {isInstant && deliverySource === "AUTO" && emailRemainingDays !== null && (
+                    <p className="text-[11px] font-bold leading-relaxed text-slate-400">
+                      متبقي في الإيميل الأساسي <b className="text-sky-300">{emailRemainingDays} يوم</b> — يمكنك اختيار أو كتابة أي مدة للعميل بحرية دون أي تقييد.
+                      {duration > 0 && duration > emailRemainingDays && (
+                        <span className="mt-0.5 block text-amber-300">
+                          ملاحظة: مدة العميل ({duration} يوم) أكبر من المتبقي في الإيميل الحالي ({emailRemainingDays} يوم) وسيتم تنفيذ الطلب بشكل طبيعي.
+                        </span>
+                      )}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <div>
             <label className="label">💵 السعر (ريال يمني)</label>

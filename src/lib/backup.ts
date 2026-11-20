@@ -432,6 +432,7 @@ export async function restoreBackupPayload(raw: any): Promise<{
           walletBalance: String(pick(row, "walletBalance", "wallet_balance") ?? "0.00"),
           isActive: pick(row, "isActive", "is_active") !== false,
           email: row.email || null,
+          avatarUrl: pick(row, "avatarUrl", "avatar_url") || null,
           permissions: row.permissions || null,
           createdAt: toDateOrNow(pick(row, "createdAt", "created_at")),
         })

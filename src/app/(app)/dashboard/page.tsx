@@ -6,9 +6,9 @@ import {
   AlarmClock, ArrowLeft, BellRing, Boxes, CheckCircle2, CreditCard, KeyRound, Landmark, Play, ReceiptText,
   RefreshCcw, ShieldAlert, ShoppingCart, TrendingUp, Users, Wallet,
 } from "lucide-react";
-import { api, cachedApi, fetchMe, fmtDate, getCached, getCachedMe, money, daysLeft, setCached, type Me } from "@/lib/client";
-import { isAdminRole, isEmployeeRole } from "@/lib/roles";
-import { Badge, PlatformLogo, Spinner, StatCard, DueCard, rentalBadge, paymentBadge } from "@/components/ui";
+import { api, cachedApi, fetchMe, fmtDate, formatSeatsCount, getCached, getCachedMe, money, subscribeMe, type Me } from "@/lib/client";
+import { isAdminRole } from "@/lib/roles";
+import { PlatformLogo, Spinner, StatCard, DueCard, rentalBadge, paymentBadge } from "@/components/ui";
 
 export default function DashboardPage() {
 
@@ -45,10 +45,12 @@ export default function DashboardPage() {
     }
   }
   useEffect(() => {
-    fetchMe().then((u) => {
+    const unsub = subscribeMe((updated) => setMe(updated));
+    fetchMe(true).then((u) => {
       setMe(u);
       if (u) void load(u);
     });
+    return unsub;
   }, []);
   useAutoRefresh(() => { if (me) return load(me, true); }, 25000);
 
@@ -91,7 +93,7 @@ export default function DashboardPage() {
             return (
               <div key={p.id} className="flex shrink-0 items-center gap-2.5 rounded-2xl bg-white5 px-3.5 py-2.5">
                 <PlatformLogo src={p.imageUrl} name={p.name} color={p.color} size={36} />
-                <div><div className="text-xs font-extrabold leading-none">{p.name}</div><div className={`mt-1 text-[11px] font-bold ${slots ? "text-emerald-300" : "text-red-300"}`}>{slots ? `${slots} مكان متاح` : "لا يوجد متاح"}</div></div>
+                <div><div className="text-xs font-extrabold leading-none">{p.name}</div><div className={`mt-1 text-[11px] font-bold ${slots ? "text-emerald-300" : "text-red-300"}`}>{slots ? formatSeatsCount(slots, true) : "لا يوجد متاح"}</div></div>
               </div>
             );
           })}

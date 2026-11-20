@@ -53,6 +53,7 @@ const ENSURE_SCHEMA_STATEMENTS = [
     locked_until TIMESTAMP,
     last_login_at TIMESTAMP,
     email VARCHAR(180),
+    avatar_url TEXT,
     permissions TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT now()
   )`,
@@ -230,6 +231,7 @@ const ENSURE_SCHEMA_STATEMENTS = [
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(180)`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions TEXT`,
   `ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(12, 2) DEFAULT '0.00'`,
+  `ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`,
   `ALTER TABLE platforms ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 3`,
   `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'AVAILABLE'`,
   `ALTER TABLE profiles ADD COLUMN IF NOT EXISTS sold_at TIMESTAMP`,

@@ -7,8 +7,8 @@
  * مع تحديث wallet_transactions (before/after + نوع الحركة).
  */
 import { db } from "@/db";
-import { walletBalances, walletTransactions } from "@/db/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { users, walletBalances, walletTransactions } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
 
 export type WalletTxType = "TOPUP" | "PURCHASE" | "REFUND";
 
@@ -137,6 +137,7 @@ export async function topUpWallet(
       note: input.note ?? "شحن محفظة",
       createdBy: input.createdBy,
     });
+    await tx.update(users).set({ walletBalance: String(after) }).where(eq(users.id, input.userId));
     return { balanceAfter: after };
   });
 }
@@ -191,6 +192,7 @@ export async function deductFromWallet(
       note: input.note ?? "شراء اشتراك",
       createdBy: input.createdBy,
     });
+    await tx.update(users).set({ walletBalance: String(after) }).where(eq(users.id, input.userId));
     return { balanceAfter: after };
   });
 }
@@ -244,6 +246,7 @@ export async function refundToWallet(
       note: input.note ?? "إلغاء طلب — إرجاع رصيد",
       createdBy: input.createdBy,
     });
+    await tx.update(users).set({ walletBalance: String(after) }).where(eq(users.id, input.userId));
     return { balanceAfter: after };
   });
 }
